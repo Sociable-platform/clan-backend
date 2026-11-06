@@ -79,13 +79,16 @@ cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
 docker compose up --build
 ```
 
-This starts three containers:
+This starts three long-running containers and one short migration job:
 
 | Container | URL |
 |---|---|
 | postgres | `localhost:5432` (change with `POSTGRES_HOST_PORT`) |
+| platform-migrate | none: applies pending platform SQL migrations, then exits (see "Database migrations") |
 | platform | http://localhost:8081/health, http://localhost:8081/ready |
 | social | http://localhost:8082/health, http://localhost:8082/ready |
+
+`platform` starts only after `platform-migrate` finished successfully.
 
 On the first start, `deploy/postgres/init/01-schemas.sh` creates:
 
@@ -99,10 +102,11 @@ The init script runs only when the database volume is empty. After changing it, 
 
 ## Run with go run
 
-Start only Postgres in Docker, then run a service from your editor or terminal:
+Start only Postgres in Docker and apply the migrations, then run a service from your editor or terminal:
 
 ```bash
 docker compose up -d postgres
+docker compose run --rm platform-migrate     # safe to repeat
 go run ./services/platform/cmd      # uses PLATFORM_DATABASE_URL
 go run ./services/social/cmd        # uses SOCIAL_DATABASE_URL
 ```
@@ -112,15 +116,26 @@ Without a database URL the services still start; `/health` answers 200 and `/rea
 
 ## Database migrations
 
-Table definitions live in `services/<name>/migrations/` as `NNNNNN_name.up.sql` / `.down.sql`.
-There is no migration runner yet, so apply them by hand as the service's own user (so the tables land in its schema):
+Table definitions live in `services/<name>/migrations/` as `NNNNNN_name.up.sql` / `NNNNNN_name.down.sql`.
+`docker compose up` applies the pending ones automatically: the `platform-migrate` job
+([golang-migrate](https://github.com/golang-migrate/migrate)) runs first, as the service's own database user,
+so tables land in that service's schema. It remembers what already ran in a `schema_migrations` table in that
+schema, so running it again does nothing.
 
-```bash
-docker compose exec -T postgres psql -U platform_user -d clan -v ON_ERROR_STOP=1 \
-  < services/platform/migrations/000001_create_developers.up.sql
-```
+Social has no migrations yet, and golang-migrate fails on an empty folder, so `social-migrate` is commented out in
+`docker-compose.yml`. **When you add the first file to `services/social/migrations/`, uncomment the `social-migrate`
+job and the `social-migrate` entry in social's `depends_on`.**
 
-(The user and database names match `.env.example`; use your `POSTGRES_DB` if you changed it.)
+- **Add a migration:** create the next numbered pair, e.g. `000003_add_x.up.sql` and `.down.sql`, then run
+  `docker compose up` (or `docker compose run --rm platform-migrate`).
+- **Never edit a migration that has already run** (on `develop` or on a teammate's machine). Add a new numbered file instead.
+- **A migration failed:** the job logs the SQL error and the service does not start. Golang-migrate marks the database
+  "dirty". Fix the problem by hand in the database, then clear the mark with
+  `docker compose run --rm platform-migrate -path=/migrations -database="$URL" force <last good version>`
+  (`$URL` is the `-database` value from `docker-compose.yml`). On a local database it is usually quicker to run
+  `docker compose down -v` and start again.
+- **Roll back one step:** the same command with `down 1` instead of `force ...`.
+- **Database created before this existed** (tables applied by hand): `docker compose down -v` once, then start again.
 
 ## API contracts (OpenAPI)
 

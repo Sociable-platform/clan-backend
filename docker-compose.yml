@@ -1,6 +1,9 @@
 # Local development stack: PostgreSQL + platform + social.
 #   1. copy .env.example to .env and set the passwords
-#   2. docker compose up --build
+#   2. create the JWT signing key (README: "JWT signing key")
+#   3. docker compose up --build
+# platform-migrate applies the platform SQL migrations once, then exits;
+# platform starts only after it succeeded.
 name: clan
 
 services:
@@ -26,6 +29,36 @@ services:
       timeout: 3s
       retries: 30
 
+  # One-shot jobs: apply the SQL files in services/<name>/migrations/ that have not run yet,
+  # as the service's own database user so the tables land in its own schema.
+  # golang-migrate remembers what ran in a schema_migrations table inside that schema.
+  platform-migrate:
+    image: migrate/migrate:v4.18.1
+    command:
+      - -path=/migrations
+      - -database=postgres://platform_user:${PLATFORM_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      - up
+    volumes:
+      - ./services/platform/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Social has no migrations yet, and golang-migrate fails on an empty folder.
+  # When you add the first file to services/social/migrations/, uncomment this job
+  # and the matching `social-migrate` entry in social's depends_on below.
+  # social-migrate:
+  #   image: migrate/migrate:v4.18.1
+  #   command:
+  #     - -path=/migrations
+  #     - -database=postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+  #     - up
+  #   volumes:
+  #     - ./services/social/migrations:/migrations:ro
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+
   platform:
     build:
       context: .
@@ -45,6 +78,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      platform-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   social:
@@ -61,6 +96,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # social-migrate:
+      #   condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
