@@ -1,0 +1,60 @@
+# Local development stack: PostgreSQL + platform + social.
+#   1. copy .env.example to .env and set the passwords
+#   2. docker compose up --build
+name: clan
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-clan}
+      # read by deploy/postgres/init/01-schemas.sh
+      PLATFORM_DB_PASSWORD: ${PLATFORM_DB_PASSWORD:?set PLATFORM_DB_PASSWORD in .env}
+      SOCIAL_DB_PASSWORD: ${SOCIAL_DB_PASSWORD:?set SOCIAL_DB_PASSWORD in .env}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # TCP check: during first-time init Postgres only listens on a socket,
+      # so this passes only after the init script has finished.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  platform:
+    build:
+      context: .
+      dockerfile: services/platform/Dockerfile
+    environment:
+      PLATFORM_PORT: "8081"
+      PLATFORM_DATABASE_URL: postgres://platform_user:${PLATFORM_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  social:
+    build:
+      context: .
+      dockerfile: services/social/Dockerfile
+    environment:
+      SOCIAL_PORT: "8082"
+      SOCIAL_DATABASE_URL: postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

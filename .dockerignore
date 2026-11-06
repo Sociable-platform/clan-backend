@@ -1,0 +1,8 @@
+.git
+.env
+*.pem
+.idea
+.vscode
+bin
+deploy
+README.md

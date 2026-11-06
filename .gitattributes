@@ -1,0 +1,3 @@
+# Shell scripts run inside Linux containers: keep Unix line endings even on Windows,
+# otherwise Postgres fails to run the init script ("bad interpreter" / "$'\r': command not found").
+*.sh text eol=lf
