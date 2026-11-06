@@ -1,0 +1,125 @@
+openapi: 3.0.3
+info:
+  title: Social service
+  version: 0.1.0
+  description: |
+    Players, clans and clan members.
+
+    Conventions for every endpoint:
+    - Errors always use the `Error` shape: `{ "error": { "code": "...", "message": "..." } }`.
+    - Browser calls are only accepted from the origins in `SOCIAL_CORS_ORIGINS`
+      (default `http://localhost:5174`, the demo game where the SDK runs). Other origins get 403 `origin_not_allowed`.
+      Calls without an `Origin` header (the platform service, curl) are not affected.
+
+    This file lists only implemented routes. `TestOpenAPIMatchesRoutes` fails when it
+    and `services/social/internal/handler` drift apart.
+servers:
+  - url: http://localhost:8082
+    description: Local (docker compose or go run)
+tags:
+  - name: system
+    description: Health checks
+paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: health
+      summary: The process is running
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+              example:
+                status: ok
+                service: social
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /ready:
+    get:
+      tags: [system]
+      operationId: ready
+      summary: The service can reach its database
+      responses:
+        "200":
+          description: The database answers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+              example:
+                status: ready
+                service: social
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "503":
+          $ref: "#/components/responses/NotReady"
+components:
+  securitySchemes:
+    playerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Player token (typ "player") issued by the platform service. Sent by the SDK.
+    internalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: Shared secret for the /internal endpoints, used only by the platform service.
+  schemas:
+    Status:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+        service:
+          type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable, machine-readable code, e.g. not_found, invalid_json, not_ready.
+            message:
+              type: string
+              description: Human-readable explanation.
+  responses:
+    NotFound:
+      description: No such route.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: not_found
+              message: Route not found
+    OriginNotAllowed:
+      description: The request came from a website that is not in the allowed origins.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: origin_not_allowed
+              message: This website is not allowed to call the API
+    NotReady:
+      description: The database is not reachable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: not_ready
+              message: Database is not reachable

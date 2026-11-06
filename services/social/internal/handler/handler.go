@@ -25,12 +25,31 @@ func New(name string, svc Service) *Handler {
 	return &Handler{name: name, svc: svc}
 }
 
-// Register adds all routes to mux. New feature routes go here, for example:
+// Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.
+type Route struct {
+	Method string
+	Path   string
+	Handle http.HandlerFunc
+}
+
+// Routes lists every endpoint of the service. Add new endpoints here, for example:
 //
-//	mux.HandleFunc("POST /api/v1/clans", h.createClan)
+//	{http.MethodPost, "/api/v1/clans", h.createClan},
+//
+// The OpenAPI file (openapi/social.yaml) must document exactly these routes;
+// TestOpenAPIMatchesRoutes fails when the two drift apart.
+func (h *Handler) Routes() []Route {
+	return []Route{
+		{http.MethodGet, "/health", h.health},
+		{http.MethodGet, "/ready", h.ready},
+	}
+}
+
+// Register adds all routes to mux, plus a JSON 404 for everything else.
 func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /health", h.health)
-	mux.HandleFunc("GET /ready", h.ready)
+	for _, r := range h.Routes() {
+		mux.HandleFunc(r.Method+" "+r.Path, r.Handle)
+	}
 	mux.HandleFunc("/", h.notFound)
 }
 

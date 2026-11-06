@@ -1,0 +1,125 @@
+openapi: 3.0.3
+info:
+  title: Platform service
+  version: 0.1.0
+  description: |
+    Developers, registered games, API keys and player tokens.
+
+    Conventions for every endpoint:
+    - Errors always use the `Error` shape: `{ "error": { "code": "...", "message": "..." } }`.
+    - Browser calls are only accepted from the origins in `PLATFORM_CORS_ORIGINS`
+      (default `http://localhost:5173`, the dashboard). Other origins get 403 `origin_not_allowed`.
+      Calls without an `Origin` header (the game's own server, curl) are not affected.
+
+    This file lists only implemented routes. `TestOpenAPIMatchesRoutes` fails when it
+    and `services/platform/internal/handler` drift apart.
+servers:
+  - url: http://localhost:8081
+    description: Local (docker compose or go run)
+tags:
+  - name: system
+    description: Health checks
+paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: health
+      summary: The process is running
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+              example:
+                status: ok
+                service: platform
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /ready:
+    get:
+      tags: [system]
+      operationId: ready
+      summary: The service can reach its database
+      responses:
+        "200":
+          description: The database answers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+              example:
+                status: ready
+                service: platform
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "503":
+          $ref: "#/components/responses/NotReady"
+components:
+  securitySchemes:
+    developerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Developer token (typ "developer") returned by login. Used by the dashboard.
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Secret API key of a game. Only the game's own server sends it, never a browser.
+  schemas:
+    Status:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+        service:
+          type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable, machine-readable code, e.g. not_found, invalid_json, not_ready.
+            message:
+              type: string
+              description: Human-readable explanation.
+  responses:
+    NotFound:
+      description: No such route.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: not_found
+              message: Route not found
+    OriginNotAllowed:
+      description: The request came from a website that is not in the allowed origins.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: origin_not_allowed
+              message: This website is not allowed to call the API
+    NotReady:
+      description: The database is not reachable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: not_ready
+              message: Database is not reachable

@@ -33,6 +33,7 @@ services:
     environment:
       PLATFORM_PORT: "8081"
       PLATFORM_DATABASE_URL: postgres://platform_user:${PLATFORM_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      PLATFORM_CORS_ORIGINS: ${PLATFORM_CORS_ORIGINS:-http://localhost:5173}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8081:8081"
@@ -48,6 +49,7 @@ services:
     environment:
       SOCIAL_PORT: "8082"
       SOCIAL_DATABASE_URL: postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      SOCIAL_CORS_ORIGINS: ${SOCIAL_CORS_ORIGINS:-http://localhost:5174}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "8082:8082"

@@ -5,8 +5,25 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// List returns key split on commas, with spaces and empty items removed,
+// or def when it is unset. Example: "http://localhost:5173, http://localhost:5174".
+func List(key string, def []string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	var out []string
+	for _, item := range strings.Split(v, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
 
 // String returns the value of key, or def when it is unset or empty.
 func String(key, def string) string {

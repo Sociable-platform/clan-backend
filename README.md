@@ -14,6 +14,7 @@ clan-backend/
 ├── go.mod                     # one Go module for the whole repo
 ├── docker-compose.yml         # postgres + platform + social
 ├── deploy/postgres/init/      # creates the schemas and database users on first start
+├── openapi/                   # API contracts: platform.yaml, social.yaml
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
@@ -92,6 +93,29 @@ go run ./services/social/cmd        # uses SOCIAL_DATABASE_URL
 Set the `*_DATABASE_URL` variables from `.env.example` in your terminal or GoLand run configuration.
 Without a database URL the services still start; `/health` answers 200 and `/ready` answers 503.
 
+## API contracts (OpenAPI)
+
+| Service | File |
+|---|---|
+| platform | `openapi/platform.yaml` |
+| social | `openapi/social.yaml` |
+
+These files are the contract the dashboard, SDK and demo game build against.
+When you add or change a route, update `Routes()` in the service's `internal/handler/handler.go` **and** its OpenAPI file in the same commit.
+`go test ./...` fails if a route is missing from the file, or the file lists a route that does not exist.
+To browse a file, paste it into https://editor.swagger.io or open it with the OpenAPI plugin in GoLand.
+
+## CORS (which websites may call the API)
+
+| Service | Variable | Default | Who calls it from a browser |
+|---|---|---|---|
+| platform | `PLATFORM_CORS_ORIGINS` | `http://localhost:5173` | Dashboard (clan-frontend) |
+| social | `SOCIAL_CORS_ORIGINS` | `http://localhost:5174` | Demo game with the SDK |
+
+- Comma-separated list, each written exactly as `scheme://host:port` (no trailing slash). `*` is rejected at startup.
+- Requests from other websites get 403 `origin_not_allowed`.
+- Requests without an `Origin` header (servers, curl) are not affected, so the game's own server can still call `/players/auth`.
+
 ## Check
 
 ```bash
@@ -107,3 +131,4 @@ go test ./...
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
 | any | anything else | 404 `not_found` in the standard error format |
+| any | from a website not in the allowed origins | 403 `origin_not_allowed` |

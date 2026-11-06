@@ -60,6 +60,14 @@ func run() error {
 	mux := http.NewServeMux()
 	handler.New(serviceName, svc).Register(mux)
 
-	h := httpx.Chain(mux, httpx.Recover(log), httpx.RequestLog(log))
+	// Browser pages allowed to call this service (the demo game, where the SDK runs).
+	origins := config.List("SOCIAL_CORS_ORIGINS", []string{"http://localhost:5174"})
+	cors, err := httpx.CORS(origins)
+	if err != nil {
+		return err
+	}
+	log.Info("cors", "allowed_origins", origins)
+
+	h := httpx.Chain(mux, httpx.Recover(log), httpx.RequestLog(log), cors)
 	return httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
 }
