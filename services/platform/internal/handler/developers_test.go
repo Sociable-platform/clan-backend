@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -217,7 +218,10 @@ func TestUnexpectedErrorIsLoggedAndNotLeaked(t *testing.T) {
 }
 
 // memStore is a tiny in-memory repository for the end-to-end test below.
-type memStore struct{ devs []repository.Developer }
+type memStore struct {
+	devs  []repository.Developer
+	games []repository.Game
+}
 
 func (m *memStore) Ping(context.Context) error { return nil }
 
@@ -296,4 +300,32 @@ func TestDeveloperAuthFlow(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("me with player token: %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+func (m *memStore) CreateGame(_ context.Context, developerID, name, description string) (repository.Game, error) {
+	g := repository.Game{
+		ID:          fmt.Sprintf("00000000-0000-4000-8000-%012d", len(m.games)+1),
+		DeveloperID: developerID, Name: name, Description: description, CreatedAt: time.Now(),
+	}
+	m.games = append(m.games, g)
+	return g, nil
+}
+
+func (m *memStore) GamesByDeveloper(_ context.Context, developerID string) ([]repository.Game, error) {
+	out := []repository.Game{}
+	for _, g := range m.games {
+		if g.DeveloperID == developerID {
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) GameOfDeveloper(_ context.Context, gameID, developerID string) (repository.Game, error) {
+	for _, g := range m.games {
+		if g.ID == gameID && g.DeveloperID == developerID {
+			return g, nil
+		}
+	}
+	return repository.Game{}, repository.ErrNotFound
 }
