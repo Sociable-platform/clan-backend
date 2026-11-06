@@ -54,11 +54,28 @@ go mod tidy
 The repo is one Go module, but the two services are still separate programs with separate `main` packages, ports and database schemas.
 If a service ever moves to its own repository, it gets its own `go.mod` then.
 
+## JWT signing key
+
+Platform signs developer tokens (and later player tokens) with an Ed25519 private key. Generate one once;
+it is not committed (`*.pem` is in `.gitignore`) and platform will not start without it.
+
+```bash
+mkdir -p secrets
+openssl genpkey -algorithm ed25519 -out secrets/platform_jwt_private.pem
+chmod 644 secrets/platform_jwt_private.pem   # local dev only: the container runs as a non-root user and must read it
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PLATFORM_JWT_PRIVATE_KEY_FILE` | none (required) | Path to the PEM file. Docker Compose sets it to the mounted `secrets/platform_jwt_private.pem`. |
+| `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
+
 ## Run with Docker (recommended)
 
 ```bash
 cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
 # edit .env: set the three passwords (letters and digits only)
+# create the JWT signing key first (see "JWT signing key" above)
 docker compose up --build
 ```
 
@@ -92,6 +109,18 @@ go run ./services/social/cmd        # uses SOCIAL_DATABASE_URL
 
 Set the `*_DATABASE_URL` variables from `.env.example` in your terminal or GoLand run configuration.
 Without a database URL the services still start; `/health` answers 200 and `/ready` answers 503.
+
+## Database migrations
+
+Table definitions live in `services/<name>/migrations/` as `NNNNNN_name.up.sql` / `.down.sql`.
+There is no migration runner yet, so apply them by hand as the service's own user (so the tables land in its schema):
+
+```bash
+docker compose exec -T postgres psql -U platform_user -d clan -v ON_ERROR_STOP=1 \
+  < services/platform/migrations/000001_create_developers.up.sql
+```
+
+(The user and database names match `.env.example`; use your `POSTGRES_DB` if you changed it.)
 
 ## API contracts (OpenAPI)
 
@@ -130,5 +159,8 @@ go test ./...
 |---|---|---|
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
+| POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
+| POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
+| GET | `/api/v1/developers/me` | 200 with the developer; 401 unless `Authorization: Bearer <developer token>` |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |
