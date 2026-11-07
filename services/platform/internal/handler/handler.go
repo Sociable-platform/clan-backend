@@ -19,6 +19,8 @@ type Service interface {
 	Login(ctx context.Context, in service.LoginInput) (service.Session, error)
 	AuthenticateDeveloper(token string) (developerID string, err error)
 	Me(ctx context.Context, developerID string) (service.Developer, error)
+	RegisterGame(ctx context.Context, developerID string, in service.RegisterGameInput) (service.Game, error)
+	ListGames(ctx context.Context, developerID string) ([]service.Game, error)
 }
 
 // Handler holds the routes of the service.
@@ -46,6 +48,9 @@ type Route struct {
 //
 //	{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
 //
+// Endpoints under /api/v1/games/{gameID} must first call svc.OwnedGame, so one developer
+// can never reach another developer's game.
+//
 // The OpenAPI file (openapi/platform.yaml) must document exactly these routes;
 // TestOpenAPIMatchesRoutes fails when the two drift apart.
 func (h *Handler) Routes() []Route {
@@ -55,6 +60,8 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPost, "/api/v1/developers/register", h.registerDeveloper},
 		{http.MethodPost, "/api/v1/developers/login", h.loginDeveloper},
 		{http.MethodGet, "/api/v1/developers/me", h.requireDeveloper(h.me)},
+		{http.MethodGet, "/api/v1/games", h.requireDeveloper(h.listGames)},
+		{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
 	}
 }
 
