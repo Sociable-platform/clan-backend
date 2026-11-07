@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -94,4 +96,167 @@ func TestListClansSearchAndOrder(t *testing.T) {
 	if got, _ := r.ListClans(ctx, newGameID(t), "", 100); got == nil {
 		t.Error("a game without clans must give an empty list, not nil")
 	}
+}
+
+// countRows counts rows of a table for one game, so tests can check nothing extra was saved.
+func countRows(t *testing.T, r *Repository, table, gameID string) int {
+	t.Helper()
+	var n int
+	if err := r.pool.QueryRow(context.Background(),
+		"select count(*) from "+table+" where game_id = $1", gameID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func newPlayer(t *testing.T, r *Repository, gameID, externalID string) string {
+	t.Helper()
+	p, err := r.UpsertPlayer(context.Background(), gameID, externalID, externalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p.ID
+}
+
+func TestCreateClanSavesClanAndOwner(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	owner := newPlayer(t, r, game, "u_1")
+
+	c, err := r.CreateClan(ctx, game, owner, "Wolves")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ID == "" || c.Name != "Wolves" || c.MemberCount != 1 || c.MaxMembers != 10 {
+		t.Fatalf("clan: %+v", c)
+	}
+	var role, gotGame string
+	err = r.pool.QueryRow(ctx,
+		"select role, game_id::text from clan_members where clan_id = $1 and player_id = $2",
+		c.ID, owner).Scan(&role, &gotGame)
+	if err != nil || role != "owner" || gotGame != game {
+		t.Fatalf("owner membership: role=%q game=%q err=%v", role, gotGame, err)
+	}
+	if list, _ := r.ListClans(ctx, game, "", 100); len(list) != 1 || list[0].ID != c.ID {
+		t.Fatalf("the new clan should be listed: %+v", list)
+	}
+}
+
+func TestCreateClanNameTaken(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, other := newGameID(t), newGameID(t)
+	defer cleanup(game, other)
+	ctx := context.Background()
+
+	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "u_1"), "Wolves"); err != nil {
+		t.Fatal(err)
+	}
+	second := newPlayer(t, r, game, "u_2")
+	if _, err := r.CreateClan(ctx, game, second, "WOLVES"); !errors.Is(err, ErrClanNameTaken) {
+		t.Fatalf("same name, other case: err = %v, want ErrClanNameTaken", err)
+	}
+	// the failed attempt must not leave anything behind (the transaction was rolled back)
+	if n := countRows(t, r, "clans", game); n != 1 {
+		t.Fatalf("clans = %d, want 1", n)
+	}
+	if n := countRows(t, r, "clan_members", game); n != 1 {
+		t.Fatalf("members = %d, want 1 (the failed creator must not be a member)", n)
+	}
+	// the same name in another game is fine
+	if _, err := r.CreateClan(ctx, other, newPlayer(t, r, other, "u_1"), "Wolves"); err != nil {
+		t.Fatalf("same name in another game: %v", err)
+	}
+}
+
+func TestCreateClanOwnerAlreadyInClan(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, other := newGameID(t), newGameID(t)
+	defer cleanup(game, other)
+	ctx := context.Background()
+	owner := newPlayer(t, r, game, "u_1")
+
+	if _, err := r.CreateClan(ctx, game, owner, "Wolves"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CreateClan(ctx, game, owner, "Bears"); !errors.Is(err, ErrAlreadyInClan) {
+		t.Fatalf("err = %v, want ErrAlreadyInClan", err)
+	}
+	if n := countRows(t, r, "clans", game); n != 1 {
+		t.Fatalf("clans = %d, want 1 (Bears must not be saved)", n)
+	}
+	// being in a clan in one game does not matter in another game
+	if _, err := r.CreateClan(ctx, other, newPlayer(t, r, other, "u_1"), "Bears"); err != nil {
+		t.Fatalf("other game: %v", err)
+	}
+}
+
+// The early "already in a clan?" check can be passed by two requests at once.
+// The database rule must still stop all but one, and leave no clan without its owner.
+func TestCreateClanSamePlayerAtTheSameTime(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	owner := newPlayer(t, r, game, "u_1")
+
+	ok, inClan := race(t, 10, func(i int) error {
+		_, err := r.CreateClan(context.Background(), game, owner, fmt.Sprintf("Clan %d", i))
+		return err
+	}, ErrAlreadyInClan)
+	if ok != 1 || inClan != 9 {
+		t.Fatalf("ok=%d alreadyInClan=%d, want 1 and 9", ok, inClan)
+	}
+	if n := countRows(t, r, "clans", game); n != 1 {
+		t.Fatalf("clans = %d, want 1 (failed attempts must be rolled back)", n)
+	}
+}
+
+func TestCreateClanSameNameAtTheSameTime(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	owners := make([]string, 10)
+	for i := range owners {
+		owners[i] = newPlayer(t, r, game, fmt.Sprintf("u_%d", i))
+	}
+
+	ok, taken := race(t, 10, func(i int) error {
+		_, err := r.CreateClan(context.Background(), game, owners[i], "Wolves")
+		return err
+	}, ErrClanNameTaken)
+	if ok != 1 || taken != 9 {
+		t.Fatalf("ok=%d nameTaken=%d, want 1 and 9", ok, taken)
+	}
+	if n := countRows(t, r, "clan_members", game); n != 1 {
+		t.Fatalf("members = %d, want 1", n)
+	}
+}
+
+// race runs fn n times at once and counts successes and errors matching want.
+// Any other error fails the test.
+func race(t *testing.T, n int, fn func(i int) error, want error) (ok, matched int) {
+	t.Helper()
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- fn(i)
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, want):
+			matched++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	return ok, matched
 }
