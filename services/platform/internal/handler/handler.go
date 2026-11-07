@@ -24,6 +24,8 @@ type Service interface {
 	CreateAPIKey(ctx context.Context, developerID, gameID string) (service.NewAPIKey, error)
 	ListAPIKeys(ctx context.Context, developerID, gameID string) ([]service.APIKey, error)
 	RevokeAPIKey(ctx context.Context, developerID, keyID string) error
+	GameForAPIKey(ctx context.Context, key string) (gameID string, err error)
+	IssuePlayerToken(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)
 }
 
 // Handler holds the routes of the service.
@@ -47,7 +49,8 @@ type Route struct {
 }
 
 // Routes lists every endpoint of the service. Add new endpoints here. Endpoints that need
-// a logged-in developer are wrapped with h.requireDeveloper, for example:
+// a logged-in developer are wrapped with h.requireDeveloper; the one endpoint a game's own
+// server calls (/players/auth) is wrapped with h.requireAPIKey. For example:
 //
 //	{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
 //
@@ -68,6 +71,7 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.createAPIKey)},
 		{http.MethodGet, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.listAPIKeys)},
 		{http.MethodDelete, "/api/v1/api-keys/{keyID}", h.requireDeveloper(h.revokeAPIKey)},
+		{http.MethodPost, "/api/v1/players/auth", h.requireAPIKey(h.authPlayer)},
 	}
 }
 

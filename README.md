@@ -56,7 +56,7 @@ If a service ever moves to its own repository, it gets its own `go.mod` then.
 
 ## JWT signing key
 
-Platform signs developer tokens (and later player tokens) with an Ed25519 private key.
+Platform signs developer and player tokens with an Ed25519 private key.
 Social checks player tokens with the matching public key, so it can verify tokens but never create them.
 Generate the pair once (in Git Bash on Windows); neither file is committed (`*.pem` is in `.gitignore`),
 and neither service starts without its key.
@@ -76,9 +76,22 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
 
+### Get a player token from platform
+
+A game's own server trades its secret API key for a player token (valid 1 hour). Never do this from a browser.
+
+```bash
+curl -s -X POST http://localhost:8081/api/v1/players/auth \
+  -H "X-API-Key: clk_..." -H "Content-Type: application/json" \
+  -d '{"externalPlayerId":"u_42","displayName":"Rashad"}'
+# {"token":"eyJ...","expiresIn":3600}
+```
+
+A missing, wrong or revoked key gets `401 invalid_api_key`. The token's game is always the key's game.
+
 ### Test tokens without platform
 
-Until platform issues player tokens, make one with the same private key:
+To test social alone, make a token with the same private key:
 
 ```bash
 go run ./tools/devtoken -player u_42 -name Ali                # player token, valid 1 hour
