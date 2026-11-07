@@ -25,6 +25,8 @@ tags:
     description: Existing games a developer has registered with the toolkit
   - name: api-keys
     description: Secret keys a game's own server uses to get player tokens
+  - name: players
+    description: Player tokens, issued to a game's own server
 paths:
   /health:
     get:
@@ -357,6 +359,67 @@ paths:
                 error:
                   code: api_key_not_found
                   message: API key not found
+  /api/v1/players/auth:
+    post:
+      tags: [players]
+      operationId: authPlayer
+      summary: Get a player token
+      description: |
+        Called by the **game's own server**, never by a browser: the API key must stay secret.
+        The game has already logged its player in with its own account system; this call
+        vouches for that player and returns a short-lived token for the browser and the SDK.
+
+        The token is an Ed25519 JWT (`typ` "player") with the claims `sub` (the game's player ID),
+        `gid` (the game the API key belongs to), `name` (display name), `iat` and `exp`.
+        It is valid for 1 hour. The game cannot be chosen in the body: it is always the key's game.
+        Social checks the token with platform's public key and never calls platform.
+
+        The key is checked before the body, so a wrong key gets 401 whatever the body holds.
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlayerAuthRequest"
+            example:
+              externalPlayerId: u_42
+              displayName: Rashad
+      responses:
+        "200":
+          description: Token issued. The response is not cacheable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerAuthResponse"
+              example:
+                token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+                expiresIn: 3600
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_external_player_id`, `invalid_display_name`
+            or `invalid_json` (also for unknown fields).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_display_name
+                  message: displayName must be 1 to 50 characters without control characters
+        "401":
+          description: The `X-API-Key` header is missing, or the key is wrong or revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_api_key
+                  message: API key is missing, wrong or revoked
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
 components:
   parameters:
     GameID:
@@ -513,6 +576,31 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ApiKey"
+    PlayerAuthRequest:
+      type: object
+      required: [externalPlayerId, displayName]
+      additionalProperties: false
+      properties:
+        externalPlayerId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The game's own ID for the player. Surrounding spaces are trimmed.
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Name shown to other players. Surrounding spaces are trimmed.
+    PlayerAuthResponse:
+      type: object
+      required: [token, expiresIn]
+      properties:
+        token:
+          type: string
+          description: Player JWT (`typ` "player", Ed25519). Hand it to the game's frontend.
+        expiresIn:
+          type: integer
+          description: Seconds until the token expires (3600).
     Error:
       type: object
       required: [error]
