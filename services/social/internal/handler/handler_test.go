@@ -11,12 +11,15 @@ import (
 
 type fakeService struct{ err error }
 
+// passThrough stands in for the player-token middleware in tests that are not about tokens.
+func passThrough(next http.Handler) http.Handler { return next }
+
 func (f fakeService) Ready(context.Context) error { return f.err }
 
 func serve(t *testing.T, svc Service, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	New("test", svc).Register(mux)
+	New("test", svc, passThrough).Register(mux)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
 	return rec

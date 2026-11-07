@@ -8,14 +8,17 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/config"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/auth"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/handler"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/service"
@@ -36,6 +39,21 @@ func run() error {
 		return err
 	}
 	log := logx.New(serviceName, config.String("LOG_LEVEL", "info"))
+
+	// Social holds only platform's PUBLIC key: it can check player tokens, never create them.
+	keyFile := config.String("SOCIAL_JWT_PUBLIC_KEY_FILE", "")
+	if keyFile == "" {
+		return fmt.Errorf("SOCIAL_JWT_PUBLIC_KEY_FILE is not set (see README: JWT signing key)")
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return fmt.Errorf("read JWT public key: %w", err)
+	}
+	verifyKey, err := jwt.ParsePublicKeyPEM(keyPEM)
+	if err != nil {
+		return err
+	}
+	log.Info("loaded JWT public key", "file", keyFile)
 
 	// Stop cleanly on Ctrl+C or when Docker sends SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -58,7 +76,8 @@ func run() error {
 	svc := service.New(repo)
 
 	mux := http.NewServeMux()
-	handler.New(serviceName, svc).Register(mux)
+	// Every /api/v1 route requires a player token signed by platform (checked with verifyKey).
+	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now)).Register(mux)
 
 	// Browser pages allowed to call this service (the demo game, where the SDK runs).
 	origins := config.List("SOCIAL_CORS_ORIGINS", []string{"http://localhost:5174"})

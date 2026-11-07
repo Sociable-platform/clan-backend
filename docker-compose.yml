@@ -87,7 +87,11 @@ services:
       SOCIAL_PORT: "8082"
       SOCIAL_DATABASE_URL: postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
       SOCIAL_CORS_ORIGINS: ${SOCIAL_CORS_ORIGINS:-http://localhost:5174}
+      SOCIAL_JWT_PUBLIC_KEY_FILE: /run/secrets/platform_jwt_public.pem
       LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # Platform's public key, created by you (see README "JWT signing key"). Never committed (*.pem).
+      - ./secrets/platform_jwt_public.pem:/run/secrets/platform_jwt_public.pem:ro
     ports:
       - "8082:8082"
     depends_on:

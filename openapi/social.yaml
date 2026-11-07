@@ -93,6 +93,24 @@ components:
               type: string
               description: Human-readable explanation.
   responses:
+    Unauthorized:
+      description: |
+        No valid player token. Every /api/v1 endpoint needs `Authorization: Bearer <player token>`.
+        Codes: missing_token, invalid_token, token_expired (get a new token from the game),
+        wrong_token_type (for example a developer token).
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: Bearer realm="social"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: token_expired
+              message: The player token has expired; get a new one from the game
     NotFound:
       description: No such route.
       content:
