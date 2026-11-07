@@ -13,6 +13,7 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/pkg/config"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
@@ -36,6 +37,22 @@ func run() error {
 		return err
 	}
 	log := logx.New(serviceName, config.String("LOG_LEVEL", "info"))
+
+	// Social holds only platform's PUBLIC key: it can check player tokens, never create them.
+	keyFile := config.String("SOCIAL_JWT_PUBLIC_KEY_FILE", "")
+	if keyFile == "" {
+		return fmt.Errorf("SOCIAL_JWT_PUBLIC_KEY_FILE is not set (see README: JWT signing key)")
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return fmt.Errorf("read JWT public key: %w", err)
+	}
+	verifyKey, err := jwt.ParsePublicKeyPEM(keyPEM)
+	if err != nil {
+		return err
+	}
+	log.Info("loaded JWT public key", "file", keyFile)
+	_ = verifyKey // handed to the player-token middleware in the next step
 
 	// Stop cleanly on Ctrl+C or when Docker sends SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

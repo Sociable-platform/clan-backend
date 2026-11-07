@@ -56,19 +56,38 @@ If a service ever moves to its own repository, it gets its own `go.mod` then.
 
 ## JWT signing key
 
-Platform signs developer tokens (and later player tokens) with an Ed25519 private key. Generate one once;
-it is not committed (`*.pem` is in `.gitignore`) and platform will not start without it.
+Platform signs developer tokens (and later player tokens) with an Ed25519 private key.
+Social checks player tokens with the matching public key, so it can verify tokens but never create them.
+Generate the pair once (in Git Bash on Windows); neither file is committed (`*.pem` is in `.gitignore`),
+and neither service starts without its key.
 
 ```bash
 mkdir -p secrets
 openssl genpkey -algorithm ed25519 -out secrets/platform_jwt_private.pem
-chmod 644 secrets/platform_jwt_private.pem   # local dev only: the container runs as a non-root user and must read it
+openssl pkey -in secrets/platform_jwt_private.pem -pubout -out secrets/platform_jwt_public.pem
+chmod 644 secrets/platform_jwt_private.pem secrets/platform_jwt_public.pem   # local dev only: containers run as a non-root user and must read them
 ```
+
+Create both files **before** `docker compose up`: if a mounted file is missing, Docker creates an empty folder with its name instead.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PLATFORM_JWT_PRIVATE_KEY_FILE` | none (required) | Path to the PEM file. Docker Compose sets it to the mounted `secrets/platform_jwt_private.pem`. |
 | `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
+| `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
+
+### Test tokens without platform
+
+Until platform issues player tokens, make one with the same private key:
+
+```bash
+go run ./tools/devtoken -player u_42 -name Ali                # player token, valid 1 hour
+go run ./tools/devtoken -player u_43 -game <other-game-uuid>  # a player of another game
+go run ./tools/devtoken -developer                            # developer token: social must reject it
+go run ./tools/devtoken -ttl -1m                              # already expired: social must reject it
+```
+
+Send it as `Authorization: Bearer <token>`. `go run ./tools/devtoken -h` lists all options.
 
 ## Run with Docker (recommended)
 
