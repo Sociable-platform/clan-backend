@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/config"
+	"gitlab.com/clan-platform/clan-backend/pkg/dbmigrate"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
@@ -19,6 +20,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/handler"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/service"
+	"gitlab.com/clan-platform/clan-backend/services/social/migrations"
 )
 
 const serviceName = "social"
@@ -43,6 +45,13 @@ func run() error {
 
 	var pool *pgxpool.Pool
 	if url := config.String("SOCIAL_DATABASE_URL", ""); url != "" {
+		// Create or update the social tables before serving any requests.
+		version, err := dbmigrate.Up(migrations.Files, url)
+		if err != nil {
+			return err
+		}
+		log.Info("database migrations applied", "version", version)
+
 		pool, err = pg.Connect(ctx, url)
 		if err != nil {
 			return err
