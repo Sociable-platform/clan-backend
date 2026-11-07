@@ -260,3 +260,153 @@ func race(t *testing.T, n int, fn func(i int) error, want error) (ok, matched in
 	}
 	return ok, matched
 }
+
+// ownClan creates a clan in gameID with a new owner player and returns its ID.
+func ownClan(t *testing.T, r *Repository, gameID, name string) string {
+	t.Helper()
+	c, err := r.CreateClan(context.Background(), gameID, newPlayer(t, r, gameID, "owner_"+name), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c.ID
+}
+
+func TestJoinClanAddsMember(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	clan := ownClan(t, r, game, "Wolves")
+	player := newPlayer(t, r, game, "u_2")
+
+	c, err := r.JoinClan(ctx, game, clan, player)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ID != clan || c.Name != "Wolves" || c.MemberCount != 2 || c.MaxMembers != 10 {
+		t.Fatalf("clan after join: %+v", c)
+	}
+	var role string
+	if err := r.pool.QueryRow(ctx, "select role from clan_members where clan_id = $1 and player_id = $2",
+		clan, player).Scan(&role); err != nil || role != "member" {
+		t.Fatalf("membership: role=%q err=%v", role, err)
+	}
+	if list, _ := r.ListClans(ctx, game, "", 100); len(list) != 1 || list[0].MemberCount != 2 {
+		t.Fatalf("the list should show 2 members: %+v", list)
+	}
+}
+
+func TestJoinClanNotFound(t *testing.T) {
+	r, cleanup := testRepo(t)
+	gameA, gameB := newGameID(t), newGameID(t)
+	defer cleanup(gameA, gameB)
+	ctx := context.Background()
+	clanOfA := ownClan(t, r, gameA, "Wolves")
+	playerOfB := newPlayer(t, r, gameB, "u_9")
+
+	for name, clanID := range map[string]string{
+		"clan of another game": clanOfA,
+		"unknown clan":         newGameID(t), // any random UUID
+		"not a UUID":           "abc",
+	} {
+		if _, err := r.JoinClan(ctx, gameB, clanID, playerOfB); !errors.Is(err, ErrClanNotFound) {
+			t.Errorf("%s: err = %v, want ErrClanNotFound", name, err)
+		}
+	}
+	if n := countRows(t, r, "clan_members", gameB); n != 0 {
+		t.Fatalf("game B members = %d, want 0", n)
+	}
+}
+
+func TestJoinClanAlreadyInClan(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	wolves, bears := ownClan(t, r, game, "Wolves"), ownClan(t, r, game, "Bears")
+	player := newPlayer(t, r, game, "u_2")
+	if _, err := r.JoinClan(ctx, game, wolves, player); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.JoinClan(ctx, game, wolves, player); !errors.Is(err, ErrAlreadyInClan) {
+		t.Errorf("same clan again: err = %v, want ErrAlreadyInClan", err)
+	}
+	if _, err := r.JoinClan(ctx, game, bears, player); !errors.Is(err, ErrAlreadyInClan) {
+		t.Errorf("second clan: err = %v, want ErrAlreadyInClan", err)
+	}
+	var count int
+	_ = r.pool.QueryRow(ctx, "select member_count from clans where id = $1", bears).Scan(&count)
+	if count != 1 {
+		t.Fatalf("Bears member_count = %d, want 1 (failed joins must not count)", count)
+	}
+}
+
+func TestJoinClanFull(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	clan := ownClan(t, r, game, "Duo")
+	if _, err := r.pool.Exec(ctx, "update clans set max_members = 2 where id = $1", clan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_2")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_3")); !errors.Is(err, ErrClanFull) {
+		t.Fatalf("err = %v, want ErrClanFull", err)
+	}
+	if n := countRows(t, r, "clan_members", game); n != 2 {
+		t.Fatalf("members = %d, want 2", n)
+	}
+}
+
+// 15 players press "Join" at the same moment on a clan with 9 free places (owner + 9 = 10).
+// The lock must let exactly 9 in.
+func TestJoinClanAtTheSameTimeNeverOverfills(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	clan := ownClan(t, r, game, "Wolves")
+	players := make([]string, 15)
+	for i := range players {
+		players[i] = newPlayer(t, r, game, fmt.Sprintf("u_%d", i))
+	}
+
+	ok, full := race(t, len(players), func(i int) error {
+		_, err := r.JoinClan(context.Background(), game, clan, players[i])
+		return err
+	}, ErrClanFull)
+	if ok != 9 || full != 6 {
+		t.Fatalf("joined=%d full=%d, want 9 and 6", ok, full)
+	}
+	var count int
+	_ = r.pool.QueryRow(context.Background(), "select member_count from clans where id = $1", clan).Scan(&count)
+	if members := countRows(t, r, "clan_members", game); count != 10 || members != 10 {
+		t.Fatalf("member_count=%d, member rows=%d, want 10 and 10", count, members)
+	}
+}
+
+// One player presses "Join" on two different clans at the same moment: only one may succeed.
+func TestJoinTwoClansAtTheSameTime(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	clans := []string{ownClan(t, r, game, "Wolves"), ownClan(t, r, game, "Bears")}
+	player := newPlayer(t, r, game, "u_2")
+
+	ok, inClan := race(t, 2, func(i int) error {
+		_, err := r.JoinClan(context.Background(), game, clans[i], player)
+		return err
+	}, ErrAlreadyInClan)
+	if ok != 1 || inClan != 1 {
+		t.Fatalf("ok=%d alreadyInClan=%d, want 1 and 1", ok, inClan)
+	}
+	var total int
+	_ = r.pool.QueryRow(context.Background(),
+		"select sum(member_count) from clans where game_id = $1", game).Scan(&total)
+	if total != 3 {
+		t.Fatalf("member counts add up to %d, want 3 (two owners + one join)", total)
+	}
+}
