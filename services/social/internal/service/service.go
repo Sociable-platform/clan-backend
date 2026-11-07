@@ -14,6 +14,7 @@ import (
 type Store interface {
 	Ping(ctx context.Context) error
 	UpsertPlayer(ctx context.Context, gameID, externalID, displayName string) (repository.Player, error)
+	ListClans(ctx context.Context, gameID, query string, limit int) ([]repository.Clan, error)
 }
 
 // Service is the social service's logic.

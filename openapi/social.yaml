@@ -21,6 +21,8 @@ tags:
     description: Health checks
   - name: players
     description: The calling player
+  - name: clans
+    description: Clans of the player's game
 paths:
   /health:
     get:
@@ -87,6 +89,53 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/clans:
+    get:
+      tags: [clans]
+      operationId: listClans
+      summary: Clans of the player's game
+      description: |
+        Returns the clans of the caller's game (the game in the player token), sorted
+        by name, at most 100. With `q`, only clans whose name contains that text are
+        returned, ignoring upper/lower case. Clans of other games are never returned.
+      security:
+        - playerToken: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Text the clan name must contain (case-insensitive), at most 50 characters.
+          schema:
+            type: string
+            maxLength: 50
+          example: wol
+      responses:
+        "200":
+          description: The clans (an empty list when none match).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClanList"
+              example:
+                clans:
+                  - id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                    name: Wolves
+                    memberCount: 3
+                    maxMembers: 10
+        "400":
+          description: The search text is too long (code invalid_query).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_query
+                  message: Search text must be at most 50 characters
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
 components:
   securitySchemes:
     playerToken:
@@ -131,6 +180,29 @@ components:
           type: string
           format: date-time
           description: When the player was first seen.
+    Clan:
+      type: object
+      required: [id, name, memberCount, maxMembers]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        memberCount:
+          type: integer
+          description: How many players are in the clan now.
+        maxMembers:
+          type: integer
+          description: How many players the clan can have.
+    ClanList:
+      type: object
+      required: [clans]
+      properties:
+        clans:
+          type: array
+          items:
+            $ref: "#/components/schemas/Clan"
     Error:
       type: object
       required: [error]

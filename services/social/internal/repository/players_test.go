@@ -25,6 +25,8 @@ func testRepo(t *testing.T) (*Repository, func(gameIDs ...string)) {
 	}
 	cleanup := func(gameIDs ...string) {
 		for _, g := range gameIDs {
+			// clans first: they point at their owner player (their members go with them)
+			_, _ = pool.Exec(context.Background(), "delete from clans where game_id = $1", g)
 			_, _ = pool.Exec(context.Background(), "delete from players where game_id = $1", g)
 		}
 		pool.Close()
