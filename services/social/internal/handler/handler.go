@@ -5,6 +5,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 )
@@ -16,13 +17,18 @@ type Service interface {
 
 // Handler holds the routes of the service.
 type Handler struct {
-	name string
-	svc  Service
+	name          string
+	svc           Service
+	requirePlayer httpx.Middleware
 }
 
 // New returns a Handler. name is the service name shown in /health.
-func New(name string, svc Service) *Handler {
-	return &Handler{name: name, svc: svc}
+// requirePlayer guards every /api/v1 route (see package auth); it must not be nil.
+func New(name string, svc Service, requirePlayer httpx.Middleware) *Handler {
+	if requirePlayer == nil {
+		panic("handler: requirePlayer middleware is required")
+	}
+	return &Handler{name: name, svc: svc, requirePlayer: requirePlayer}
 }
 
 // Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.
@@ -46,9 +52,15 @@ func (h *Handler) Routes() []Route {
 }
 
 // Register adds all routes to mux, plus a JSON 404 for everything else.
+// Every route under /api/v1/ runs only for a valid player token (requirePlayer);
+// /health and /ready stay open so Docker and monitoring can call them.
 func (h *Handler) Register(mux *http.ServeMux) {
 	for _, r := range h.Routes() {
-		mux.HandleFunc(r.Method+" "+r.Path, r.Handle)
+		var handle http.Handler = r.Handle
+		if isPlayerRoute(r.Path) {
+			handle = h.requirePlayer(handle)
+		}
+		mux.Handle(r.Method+" "+r.Path, handle)
 	}
 	mux.HandleFunc("/", h.notFound)
 }
@@ -65,6 +77,11 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready", "service": h.name})
+}
+
+// isPlayerRoute reports whether path needs a player token.
+func isPlayerRoute(path string) bool {
+	return strings.HasPrefix(path, "/api/v1/")
 }
 
 func (h *Handler) notFound(w http.ResponseWriter, _ *http.Request) {

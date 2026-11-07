@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -17,6 +18,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/auth"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/handler"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/service"
@@ -52,7 +54,6 @@ func run() error {
 		return err
 	}
 	log.Info("loaded JWT public key", "file", keyFile)
-	_ = verifyKey // handed to the player-token middleware in the next step
 
 	// Stop cleanly on Ctrl+C or when Docker sends SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -75,7 +76,8 @@ func run() error {
 	svc := service.New(repo)
 
 	mux := http.NewServeMux()
-	handler.New(serviceName, svc).Register(mux)
+	// Every /api/v1 route requires a player token signed by platform (checked with verifyKey).
+	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now)).Register(mux)
 
 	// Browser pages allowed to call this service (the demo game, where the SDK runs).
 	origins := config.List("SOCIAL_CORS_ORIGINS", []string{"http://localhost:5174"})
