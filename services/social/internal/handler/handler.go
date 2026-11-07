@@ -18,6 +18,7 @@ type Service interface {
 	Ready(ctx context.Context) error
 	EnsurePlayer(ctx context.Context, gameID, externalID, displayName string) (service.Player, error)
 	ListClans(ctx context.Context, gameID, query string) ([]service.Clan, error)
+	CreateClan(ctx context.Context, gameID, externalID, displayName, name string) (service.Clan, error)
 }
 
 // Handler holds the routes of the service.
@@ -57,6 +58,7 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/ready", h.ready},
 		{http.MethodGet, "/api/v1/players/me", h.getMe},
 		{http.MethodGet, "/api/v1/clans", h.listClans},
+		{http.MethodPost, "/api/v1/clans", h.createClan},
 	}
 }
 

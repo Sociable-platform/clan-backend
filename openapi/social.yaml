@@ -136,6 +136,62 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
+    post:
+      tags: [clans]
+      operationId: createClan
+      summary: Create a clan
+      description: |
+        Creates a clan in the caller's game (the game in the player token). The caller
+        becomes its owner and first member; the clan and the membership are saved together.
+        The name is trimmed and runs of spaces become one space before it is checked.
+        Names are unique per game, ignoring upper/lower case. A player can be in only one
+        clan per game, so a player who is already in a clan gets 409 already_in_clan.
+      security:
+        - playerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClanRequest"
+            example:
+              name: Wolves
+      responses:
+        "201":
+          description: The new clan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Clan"
+              example:
+                id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                name: Wolves
+                memberCount: 1
+                maxMembers: 10
+        "400":
+          description: The body is not valid JSON (invalid_json), or the name is not 3 to 20 visible characters (invalid_clan_name).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_clan_name
+                  message: Clan name must be 3 to 20 characters
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "409":
+          description: The name is taken in this game (clan_name_taken), or the caller is already in a clan (already_in_clan).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: already_in_clan
+                  message: You are already in a clan; leave it first
 components:
   securitySchemes:
     playerToken:
@@ -195,6 +251,16 @@ components:
         maxMembers:
           type: integer
           description: How many players the clan can have.
+    CreateClanRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 20
+          description: Clan name, 3 to 20 characters after trimming.
     ClanList:
       type: object
       required: [clans]

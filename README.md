@@ -231,3 +231,14 @@ Each run uses new random game IDs and deletes its rows afterwards, so it does no
 | DELETE | `/api/v1/api-keys/{keyID}` | 204; the key stops working at once and stays listed as revoked. 404 `api_key_not_found` unless it is a key of your game |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |
+
+### Social service (port 8082)
+
+Every `/api/v1/` route needs `Authorization: Bearer <player token>`. The game and the player
+always come from the token, never from the URL or the body.
+
+| Method | Path | Answer |
+|---|---|---|
+| GET | `/api/v1/players/me` | 200 with the calling player; the record is created on the first call |
+| GET | `/api/v1/clans?q=` | 200 `{ clans: [...] }` of the caller's game, sorted by name, at most 100. `q` (optional) keeps clans whose name contains it, ignoring upper/lower case; over 50 characters gives 400 `invalid_query` |
+| POST | `/api/v1/clans` | body `{ "name": "Wolves" }`. 201 with the new clan, the caller becomes its owner. 400 `invalid_json` / `invalid_clan_name` (3 to 20 characters); 409 `clan_name_taken` / `already_in_clan` |
