@@ -21,6 +21,9 @@ type Store interface {
 	CreateDeveloper(ctx context.Context, email, passwordHash, name string) (repository.Developer, error)
 	DeveloperByEmail(ctx context.Context, email string) (repository.Developer, error)
 	DeveloperByID(ctx context.Context, id string) (repository.Developer, error)
+	CreateGame(ctx context.Context, developerID, name, description string) (repository.Game, error)
+	GamesByDeveloper(ctx context.Context, developerID string) ([]repository.Game, error)
+	GameOfDeveloper(ctx context.Context, gameID, developerID string) (repository.Game, error)
 }
 
 // Service is the platform service's logic.
