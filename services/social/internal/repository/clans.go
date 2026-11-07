@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -223,4 +224,89 @@ func joinClanError(err error) error {
 		}
 	}
 	return fmt.Errorf("join clan: %w", err)
+}
+
+// ErrNotInClan means the player is not a member of any clan in this game.
+var ErrNotInClan = errors.New("player is not in a clan")
+
+// PlayerClan is the clan a player is in, and their role in it ("owner" or "member").
+type PlayerClan struct {
+	Clan Clan
+	Role string
+}
+
+// MyClan returns the clan the player (gameID, externalID) is in, with their role.
+// It only reads: a player we have never seen is simply not in a clan (ErrNotInClan).
+func (r *Repository) MyClan(ctx context.Context, gameID, externalID string) (PlayerClan, error) {
+	if r.pool == nil {
+		return PlayerClan{}, ErrNoDatabase
+	}
+	var pc PlayerClan
+	err := r.pool.QueryRow(ctx,
+		`select c.id::text, c.name, c.member_count, c.max_members, m.role
+		 from players p
+		 join clan_members m on m.player_id = p.id and m.game_id = p.game_id
+		 join clans c        on c.id = m.clan_id
+		 where p.game_id = $1 and p.external_id = $2`,
+		gameID, externalID,
+	).Scan(&pc.Clan.ID, &pc.Clan.Name, &pc.Clan.MemberCount, &pc.Clan.MaxMembers, &pc.Role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PlayerClan{}, ErrNotInClan
+	}
+	if err != nil {
+		return PlayerClan{}, fmt.Errorf("my clan: %w", err)
+	}
+	return pc, nil
+}
+
+// Member is one member of a clan, as shown in the member list.
+type Member struct {
+	PlayerID    string // social's own player ID (not the game's ID such as "u_42")
+	DisplayName string
+	Role        string // "owner" or "member"
+	JoinedAt    time.Time
+}
+
+// ListMembers returns the members of clan clanID of gameID: the owner first, then the
+// others in the order they joined. A clan of another game gives ErrClanNotFound, the
+// same as a clan that does not exist.
+func (r *Repository) ListMembers(ctx context.Context, gameID, clanID string) ([]Member, error) {
+	if r.pool == nil {
+		return nil, ErrNoDatabase
+	}
+	var exists bool
+	err := r.pool.QueryRow(ctx,
+		`select exists (select 1 from clans where id = $1 and game_id = $2)`,
+		clanID, gameID).Scan(&exists)
+	if err != nil {
+		return nil, joinClanError(err) // also turns a non-UUID clanID into ErrClanNotFound
+	}
+	if !exists {
+		return nil, ErrClanNotFound
+	}
+
+	rows, err := r.pool.Query(ctx,
+		`select p.id::text, p.display_name, m.role, m.joined_at
+		 from clan_members m
+		 join players p on p.id = m.player_id and p.game_id = m.game_id
+		 where m.clan_id = $1 and m.game_id = $2
+		 order by m.role <> 'owner', m.joined_at, p.id`,
+		clanID, gameID)
+	if err != nil {
+		return nil, fmt.Errorf("list members: %w", err)
+	}
+	defer rows.Close()
+
+	members := make([]Member, 0)
+	for rows.Next() {
+		var m Member
+		if err := rows.Scan(&m.PlayerID, &m.DisplayName, &m.Role, &m.JoinedAt); err != nil {
+			return nil, fmt.Errorf("list members: %w", err)
+		}
+		members = append(members, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list members: %w", err)
+	}
+	return members, nil
 }

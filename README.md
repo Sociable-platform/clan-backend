@@ -240,6 +240,8 @@ always come from the token, never from the URL or the body.
 | Method | Path | Answer |
 |---|---|---|
 | GET | `/api/v1/players/me` | 200 with the calling player; the record is created on the first call |
+| GET | `/api/v1/players/me/clan` | 200 `{ clan, role }` with the caller's clan and role (`owner` / `member`); 404 `not_in_clan` |
 | GET | `/api/v1/clans?q=` | 200 `{ clans: [...] }` of the caller's game, sorted by name, at most 100. `q` (optional) keeps clans whose name contains it, ignoring upper/lower case; over 50 characters gives 400 `invalid_query` |
 | POST | `/api/v1/clans` | body `{ "name": "Wolves" }`. 201 with the new clan, the caller becomes its owner. 400 `invalid_json` / `invalid_clan_name` (3 to 20 characters); 409 `clan_name_taken` / `already_in_clan` |
 | POST | `/api/v1/clans/{clanID}/join` | no body. 200 with the clan and its new `memberCount`, the caller joins as a member. 404 `clan_not_found` (also for another game's clan); 409 `already_in_clan` / `clan_full` (default 10 members) |
+| GET | `/api/v1/clans/{clanID}/members` | 200 `{ members: [...] }` with `playerId`, `displayName`, `role`, `joinedAt`; owner first, then by join time. 404 `clan_not_found` (also for another game's clan) |

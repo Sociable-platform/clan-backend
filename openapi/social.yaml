@@ -89,6 +89,44 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/players/me/clan:
+    get:
+      tags: [clans]
+      operationId: getMyClan
+      summary: The caller's clan and role
+      description: |
+        Returns the clan the caller is in (in the game of the player token) and their role
+        in it. Only reads: a player who was never seen before is simply not in a clan.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The caller's clan and role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyClan"
+              example:
+                clan:
+                  id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                  name: Wolves
+                  memberCount: 3
+                  maxMembers: 10
+                role: owner
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: The caller is not in a clan (not_in_clan).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_in_clan
+                  message: You are not in a clan
   /api/v1/clans:
     get:
       tags: [clans]
@@ -249,6 +287,56 @@ paths:
                 error:
                   code: clan_full
                   message: This clan has no free places
+  /api/v1/clans/{clanID}/members:
+    get:
+      tags: [clans]
+      operationId: listClanMembers
+      summary: Members of a clan
+      description: |
+        Returns the members of a clan of the caller's game: the owner first, then the others
+        in the order they joined. Any player of the game may look (for example before
+        joining). A clan of another game answers 404 like a clan that does not exist.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The clan's ID (from the clan list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The members.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberList"
+              example:
+                members:
+                  - playerId: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                    displayName: Ali
+                    role: owner
+                    joinedAt: "2026-11-07T17:30:00Z"
+                  - playerId: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+                    displayName: Leyla
+                    role: member
+                    joinedAt: "2026-11-07T17:31:12Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such clan in the caller's game (clan_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_not_found
+                  message: Clan not found
 components:
   securitySchemes:
     playerToken:
@@ -318,6 +406,39 @@ components:
           minLength: 3
           maxLength: 20
           description: Clan name, 3 to 20 characters after trimming.
+    MyClan:
+      type: object
+      required: [clan, role]
+      properties:
+        clan:
+          $ref: "#/components/schemas/Clan"
+        role:
+          type: string
+          enum: [owner, member]
+    Member:
+      type: object
+      required: [playerId, displayName, role, joinedAt]
+      properties:
+        playerId:
+          type: string
+          format: uuid
+          description: The social service's own ID for the player (not the game's player ID).
+        displayName:
+          type: string
+        role:
+          type: string
+          enum: [owner, member]
+        joinedAt:
+          type: string
+          format: date-time
+    MemberList:
+      type: object
+      required: [members]
+      properties:
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/Member"
     ClanList:
       type: object
       required: [clans]

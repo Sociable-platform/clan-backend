@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
@@ -22,6 +23,14 @@ func (m *memStore) CreateClan(context.Context, string, string, string) (reposito
 
 func (m *memStore) JoinClan(context.Context, string, string, string) (repository.Clan, error) {
 	return repository.Clan{}, errors.New("memStore has no clans")
+}
+
+func (m *memStore) MyClan(context.Context, string, string) (repository.PlayerClan, error) {
+	return repository.PlayerClan{}, repository.ErrNotInClan
+}
+
+func (m *memStore) ListMembers(context.Context, string, string) ([]repository.Member, error) {
+	return nil, repository.ErrClanNotFound
 }
 
 // clanStore remembers what ListClans was asked and returns the clans it was given.
@@ -289,5 +298,106 @@ func TestJoinClanErrors(t *testing.T) {
 	var he *httpx.Error
 	if err == nil || errors.As(err, &he) {
 		t.Fatalf("err = %v, want a plain internal error", err)
+	}
+}
+
+// readingStore answers MyClan and ListMembers with fixed data or errors, and records the calls.
+type readingStore struct {
+	*memStore
+	myClan     repository.PlayerClan
+	myClanErr  error
+	members    []repository.Member
+	membersErr error
+	listCalls  int
+	game       string
+	externalID string
+	clan       string
+}
+
+func (s *readingStore) MyClan(_ context.Context, gameID, externalID string) (repository.PlayerClan, error) {
+	s.game, s.externalID = gameID, externalID
+	return s.myClan, s.myClanErr
+}
+
+func (s *readingStore) ListMembers(_ context.Context, gameID, clanID string) ([]repository.Member, error) {
+	s.listCalls++
+	s.game, s.clan = gameID, clanID
+	return s.members, s.membersErr
+}
+
+func newReadingStore() *readingStore { return &readingStore{memStore: newMemStore()} }
+
+func TestMyClanReturnsClanAndRole(t *testing.T) {
+	store := newReadingStore()
+	store.myClan = repository.PlayerClan{
+		Clan: repository.Clan{ID: someClan, Name: "Wolves", MemberCount: 3, MaxMembers: 10},
+		Role: "owner",
+	}
+	got, err := New(store).MyClan(context.Background(), gameA, "u_42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := PlayerClan{Clan: Clan{ID: someClan, Name: "Wolves", MemberCount: 3, MaxMembers: 10}, Role: "owner"}
+	if got != want || store.game != gameA || store.externalID != "u_42" {
+		t.Fatalf("got %+v (store asked game=%q player=%q), want %+v", got, store.game, store.externalID, want)
+	}
+	if store.memStore.called != 0 {
+		t.Fatal("reading my clan must not create the player record")
+	}
+}
+
+func TestMyClanNotInClan(t *testing.T) {
+	store := newReadingStore()
+	store.myClanErr = repository.ErrNotInClan
+	_, err := New(store).MyClan(context.Background(), gameA, "u_42")
+	var he *httpx.Error
+	if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Code != "not_in_clan" {
+		t.Fatalf("err = %v, want 404 not_in_clan", err)
+	}
+
+	store.myClanErr = errors.New("database is down")
+	if _, err := New(store).MyClan(context.Background(), gameA, "u_42"); err == nil || errors.As(err, &he) {
+		t.Fatalf("err = %v, want a plain internal error", err)
+	}
+}
+
+func TestListMembers(t *testing.T) {
+	joined := time.Date(2026, 11, 7, 17, 30, 0, 0, time.UTC)
+	store := newReadingStore()
+	store.members = []repository.Member{
+		{PlayerID: "p-1", DisplayName: "Ali", Role: "owner", JoinedAt: joined},
+		{PlayerID: "p-2", DisplayName: "Leyla", Role: "member", JoinedAt: joined.Add(time.Minute)},
+	}
+	got, err := New(store).ListMembers(context.Background(), gameA, strings.ToUpper(someClan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.game != gameA || store.clan != someClan {
+		t.Fatalf("store asked game=%q clan=%q", store.game, store.clan)
+	}
+	if len(got) != 2 || got[0] != (Member{PlayerID: "p-1", DisplayName: "Ali", Role: "owner", JoinedAt: joined}) || got[1].DisplayName != "Leyla" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestListMembersNotFound(t *testing.T) {
+	for _, id := range []string{"", "abc", "' or 1=1 --"} {
+		store := newReadingStore()
+		_, err := New(store).ListMembers(context.Background(), gameA, id)
+		var he *httpx.Error
+		if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Code != "clan_not_found" {
+			t.Errorf("id %q: err = %v, want 404 clan_not_found", id, err)
+		}
+		if store.listCalls != 0 {
+			t.Errorf("id %q: a bad ID must not reach the database", id)
+		}
+	}
+
+	store := newReadingStore()
+	store.membersErr = repository.ErrClanNotFound
+	_, err := New(store).ListMembers(context.Background(), gameA, someClan)
+	var he *httpx.Error
+	if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Code != "clan_not_found" {
+		t.Fatalf("clan of another game: err = %v, want 404 clan_not_found", err)
 	}
 }

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/auth"
@@ -83,4 +84,57 @@ func (h *Handler) joinClan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, toClanResponse(c))
+}
+
+type myClanResponse struct {
+	Clan clanResponse `json:"clan"`
+	Role string       `json:"role"`
+}
+
+// getMyClan handles GET /api/v1/players/me/clan: the caller's clan and role, or 404 not_in_clan.
+func (h *Handler) getMyClan(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	pc, err := h.svc.MyClan(r.Context(), caller.GameID, caller.ExternalID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, myClanResponse{Clan: toClanResponse(pc.Clan), Role: pc.Role})
+}
+
+type memberResponse struct {
+	PlayerID    string    `json:"playerId"`
+	DisplayName string    `json:"displayName"`
+	Role        string    `json:"role"`
+	JoinedAt    time.Time `json:"joinedAt"`
+}
+
+type memberListResponse struct {
+	Members []memberResponse `json:"members"`
+}
+
+// listMembers handles GET /api/v1/clans/{clanID}/members: the members of a clan of the
+// caller's game, owner first. Another game's clan answers 404 like a missing one.
+func (h *Handler) listMembers(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	members, err := h.svc.ListMembers(r.Context(), caller.GameID, r.PathValue("clanID"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	out := memberListResponse{Members: make([]memberResponse, 0, len(members))}
+	for _, m := range members {
+		out.Members = append(out.Members, memberResponse{
+			PlayerID: m.PlayerID, DisplayName: m.DisplayName, Role: m.Role, JoinedAt: m.JoinedAt.UTC(),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }

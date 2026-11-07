@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -141,4 +142,56 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 
 func errClanNotFound() error {
 	return httpx.NewError(http.StatusNotFound, "clan_not_found", "Clan not found")
+}
+
+// PlayerClan is the clan a player is in, and their role in it ("owner" or "member").
+type PlayerClan struct {
+	Clan Clan
+	Role string
+}
+
+// MyClan returns the calling player's clan and role, or 404 not_in_clan.
+// It only reads, so it does not create the player record.
+func (s *Service) MyClan(ctx context.Context, gameID, externalID string) (PlayerClan, error) {
+	row, err := s.store.MyClan(ctx, gameID, externalID)
+	if errors.Is(err, repository.ErrNotInClan) {
+		return PlayerClan{}, httpx.NewError(http.StatusNotFound, "not_in_clan", "You are not in a clan")
+	}
+	if err != nil {
+		return PlayerClan{}, fmt.Errorf("my clan: %w", err)
+	}
+	c := row.Clan
+	return PlayerClan{
+		Clan: Clan{ID: c.ID, Name: c.Name, MemberCount: c.MemberCount, MaxMembers: c.MaxMembers},
+		Role: row.Role,
+	}, nil
+}
+
+// Member is one member of a clan.
+type Member struct {
+	PlayerID    string // social's own player ID
+	DisplayName string
+	Role        string // "owner" or "member"
+	JoinedAt    time.Time
+}
+
+// ListMembers returns the members of clan clanID of the player's game, owner first.
+// Any player of the game may look, so players can see who is in a clan before joining.
+// A bad ID, an unknown clan and another game's clan all give 404 clan_not_found.
+func (s *Service) ListMembers(ctx context.Context, gameID, clanID string) ([]Member, error) {
+	if !uuidPattern.MatchString(clanID) {
+		return nil, errClanNotFound()
+	}
+	rows, err := s.store.ListMembers(ctx, gameID, strings.ToLower(clanID))
+	if errors.Is(err, repository.ErrClanNotFound) {
+		return nil, errClanNotFound()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list members: %w", err)
+	}
+	members := make([]Member, 0, len(rows))
+	for _, m := range rows {
+		members = append(members, Member{PlayerID: m.PlayerID, DisplayName: m.DisplayName, Role: m.Role, JoinedAt: m.JoinedAt})
+	}
+	return members, nil
 }
