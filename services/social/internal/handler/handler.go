@@ -55,7 +55,13 @@ func (h *Handler) Routes() []Route {
 // Every route under /api/v1/ runs only for a valid player token (requirePlayer);
 // /health and /ready stay open so Docker and monitoring can call them.
 func (h *Handler) Register(mux *http.ServeMux) {
-	for _, r := range h.Routes() {
+	h.register(mux, h.Routes())
+}
+
+// register does the work of Register for the given routes. Tests use it to add
+// extra routes (for example a dummy /api/v1 endpoint) to check the token guard.
+func (h *Handler) register(mux *http.ServeMux, routes []Route) {
+	for _, r := range routes {
 		var handle http.Handler = r.Handle
 		if isPlayerRoute(r.Path) {
 			handle = h.requirePlayer(handle)
