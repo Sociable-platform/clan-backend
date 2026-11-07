@@ -116,9 +116,13 @@ Table definitions live in `services/<name>/migrations/` as `NNNNNN_name.up.sql` 
 There is no migration runner yet, so apply them by hand as the service's own user (so the tables land in its schema):
 
 ```bash
-docker compose exec -T postgres psql -U platform_user -d clan -v ON_ERROR_STOP=1 \
-  < services/platform/migrations/000001_create_developers.up.sql
+for f in services/platform/migrations/*.up.sql; do
+  docker compose exec -T postgres psql -U platform_user -d clan -v ON_ERROR_STOP=1 < "$f"
+done
 ```
+
+Run each file once, in order. A file that was already applied fails with "relation ... already exists"; skip it.
+Current platform files: `000001_create_developers`, `000002_create_games`.
 
 (The user and database names match `.env.example`; use your `POSTGRES_DB` if you changed it.)
 
@@ -162,5 +166,7 @@ go test ./...
 | POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
 | POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
 | GET | `/api/v1/developers/me` | 200 with the developer; 401 unless `Authorization: Bearer <developer token>` |
+| GET | `/api/v1/games` | 200 `{ games: [...] }` with only the logged-in developer's games, newest first; 401 without a developer token |
+| POST | `/api/v1/games` | 201 with the registered game (registers an existing game, never creates one); 400 `invalid_name` / `invalid_description`; 401 |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |
