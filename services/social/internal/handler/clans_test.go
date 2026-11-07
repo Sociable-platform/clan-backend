@@ -44,6 +44,22 @@ func (s *recordingService) JoinClan(context.Context, string, string, string, str
 	return service.Clan{}, s.err
 }
 
+func (f fakeService) MyClan(context.Context, string, string) (service.PlayerClan, error) {
+	return service.PlayerClan{}, f.err
+}
+
+func (s *recordingService) MyClan(context.Context, string, string) (service.PlayerClan, error) {
+	return service.PlayerClan{}, s.err
+}
+
+func (f fakeService) ListMembers(context.Context, string, string) ([]service.Member, error) {
+	return []service.Member{}, f.err
+}
+
+func (s *recordingService) ListMembers(context.Context, string, string) ([]service.Member, error) {
+	return []service.Member{}, s.err
+}
+
 // clanService remembers which game and search text the handler asked for.
 type clanService struct {
 	fakeService
@@ -306,5 +322,86 @@ func TestJoinClanRouting(t *testing.T) {
 	svc = &joiningService{}
 	if rec := postJoin(t, svc, http.MethodPost, "/api/v1/clans/a/b/join", false); svc.called {
 		t.Errorf("extra path segment: status %d, but the service was called", rec.Code)
+	}
+}
+
+// readingService answers MyClan and ListMembers and remembers what it was asked.
+type readingService struct {
+	fakeService
+	err                        error
+	gameID, externalID, clanID string
+}
+
+func (s *readingService) MyClan(_ context.Context, gameID, externalID string) (service.PlayerClan, error) {
+	s.gameID, s.externalID = gameID, externalID
+	if s.err != nil {
+		return service.PlayerClan{}, s.err
+	}
+	return service.PlayerClan{Clan: service.Clan{ID: joinClanID, Name: "Wolves", MemberCount: 2, MaxMembers: 10}, Role: "owner"}, nil
+}
+
+func (s *readingService) ListMembers(_ context.Context, gameID, clanID string) ([]service.Member, error) {
+	s.gameID, s.clanID = gameID, clanID
+	if s.err != nil {
+		return nil, s.err
+	}
+	at := time.Date(2026, 11, 7, 21, 30, 0, 0, time.FixedZone("Baku", 4*60*60)) // answered in UTC
+	return []service.Member{
+		{PlayerID: "p-1", DisplayName: "Ali", Role: "owner", JoinedAt: at},
+		{PlayerID: "p-2", DisplayName: "Leyla", Role: "member", JoinedAt: at.Add(time.Minute)},
+	}, nil
+}
+
+func TestGetMyClan(t *testing.T) {
+	svc := &readingService{}
+	rec := postJoin(t, svc, http.MethodGet, "/api/v1/players/me/clan", false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if svc.gameID != tokenGame || svc.externalID != "u_42" {
+		t.Fatalf("service got game=%q player=%q, want the token's", svc.gameID, svc.externalID)
+	}
+	want := `{"clan":{"id":"` + joinClanID + `","name":"Wolves","memberCount":2,"maxMembers":10},"role":"owner"}`
+	if got := strings.TrimSpace(rec.Body.String()); got != want {
+		t.Fatalf("body\n got %s\nwant %s", got, want)
+	}
+
+	rec = postJoin(t, &readingService{err: httpx.NewError(http.StatusNotFound, "not_in_clan", "x")}, http.MethodGet, "/api/v1/players/me/clan", false)
+	var e httpx.ErrorBody
+	if rec.Code != http.StatusNotFound || json.Unmarshal(rec.Body.Bytes(), &e) != nil || e.Error.Code != "not_in_clan" {
+		t.Fatalf("not in clan: status %d, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetMeStillWorksNextToMyClan(t *testing.T) {
+	// /players/me and /players/me/clan are different routes
+	svc := &recordingService{}
+	if rec := postJoin(t, svc, http.MethodGet, "/api/v1/players/me", false); rec.Code != http.StatusOK || svc.externalID != "u_42" {
+		t.Fatalf("GET /players/me: status %d", rec.Code)
+	}
+}
+
+func TestListMembersHandler(t *testing.T) {
+	svc := &readingService{}
+	rec := postJoin(t, svc, http.MethodGet, "/api/v1/clans/"+joinClanID+"/members", false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if svc.gameID != tokenGame || svc.clanID != joinClanID {
+		t.Fatalf("service got game=%q clan=%q", svc.gameID, svc.clanID)
+	}
+	want := `{"members":[` +
+		`{"playerId":"p-1","displayName":"Ali","role":"owner","joinedAt":"2026-11-07T17:30:00Z"},` +
+		`{"playerId":"p-2","displayName":"Leyla","role":"member","joinedAt":"2026-11-07T17:31:00Z"}]}`
+	if got := strings.TrimSpace(rec.Body.String()); got != want {
+		t.Fatalf("body\n got %s\nwant %s", got, want)
+	}
+
+	rec = postJoin(t, &readingService{err: httpx.NewError(http.StatusNotFound, "clan_not_found", "x")}, http.MethodGet, "/api/v1/clans/"+joinClanID+"/members", false)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("not found: status %d", rec.Code)
+	}
+	if rec := postJoin(t, &readingService{}, http.MethodGet, "/api/v1/clans/"+joinClanID+"/members", true); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: status %d, want 401", rec.Code)
 	}
 }
