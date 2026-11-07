@@ -21,6 +21,7 @@ import (
 // fakeStore is an in-memory Store. Like the real table, it rejects a second row with the same email.
 type fakeStore struct {
 	byEmail map[string]repository.Developer
+	games   []repository.Game
 	err     error // returned by every call when set
 }
 

@@ -666,7 +666,7 @@
             }
           ]
         },
-        "description": "Flips the last character of the signature, so the signature no longer matches."
+        "description": "Changes one character in the middle of the signature, so the signature no longer matches."
       },
       "event": [
         {
@@ -675,8 +675,9 @@
             "type": "text/javascript",
             "exec": [
               "const t = pm.collectionVariables.get('token');",
-              "const last = t.slice(-1) === 'A' ? 'B' : 'A';",
-              "pm.collectionVariables.set('tamperedToken', t.slice(0, -1) + last);"
+              "const i = t.length - 10; // middle of the signature (the last character only holds padding bits)",
+              "const c = t[i] === 'A' ? 'B' : 'A';",
+              "pm.collectionVariables.set('tamperedToken', t.slice(0, i) + c + t.slice(i + 1));"
             ]
           }
         },

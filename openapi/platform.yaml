@@ -21,6 +21,8 @@ tags:
     description: Health checks
   - name: developers
     description: Developer accounts for the dashboard
+  - name: games
+    description: Existing games a developer has registered with the toolkit
 paths:
   /health:
     get:
@@ -186,6 +188,76 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/games:
+    get:
+      tags: [games]
+      operationId: listGames
+      summary: List my games
+      description: Returns only the games registered by the logged-in developer, newest first.
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The developer's games. An empty list when there are none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameList"
+              example:
+                games:
+                  - id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                    name: Space Raiders
+                    description: Browser shooter, 2 to 4 players
+                    createdAt: "2026-11-07T09:30:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+    post:
+      tags: [games]
+      operationId: registerGame
+      summary: Register an existing game
+      description: |
+        Records an integration for a game the developer already has. This never creates a game.
+        The game belongs to the logged-in developer.
+      security:
+        - developerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterGameRequest"
+            example:
+              name: Space Raiders
+              description: Browser shooter, 2 to 4 players
+      responses:
+        "201":
+          description: Game registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+              example:
+                id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                name: Space Raiders
+                description: Browser shooter, 2 to 4 players
+                createdAt: "2026-11-07T09:30:00Z"
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_name`, `invalid_description` or `invalid_json`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_name
+                  message: Game name must be 1 to 100 characters
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
 components:
   securitySchemes:
     developerToken:
@@ -261,6 +333,41 @@ components:
         createdAt:
           type: string
           format: date-time
+    RegisterGameRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+    Game:
+      type: object
+      required: [id, name, description, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          description: Empty string when none was given.
+        createdAt:
+          type: string
+          format: date-time
+    GameList:
+      type: object
+      required: [games]
+      properties:
+        games:
+          type: array
+          items:
+            $ref: "#/components/schemas/Game"
     Error:
       type: object
       required: [error]

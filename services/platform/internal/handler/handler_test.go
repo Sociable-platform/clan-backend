@@ -20,6 +20,9 @@ type fakeService struct {
 	login    func(service.LoginInput) (service.Session, error)
 	auth     func(token string) (string, error)
 	me       func(id string) (service.Developer, error)
+
+	registerGame func(developerID string, in service.RegisterGameInput) (service.Game, error)
+	listGames    func(developerID string) ([]service.Game, error)
 }
 
 func (f fakeService) Ready(context.Context) error { return f.err }
@@ -74,4 +77,12 @@ func TestUnknownRouteIsJSON404(t *testing.T) {
 	if rec.Code != http.StatusNotFound || rec.Header().Get("Content-Type") == "" {
 		t.Fatalf("status %d, content-type %q", rec.Code, rec.Header().Get("Content-Type"))
 	}
+}
+
+func (f fakeService) RegisterGame(_ context.Context, developerID string, in service.RegisterGameInput) (service.Game, error) {
+	return f.registerGame(developerID, in)
+}
+
+func (f fakeService) ListGames(_ context.Context, developerID string) ([]service.Game, error) {
+	return f.listGames(developerID)
 }
