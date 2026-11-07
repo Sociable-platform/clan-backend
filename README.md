@@ -44,7 +44,7 @@ A request flows `handler -> service -> repository`. Each layer only calls the on
 
 ## First-time setup
 
-Needs Go 1.25 or newer.
+Needs Go 1.26 or newer.
 
 ```bash
 # download dependencies and create go.sum (run once, and after adding a dependency)
