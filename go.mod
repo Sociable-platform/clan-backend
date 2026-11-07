@@ -2,7 +2,10 @@ module gitlab.com/clan-platform/clan-backend
 
 go 1.25.11
 
-require github.com/jackc/pgx/v5 v5.9.2
+require (
+	github.com/jackc/pgx/v5 v5.9.2
+	golang.org/x/crypto v0.37.0
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

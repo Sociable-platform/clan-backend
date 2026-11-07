@@ -4,25 +4,34 @@ package handler
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/services/platform/internal/service"
 )
 
 // Service is what the handlers need from the service layer.
 type Service interface {
 	Ready(ctx context.Context) error
+	Register(ctx context.Context, in service.RegisterInput) (service.Developer, error)
+	Login(ctx context.Context, in service.LoginInput) (service.Session, error)
+	AuthenticateDeveloper(token string) (developerID string, err error)
+	Me(ctx context.Context, developerID string) (service.Developer, error)
 }
 
 // Handler holds the routes of the service.
 type Handler struct {
 	name string
 	svc  Service
+	log  *slog.Logger
 }
 
 // New returns a Handler. name is the service name shown in /health.
-func New(name string, svc Service) *Handler {
-	return &Handler{name: name, svc: svc}
+// log receives the details of unexpected errors, which are never sent to the client.
+func New(name string, svc Service, log *slog.Logger) *Handler {
+	return &Handler{name: name, svc: svc, log: log}
 }
 
 // Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.
@@ -32,9 +41,10 @@ type Route struct {
 	Handle http.HandlerFunc
 }
 
-// Routes lists every endpoint of the service. Add new endpoints here, for example:
+// Routes lists every endpoint of the service. Add new endpoints here. Endpoints that need
+// a logged-in developer are wrapped with h.requireDeveloper, for example:
 //
-//	{http.MethodPost, "/api/v1/games", h.registerGame},
+//	{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
 //
 // The OpenAPI file (openapi/platform.yaml) must document exactly these routes;
 // TestOpenAPIMatchesRoutes fails when the two drift apart.
@@ -42,6 +52,9 @@ func (h *Handler) Routes() []Route {
 	return []Route{
 		{http.MethodGet, "/health", h.health},
 		{http.MethodGet, "/ready", h.ready},
+		{http.MethodPost, "/api/v1/developers/register", h.registerDeveloper},
+		{http.MethodPost, "/api/v1/developers/login", h.loginDeveloper},
+		{http.MethodGet, "/api/v1/developers/me", h.requireDeveloper(h.me)},
 	}
 }
 
@@ -69,4 +82,14 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) notFound(w http.ResponseWriter, _ *http.Request) {
 	httpx.WriteError(w, http.StatusNotFound, "not_found", "Route not found")
+}
+
+// fail writes err as the standard error response. Expected failures (*httpx.Error)
+// are sent as they are; anything else is logged here and becomes a generic 500.
+func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	var apiErr *httpx.Error
+	if !errors.As(err, &apiErr) {
+		h.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+	}
+	httpx.WriteErr(w, err)
 }
