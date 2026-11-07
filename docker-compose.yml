@@ -1,4 +1,4 @@
-# Local development stack: PostgreSQL + platform + social.
+# Local development stack: PostgreSQL + platform + social (+ one-off migrate containers).
 #   1. copy .env.example to .env and set the passwords
 #   2. docker compose up --build
 name: clan
@@ -42,6 +42,20 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Applies services/social/migrations as social_user, then exits.
+  # social starts only after it finished successfully.
+  social-migrate:
+    image: migrate/migrate:v4.18.1
+    command:
+      - -path=/migrations
+      - -database=postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      - up
+    volumes:
+      - ./services/social/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   social:
     build:
       context: .
@@ -56,6 +70,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      social-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:

@@ -82,13 +82,29 @@ The init script runs only when the database volume is empty. After changing it, 
 
 ## Run with go run
 
-Start only Postgres in Docker, then run a service from your editor or terminal:
+Start Postgres and apply the migrations in Docker, then run a service from your editor or terminal:
 
 ```bash
 docker compose up -d postgres
+docker compose run --rm social-migrate   # creates or updates the social tables
 go run ./services/platform/cmd      # uses PLATFORM_DATABASE_URL
 go run ./services/social/cmd        # uses SOCIAL_DATABASE_URL
 ```
+
+## Migrations
+
+Each service's SQL files live in `services/<name>/migrations` and are applied by a one-off
+`<name>-migrate` container (golang-migrate), which runs as that service's own database user and then exits.
+`docker compose up` runs them automatically before starting the service.
+
+After adding a migration file:
+
+```bash
+docker compose run --rm social-migrate                 # apply new migrations
+docker compose run --rm social-migrate -path=/migrations -database="postgres://social_user:PASSWORD@postgres:5432/clan?sslmode=disable" down 1   # undo the last one
+```
+
+Applied versions are recorded in each schema's `schema_migrations` table.
 
 Set the `*_DATABASE_URL` variables from `.env.example` in your terminal or GoLand run configuration.
 Without a database URL the services still start; `/health` answers 200 and `/ready` answers 503.
