@@ -42,3 +42,29 @@ func (h *Handler) listClans(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
+
+type createClanRequest struct {
+	Name string `json:"name"`
+}
+
+// createClan handles POST /api/v1/clans with { "name": "..." }: the caller creates a clan
+// in their game and becomes its owner. The game and player come only from the token;
+// the body carries just the name.
+func (h *Handler) createClan(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	var req createClanRequest
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	c, err := h.svc.CreateClan(r.Context(), caller.GameID, caller.ExternalID, caller.Name, req.Name)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, toClanResponse(c))
+}

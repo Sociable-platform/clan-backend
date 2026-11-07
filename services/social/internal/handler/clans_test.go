@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,6 +26,14 @@ func (f fakeService) ListClans(context.Context, string, string) ([]service.Clan,
 
 func (s *recordingService) ListClans(context.Context, string, string) ([]service.Clan, error) {
 	return []service.Clan{}, s.err
+}
+
+func (f fakeService) CreateClan(context.Context, string, string, string, string) (service.Clan, error) {
+	return service.Clan{}, f.err
+}
+
+func (s *recordingService) CreateClan(context.Context, string, string, string, string) (service.Clan, error) {
+	return service.Clan{}, s.err
 }
 
 // clanService remembers which game and search text the handler asked for.
@@ -98,6 +107,104 @@ func TestListClansNeedsAToken(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/clans", nil))
 	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d, want 401", rec.Code)
+	}
+}
+
+// creatingService remembers what createClan passed on and answers with err or a new clan.
+type creatingService struct {
+	fakeService
+	err                                error
+	gameID, externalID, playerName, nm string
+}
+
+func (s *creatingService) CreateClan(_ context.Context, gameID, externalID, playerName, name string) (service.Clan, error) {
+	s.gameID, s.externalID, s.playerName, s.nm = gameID, externalID, playerName, name
+	if s.err != nil {
+		return service.Clan{}, s.err
+	}
+	return service.Clan{ID: "c-9", Name: name, MemberCount: 1, MaxMembers: 10}, nil
+}
+
+// postClan sends POST /api/v1/clans with body, using a real player token for tokenGame
+// unless noToken is set.
+func postClan(t *testing.T, svc Service, body string, noToken bool) *httptest.ResponseRecorder {
+	t.Helper()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	mux := http.NewServeMux()
+	New("social", svc, auth.RequirePlayer(pub, time.Now), testLog()).Register(mux)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/clans", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	if !noToken {
+		tok, err := jwt.Sign(priv, jwt.Claims{Subject: "u_42", GameID: tokenGame, Name: "Ali", Type: jwt.TypePlayer}, time.Hour, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Authorization", "Bearer "+tok)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	return rec
+}
+
+func TestCreateClanReturns201WithTheClan(t *testing.T) {
+	svc := &creatingService{}
+	rec := postClan(t, svc, `{"name":"Wolves"}`, false)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if svc.gameID != tokenGame || svc.externalID != "u_42" || svc.playerName != "Ali" || svc.nm != "Wolves" {
+		t.Fatalf("service got game=%q player=%q name=%q clan=%q; want the token's game and player, and the body's name",
+			svc.gameID, svc.externalID, svc.playerName, svc.nm)
+	}
+	want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10}`
+	if got := strings.TrimSpace(rec.Body.String()); got != want {
+		t.Fatalf("body\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestCreateClanBadBody(t *testing.T) {
+	for _, body := range []string{
+		``,                                   // no body
+		`{"name":`,                           // broken JSON
+		`{"name":"Wolves","gameId":"other"}`, // unknown field: the game can never come from the body
+		`{"name":"Wolves"}{"name":"Bears"}`,  // two objects
+	} {
+		svc := &creatingService{}
+		rec := postClan(t, svc, body, false)
+		var e httpx.ErrorBody
+		if rec.Code != http.StatusBadRequest || json.Unmarshal(rec.Body.Bytes(), &e) != nil || e.Error.Code != "invalid_json" {
+			t.Errorf("body %q: status %d, response %s; want 400 invalid_json", body, rec.Code, rec.Body.String())
+		}
+		if svc.nm != "" {
+			t.Errorf("body %q: the service must not be called", body)
+		}
+	}
+}
+
+func TestCreateClanPassesServiceErrors(t *testing.T) {
+	tests := []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{httpx.NewError(http.StatusBadRequest, "invalid_clan_name", "x"), http.StatusBadRequest, "invalid_clan_name"},
+		{httpx.NewError(http.StatusConflict, "clan_name_taken", "x"), http.StatusConflict, "clan_name_taken"},
+		{httpx.NewError(http.StatusConflict, "already_in_clan", "x"), http.StatusConflict, "already_in_clan"},
+		{errors.New("db down at 10.0.0.5"), http.StatusInternalServerError, "internal_error"},
+	}
+	for _, tc := range tests {
+		rec := postClan(t, &creatingService{err: tc.err}, `{"name":"Wolves"}`, false)
+		var e httpx.ErrorBody
+		_ = json.Unmarshal(rec.Body.Bytes(), &e)
+		if rec.Code != tc.status || e.Error.Code != tc.code || strings.Contains(rec.Body.String(), "10.0.0.5") {
+			t.Errorf("%v: status %d, body %s; want %d %s", tc.err, rec.Code, rec.Body.String(), tc.status, tc.code)
+		}
+	}
+}
+
+func TestCreateClanNeedsAToken(t *testing.T) {
+	if rec := postClan(t, &creatingService{}, `{"name":"Wolves"}`, true); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status %d, want 401", rec.Code)
 	}
 }
