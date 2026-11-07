@@ -20,6 +20,10 @@ func (m *memStore) CreateClan(context.Context, string, string, string) (reposito
 	return repository.Clan{}, errors.New("memStore has no clans")
 }
 
+func (m *memStore) JoinClan(context.Context, string, string, string) (repository.Clan, error) {
+	return repository.Clan{}, errors.New("memStore has no clans")
+}
+
 // clanStore remembers what ListClans was asked and returns the clans it was given.
 type clanStore struct {
 	*memStore
@@ -201,5 +205,89 @@ func TestCreateClanDatabaseError(t *testing.T) {
 	var he *httpx.Error
 	if err == nil || errors.As(err, &he) {
 		t.Fatalf("err = %v, want a plain internal error (answered as 500, details only in the log)", err)
+	}
+}
+
+// joiningStore records what JoinClan was asked and answers with joinErr, or the joined clan.
+type joiningStore struct {
+	*memStore
+	joinErr error
+	joins   int
+	game    string
+	clan    string
+	player  string
+}
+
+func (j *joiningStore) JoinClan(_ context.Context, gameID, clanID, playerID string) (repository.Clan, error) {
+	j.joins++
+	j.game, j.clan, j.player = gameID, clanID, playerID
+	if j.joinErr != nil {
+		return repository.Clan{}, j.joinErr
+	}
+	return repository.Clan{ID: clanID, Name: "Wolves", MemberCount: 2, MaxMembers: 10}, nil
+}
+
+func newJoiningStore() *joiningStore { return &joiningStore{memStore: newMemStore()} }
+
+const someClan = "3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69"
+
+func TestJoinClanAddsThePlayer(t *testing.T) {
+	store := newJoiningStore()
+	got, err := New(store).JoinClan(context.Background(), gameA, "u_42", "Ali", strings.ToUpper(someClan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	player := store.rows[gameA+"/u_42"]
+	if player.ID == "" {
+		t.Fatal("the player record should be created")
+	}
+	if store.game != gameA || store.clan != someClan || store.player != player.ID {
+		t.Fatalf("store got game=%q clan=%q player=%q", store.game, store.clan, store.player)
+	}
+	if want := (Clan{ID: someClan, Name: "Wolves", MemberCount: 2, MaxMembers: 10}); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestJoinClanBadIDIsNotFound(t *testing.T) {
+	for _, id := range []string{"", "abc", someClan + "0", "' or 1=1 --"} {
+		store := newJoiningStore()
+		_, err := New(store).JoinClan(context.Background(), gameA, "u_42", "Ali", id)
+		var he *httpx.Error
+		if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Code != "clan_not_found" {
+			t.Errorf("id %q: err = %v, want 404 clan_not_found", id, err)
+		}
+		if store.joins != 0 || store.memStore.called != 0 {
+			t.Errorf("id %q: a bad ID must not reach the database", id)
+		}
+	}
+}
+
+func TestJoinClanErrors(t *testing.T) {
+	tests := []struct {
+		storeErr error
+		status   int
+		code     string
+	}{
+		{repository.ErrClanNotFound, http.StatusNotFound, "clan_not_found"},
+		{repository.ErrAlreadyInClan, http.StatusConflict, "already_in_clan"},
+		{repository.ErrClanFull, http.StatusConflict, "clan_full"},
+	}
+	for _, tc := range tests {
+		store := newJoiningStore()
+		store.joinErr = tc.storeErr
+		_, err := New(store).JoinClan(context.Background(), gameA, "u_42", "Ali", someClan)
+		var he *httpx.Error
+		if !errors.As(err, &he) || he.Status != tc.status || he.Code != tc.code {
+			t.Errorf("%v: err = %v, want %d %s", tc.storeErr, err, tc.status, tc.code)
+		}
+	}
+
+	store := newJoiningStore()
+	store.joinErr = errors.New("database is down")
+	_, err := New(store).JoinClan(context.Background(), gameA, "u_42", "Ali", someClan)
+	var he *httpx.Error
+	if err == nil || errors.As(err, &he) {
+		t.Fatalf("err = %v, want a plain internal error", err)
 	}
 }

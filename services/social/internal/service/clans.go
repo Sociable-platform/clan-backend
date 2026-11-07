@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -100,4 +101,44 @@ func cleanClanName(name string) (string, error) {
 		}
 	}
 	return clean, nil
+}
+
+// uuidPattern matches a UUID such as 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69.
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// JoinClan adds the calling player to clan clanID of their game with role "member" and
+// returns the clan with its new member count. Every clan is open for now (no invite-only
+// clans yet). The player record is created first if this is the player's first request.
+//
+// Errors the client can act on:
+//   - 404 clan_not_found: no such clan in the player's game (a clan of another game counts
+//     as not found, so players cannot learn about other games' clans)
+//   - 409 already_in_clan: the player is already in a clan of this game
+//   - 409 clan_full: the clan has no free place
+func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName, clanID string) (Clan, error) {
+	if !uuidPattern.MatchString(clanID) {
+		return Clan{}, errClanNotFound()
+	}
+
+	player, err := s.EnsurePlayer(ctx, gameID, externalID, displayName)
+	if err != nil {
+		return Clan{}, fmt.Errorf("join clan: %w", err)
+	}
+
+	row, err := s.store.JoinClan(ctx, gameID, strings.ToLower(clanID), player.ID)
+	switch {
+	case errors.Is(err, repository.ErrClanNotFound):
+		return Clan{}, errClanNotFound()
+	case errors.Is(err, repository.ErrAlreadyInClan):
+		return Clan{}, httpx.NewError(http.StatusConflict, "already_in_clan", "You are already in a clan; leave it first")
+	case errors.Is(err, repository.ErrClanFull):
+		return Clan{}, httpx.NewError(http.StatusConflict, "clan_full", "This clan has no free places")
+	case err != nil:
+		return Clan{}, fmt.Errorf("join clan: %w", err)
+	}
+	return Clan{ID: row.ID, Name: row.Name, MemberCount: row.MemberCount, MaxMembers: row.MaxMembers}, nil
+}
+
+func errClanNotFound() error {
+	return httpx.NewError(http.StatusNotFound, "clan_not_found", "Clan not found")
 }
