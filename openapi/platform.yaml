@@ -19,6 +19,8 @@ servers:
 tags:
   - name: system
     description: Health checks
+  - name: developers
+    description: Developer accounts for the dashboard
 paths:
   /health:
     get:
@@ -56,6 +58,134 @@ paths:
           $ref: "#/components/responses/OriginNotAllowed"
         "503":
           $ref: "#/components/responses/NotReady"
+  /api/v1/developers/register:
+    post:
+      tags: [developers]
+      operationId: registerDeveloper
+      summary: Create a developer account
+      description: |
+        The email is trimmed and lowercased; two accounts cannot share an email.
+        Password: 8 to 72 characters (bcrypt limit). Name: 1 to 100 characters.
+        Registering does not log the developer in; call login next.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              email: dev@example.com
+              password: correct horse
+              name: Dev One
+      responses:
+        "201":
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Developer"
+              example:
+                id: 6f1c1d1e-8a43-4d0e-9d57-0c2f0b1f6a10
+                email: dev@example.com
+                name: Dev One
+                createdAt: "2026-11-06T10:00:00Z"
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_email`, `invalid_password`, `invalid_name`
+            or `invalid_json`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_email
+                  message: Email address is not valid
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "409":
+          description: An account with this email already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: email_taken
+                  message: An account with this email already exists
+  /api/v1/developers/login:
+    post:
+      tags: [developers]
+      operationId: loginDeveloper
+      summary: Log in and get a developer token
+      description: |
+        Send the token as `Authorization: Bearer <token>` on developer endpoints.
+        An unknown email and a wrong password give the same 401.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              email: dev@example.com
+              password: correct horse
+      responses:
+        "200":
+          description: Logged in. The response is not cacheable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+              example:
+                token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+                expiresIn: 86400
+        "400":
+          description: The body is not valid JSON (`invalid_json`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_json
+                  message: Request body must contain a single JSON object
+        "401":
+          description: Email or password is wrong.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_credentials
+                  message: Email or password is wrong
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/developers/me:
+    get:
+      tags: [developers]
+      operationId: getCurrentDeveloper
+      summary: The logged-in developer
+      description: Accepts only a developer token. Player tokens and API keys are rejected.
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The developer behind the token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Developer"
+              example:
+                id: 6f1c1d1e-8a43-4d0e-9d57-0c2f0b1f6a10
+                email: dev@example.com
+                name: Dev One
+                createdAt: "2026-11-06T10:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
 components:
   securitySchemes:
     developerToken:
@@ -78,6 +208,59 @@ components:
           enum: [ok, ready]
         service:
           type: string
+    RegisterRequest:
+      type: object
+      required: [email, password, name]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    LoginRequest:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+          format: password
+    LoginResponse:
+      type: object
+      required: [token, expiresIn]
+      properties:
+        token:
+          type: string
+          description: Developer JWT (`typ` "developer", Ed25519).
+        expiresIn:
+          type: integer
+          description: Seconds until the token expires.
+    Developer:
+      type: object
+      required: [id, email, name, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
     Error:
       type: object
       required: [error]
@@ -93,6 +276,16 @@ components:
               type: string
               description: Human-readable explanation.
   responses:
+    Unauthorized:
+      description: The developer token is missing, malformed, expired, of the wrong type, or its account no longer exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: unauthorized
+              message: A valid developer token is required
     NotFound:
       description: No such route.
       content:

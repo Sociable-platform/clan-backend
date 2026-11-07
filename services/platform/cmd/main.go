@@ -3,16 +3,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/config"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
@@ -35,7 +38,26 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	tokenTTL, err := config.Duration("PLATFORM_DEVELOPER_TOKEN_TTL", 24*time.Hour)
+	if err != nil {
+		return err
+	}
 	log := logx.New(serviceName, config.String("LOG_LEVEL", "info"))
+
+	// Platform is the only service that holds the private key; it signs developer
+	// and player tokens with it.
+	keyFile := config.String("PLATFORM_JWT_PRIVATE_KEY_FILE", "")
+	if keyFile == "" {
+		return errors.New("PLATFORM_JWT_PRIVATE_KEY_FILE is not set (see README: JWT signing key)")
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return fmt.Errorf("read JWT private key: %w", err)
+	}
+	signingKey, err := jwt.ParsePrivateKeyPEM(keyPEM)
+	if err != nil {
+		return err
+	}
 
 	// Stop cleanly on Ctrl+C or when Docker sends SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -55,10 +77,13 @@ func run() error {
 
 	// Wiring: repository (database) -> service (rules) -> handler (HTTP).
 	repo := repository.New(pool)
-	svc := service.New(repo)
+	svc, err := service.New(repo, signingKey, tokenTTL)
+	if err != nil {
+		return err
+	}
 
 	mux := http.NewServeMux()
-	handler.New(serviceName, svc).Register(mux)
+	handler.New(serviceName, svc, log).Register(mux)
 
 	// Browser pages allowed to call this service (the developer dashboard).
 	origins := config.List("PLATFORM_CORS_ORIGINS", []string{"http://localhost:5173"})

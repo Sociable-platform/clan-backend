@@ -4,19 +4,42 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"gitlab.com/clan-platform/clan-backend/services/platform/internal/service"
 )
 
-type fakeService struct{ err error }
+// fakeService answers every call from its fields, so tests set only what they need.
+type fakeService struct {
+	err      error // returned by Ready
+	register func(service.RegisterInput) (service.Developer, error)
+	login    func(service.LoginInput) (service.Session, error)
+	auth     func(token string) (string, error)
+	me       func(id string) (service.Developer, error)
+}
 
 func (f fakeService) Ready(context.Context) error { return f.err }
+
+func (f fakeService) Register(_ context.Context, in service.RegisterInput) (service.Developer, error) {
+	return f.register(in)
+}
+
+func (f fakeService) Login(_ context.Context, in service.LoginInput) (service.Session, error) {
+	return f.login(in)
+}
+
+func (f fakeService) AuthenticateDeveloper(token string) (string, error) { return f.auth(token) }
+
+func (f fakeService) Me(_ context.Context, id string) (service.Developer, error) { return f.me(id) }
 
 func serve(t *testing.T, svc Service, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	New("test", svc).Register(mux)
+	New("test", svc, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(mux)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
 	return rec
