@@ -192,6 +192,63 @@ paths:
                 error:
                   code: already_in_clan
                   message: You are already in a clan; leave it first
+  /api/v1/clans/{clanID}/join:
+    post:
+      tags: [clans]
+      operationId: joinClan
+      summary: Join a clan
+      description: |
+        Adds the caller to the clan as a member. Every clan is open for now.
+        The clan must belong to the caller's game (the game in the player token); a clan of
+        another game answers 404 like a clan that does not exist. The clan row is locked
+        while joining, so two players can never take the same last place.
+        No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The clan's ID (from the clan list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Joined. The clan with its new member count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Clan"
+              example:
+                id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                name: Wolves
+                memberCount: 4
+                maxMembers: 10
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such clan in the caller's game (clan_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_not_found
+                  message: Clan not found
+        "409":
+          description: The caller is already in a clan (already_in_clan), or the clan has no free place (clan_full).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_full
+                  message: This clan has no free places
 components:
   securitySchemes:
     playerToken:

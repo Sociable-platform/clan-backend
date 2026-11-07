@@ -68,3 +68,19 @@ func (h *Handler) createClan(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusCreated, toClanResponse(c))
 }
+
+// joinClan handles POST /api/v1/clans/{clanID}/join: the caller joins that clan of their
+// game as a member and gets the clan back with its new member count. No body is needed.
+func (h *Handler) joinClan(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	c, err := h.svc.JoinClan(r.Context(), caller.GameID, caller.ExternalID, caller.Name, r.PathValue("clanID"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, toClanResponse(c))
+}

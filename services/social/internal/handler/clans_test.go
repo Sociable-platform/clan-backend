@@ -36,6 +36,14 @@ func (s *recordingService) CreateClan(context.Context, string, string, string, s
 	return service.Clan{}, s.err
 }
 
+func (f fakeService) JoinClan(context.Context, string, string, string, string) (service.Clan, error) {
+	return service.Clan{}, f.err
+}
+
+func (s *recordingService) JoinClan(context.Context, string, string, string, string) (service.Clan, error) {
+	return service.Clan{}, s.err
+}
+
 // clanService remembers which game and search text the handler asked for.
 type clanService struct {
 	fakeService
@@ -206,5 +214,97 @@ func TestCreateClanPassesServiceErrors(t *testing.T) {
 func TestCreateClanNeedsAToken(t *testing.T) {
 	if rec := postClan(t, &creatingService{}, `{"name":"Wolves"}`, true); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status %d, want 401", rec.Code)
+	}
+}
+
+// joiningService remembers what joinClan passed on and answers with err or the joined clan.
+type joiningService struct {
+	fakeService
+	err                                    error
+	called                                 bool
+	gameID, externalID, playerName, clanID string
+}
+
+func (s *joiningService) JoinClan(_ context.Context, gameID, externalID, playerName, clanID string) (service.Clan, error) {
+	s.called = true
+	s.gameID, s.externalID, s.playerName, s.clanID = gameID, externalID, playerName, clanID
+	if s.err != nil {
+		return service.Clan{}, s.err
+	}
+	return service.Clan{ID: clanID, Name: "Wolves", MemberCount: 2, MaxMembers: 10}, nil
+}
+
+// postJoin sends POST path with a real player token for tokenGame, unless noToken is set.
+func postJoin(t *testing.T, svc Service, method, path string, noToken bool) *httptest.ResponseRecorder {
+	t.Helper()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	mux := http.NewServeMux()
+	New("social", svc, auth.RequirePlayer(pub, time.Now), testLog()).Register(mux)
+	r := httptest.NewRequest(method, path, nil)
+	if !noToken {
+		tok, err := jwt.Sign(priv, jwt.Claims{Subject: "u_42", GameID: tokenGame, Name: "Ali", Type: jwt.TypePlayer}, time.Hour, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Header.Set("Authorization", "Bearer "+tok)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, r)
+	return rec
+}
+
+const joinClanID = "3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69"
+
+func TestJoinClanReturns200WithTheClan(t *testing.T) {
+	svc := &joiningService{}
+	rec := postJoin(t, svc, http.MethodPost, "/api/v1/clans/"+joinClanID+"/join", false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if svc.gameID != tokenGame || svc.externalID != "u_42" || svc.playerName != "Ali" || svc.clanID != joinClanID {
+		t.Fatalf("service got game=%q player=%q name=%q clan=%q; want the token's game and player, and the URL's clan",
+			svc.gameID, svc.externalID, svc.playerName, svc.clanID)
+	}
+	want := `{"id":"` + joinClanID + `","name":"Wolves","memberCount":2,"maxMembers":10}`
+	if got := strings.TrimSpace(rec.Body.String()); got != want {
+		t.Fatalf("body\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestJoinClanPassesServiceErrors(t *testing.T) {
+	tests := []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{httpx.NewError(http.StatusNotFound, "clan_not_found", "x"), http.StatusNotFound, "clan_not_found"},
+		{httpx.NewError(http.StatusConflict, "already_in_clan", "x"), http.StatusConflict, "already_in_clan"},
+		{httpx.NewError(http.StatusConflict, "clan_full", "x"), http.StatusConflict, "clan_full"},
+		{errors.New("db down at 10.0.0.5"), http.StatusInternalServerError, "internal_error"},
+	}
+	for _, tc := range tests {
+		rec := postJoin(t, &joiningService{err: tc.err}, http.MethodPost, "/api/v1/clans/"+joinClanID+"/join", false)
+		var e httpx.ErrorBody
+		_ = json.Unmarshal(rec.Body.Bytes(), &e)
+		if rec.Code != tc.status || e.Error.Code != tc.code || strings.Contains(rec.Body.String(), "10.0.0.5") {
+			t.Errorf("%v: status %d, body %s; want %d %s", tc.err, rec.Code, rec.Body.String(), tc.status, tc.code)
+		}
+	}
+}
+
+func TestJoinClanRouting(t *testing.T) {
+	// no token
+	if rec := postJoin(t, &joiningService{}, http.MethodPost, "/api/v1/clans/"+joinClanID+"/join", true); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no token: status %d, want 401", rec.Code)
+	}
+	// only POST joins; GET on the same path is not a route
+	svc := &joiningService{}
+	if rec := postJoin(t, svc, http.MethodGet, "/api/v1/clans/"+joinClanID+"/join", false); rec.Code == http.StatusOK || svc.called {
+		t.Errorf("GET join: status %d, service called=%v; want it refused", rec.Code, svc.called)
+	}
+	// the clan ID is one path segment; extra segments do not reach the handler
+	svc = &joiningService{}
+	if rec := postJoin(t, svc, http.MethodPost, "/api/v1/clans/a/b/join", false); svc.called {
+		t.Errorf("extra path segment: status %d, but the service was called", rec.Code)
 	}
 }
