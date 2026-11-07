@@ -5,12 +5,15 @@ package service
 import (
 	"context"
 	"time"
+
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 )
 
 // Store is what the service needs from the repository. Using an interface keeps
 // the service testable without a real database.
 type Store interface {
 	Ping(ctx context.Context) error
+	UpsertPlayer(ctx context.Context, gameID, externalID, displayName string) (repository.Player, error)
 }
 
 // Service is the social service's logic.

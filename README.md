@@ -189,6 +189,19 @@ go vet ./...
 go test ./...
 ```
 
+### Integration tests (real database)
+
+Some repository tests talk to a real Postgres and are **skipped** unless a test database URL is set.
+With the Docker stack running (`docker compose up -d`, so the migrations are applied):
+
+```bash
+# PowerShell
+$env:SOCIAL_TEST_DATABASE_URL="postgres://social_user:<SOCIAL_DB_PASSWORD>@localhost:5432/clan?sslmode=disable"
+go test ./services/social/internal/repository/ -v
+```
+
+Each run uses new random game IDs and deletes its rows afterwards, so it does not disturb other data.
+
 ## Endpoints so far
 
 | Method | Path | Answer |

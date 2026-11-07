@@ -4,15 +4,19 @@ package handler
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/service"
 )
 
 // Service is what the handlers need from the service layer.
 type Service interface {
 	Ready(ctx context.Context) error
+	EnsurePlayer(ctx context.Context, gameID, externalID, displayName string) (service.Player, error)
 }
 
 // Handler holds the routes of the service.
@@ -20,15 +24,17 @@ type Handler struct {
 	name          string
 	svc           Service
 	requirePlayer httpx.Middleware
+	log           *slog.Logger
 }
 
 // New returns a Handler. name is the service name shown in /health.
 // requirePlayer guards every /api/v1 route (see package auth); it must not be nil.
-func New(name string, svc Service, requirePlayer httpx.Middleware) *Handler {
+// log receives the details of unexpected errors, which are never sent to the client.
+func New(name string, svc Service, requirePlayer httpx.Middleware, log *slog.Logger) *Handler {
 	if requirePlayer == nil {
 		panic("handler: requirePlayer middleware is required")
 	}
-	return &Handler{name: name, svc: svc, requirePlayer: requirePlayer}
+	return &Handler{name: name, svc: svc, requirePlayer: requirePlayer, log: log}
 }
 
 // Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.
@@ -48,6 +54,7 @@ func (h *Handler) Routes() []Route {
 	return []Route{
 		{http.MethodGet, "/health", h.health},
 		{http.MethodGet, "/ready", h.ready},
+		{http.MethodGet, "/api/v1/players/me", h.getMe},
 	}
 }
 
@@ -83,6 +90,19 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready", "service": h.name})
+}
+
+// errNoPlayerInContext means a player route ran without the token guard (a programming error).
+var errNoPlayerInContext = errors.New("handler: no player in request context; route is missing the token guard")
+
+// fail writes err as an error response. Expected errors (*httpx.Error) keep their status
+// and code; anything else is logged with details and answered with a generic 500.
+func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	var apiErr *httpx.Error
+	if !errors.As(err, &apiErr) {
+		h.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+	}
+	httpx.WriteErr(w, err)
 }
 
 // isPlayerRoute reports whether path needs a player token.
