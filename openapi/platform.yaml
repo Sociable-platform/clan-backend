@@ -23,6 +23,8 @@ tags:
     description: Developer accounts for the dashboard
   - name: games
     description: Existing games a developer has registered with the toolkit
+  - name: api-keys
+    description: Secret keys a game's own server uses to get player tokens
 paths:
   /health:
     get:
@@ -258,7 +260,112 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/games/{gameID}/api-keys:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [api-keys]
+      operationId: listApiKeys
+      summary: List a game's API keys
+      description: |
+        Active and revoked keys, newest first. Only the prefix is shown, never the full key.
+        Only the game's owner can list its keys; for anyone else the game does not exist (404).
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The game's keys. An empty list when there are none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyList"
+              example:
+                apiKeys:
+                  - id: 3b1c6f0e-9d2a-4a53-8f0b-7a9d2f6c1e44
+                    gameId: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                    keyPrefix: clk_Ab3x
+                    createdAt: "2026-11-07T10:00:00Z"
+                    revokedAt: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+    post:
+      tags: [api-keys]
+      operationId: createApiKey
+      summary: Create an API key
+      description: |
+        Generates a random key. **The full key is in this response only**; the database keeps
+        just a hash, so it cannot be shown again. Keep it on the game's own server, never in
+        browser code. No request body.
+      security:
+        - developerToken: []
+      responses:
+        "201":
+          description: Key created. The response is not cacheable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NewApiKey"
+              example:
+                id: 3b1c6f0e-9d2a-4a53-8f0b-7a9d2f6c1e44
+                gameId: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                keyPrefix: clk_Ab3x
+                createdAt: "2026-11-07T10:00:00Z"
+                revokedAt: null
+                key: clk_Ab3xQ0m7w2n5v8k1p4s9d6f3g0h7j2l5z8c1x4b7n0m
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+  /api/v1/api-keys/{keyID}:
+    delete:
+      tags: [api-keys]
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      description: |
+        The key stops working immediately and stays in the list marked revoked.
+        Revoking an already revoked key succeeds. Only the owner of the key's game can revoke it;
+        for anyone else the key does not exist (404).
+      security:
+        - developerToken: []
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Key revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such key, or it belongs to another developer's game.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: api_key_not_found
+                  message: API key not found
 components:
+  parameters:
+    GameID:
+      name: gameID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   securitySchemes:
     developerToken:
       type: http
@@ -368,6 +475,44 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Game"
+    ApiKey:
+      type: object
+      required: [id, gameId, keyPrefix, createdAt, revokedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        gameId:
+          type: string
+          format: uuid
+        keyPrefix:
+          type: string
+          description: First 8 characters of the key (`clk_` and 4 more), to recognise it.
+        createdAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the key was revoked; null while it is active.
+    NewApiKey:
+      allOf:
+        - $ref: "#/components/schemas/ApiKey"
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: The full secret key. Returned only by the create call and never stored.
+    ApiKeyList:
+      type: object
+      required: [apiKeys]
+      properties:
+        apiKeys:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiKey"
     Error:
       type: object
       required: [error]
@@ -383,6 +528,16 @@ components:
               type: string
               description: Human-readable explanation.
   responses:
+    GameNotFound:
+      description: No such game, or it belongs to another developer.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: game_not_found
+              message: Game not found
     Unauthorized:
       description: The developer token is missing, malformed, expired, of the wrong type, or its account no longer exists.
       content:

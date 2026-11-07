@@ -221,6 +221,7 @@ func TestUnexpectedErrorIsLoggedAndNotLeaked(t *testing.T) {
 type memStore struct {
 	devs  []repository.Developer
 	games []repository.Game
+	keys  []memKey
 }
 
 func (m *memStore) Ping(context.Context) error { return nil }

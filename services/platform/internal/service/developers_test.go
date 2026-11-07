@@ -22,6 +22,7 @@ import (
 type fakeStore struct {
 	byEmail map[string]repository.Developer
 	games   []repository.Game
+	keys    []storedKey
 	err     error // returned by every call when set
 }
 

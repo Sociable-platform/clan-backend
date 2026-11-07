@@ -21,6 +21,9 @@ type Service interface {
 	Me(ctx context.Context, developerID string) (service.Developer, error)
 	RegisterGame(ctx context.Context, developerID string, in service.RegisterGameInput) (service.Game, error)
 	ListGames(ctx context.Context, developerID string) ([]service.Game, error)
+	CreateAPIKey(ctx context.Context, developerID, gameID string) (service.NewAPIKey, error)
+	ListAPIKeys(ctx context.Context, developerID, gameID string) ([]service.APIKey, error)
+	RevokeAPIKey(ctx context.Context, developerID, keyID string) error
 }
 
 // Handler holds the routes of the service.
@@ -62,6 +65,9 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/developers/me", h.requireDeveloper(h.me)},
 		{http.MethodGet, "/api/v1/games", h.requireDeveloper(h.listGames)},
 		{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
+		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.createAPIKey)},
+		{http.MethodGet, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.listAPIKeys)},
+		{http.MethodDelete, "/api/v1/api-keys/{keyID}", h.requireDeveloper(h.revokeAPIKey)},
 	}
 }
 

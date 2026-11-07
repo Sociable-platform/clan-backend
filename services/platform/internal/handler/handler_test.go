@@ -23,6 +23,10 @@ type fakeService struct {
 
 	registerGame func(developerID string, in service.RegisterGameInput) (service.Game, error)
 	listGames    func(developerID string) ([]service.Game, error)
+
+	createAPIKey func(developerID, gameID string) (service.NewAPIKey, error)
+	listAPIKeys  func(developerID, gameID string) ([]service.APIKey, error)
+	revokeAPIKey func(developerID, keyID string) error
 }
 
 func (f fakeService) Ready(context.Context) error { return f.err }
@@ -85,4 +89,16 @@ func (f fakeService) RegisterGame(_ context.Context, developerID string, in serv
 
 func (f fakeService) ListGames(_ context.Context, developerID string) ([]service.Game, error) {
 	return f.listGames(developerID)
+}
+
+func (f fakeService) CreateAPIKey(_ context.Context, developerID, gameID string) (service.NewAPIKey, error) {
+	return f.createAPIKey(developerID, gameID)
+}
+
+func (f fakeService) ListAPIKeys(_ context.Context, developerID, gameID string) ([]service.APIKey, error) {
+	return f.listAPIKeys(developerID, gameID)
+}
+
+func (f fakeService) RevokeAPIKey(_ context.Context, developerID, keyID string) error {
+	return f.revokeAPIKey(developerID, keyID)
 }
