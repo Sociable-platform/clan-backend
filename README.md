@@ -44,7 +44,7 @@ A request flows `handler -> service -> repository`. Each layer only calls the on
 
 ## First-time setup
 
-Needs Go 1.23 or newer.
+Needs Go 1.26 or newer.
 
 ```bash
 # download dependencies and create go.sum (run once, and after adding a dependency)
@@ -79,7 +79,7 @@ cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
 docker compose up --build
 ```
 
-This starts three long-running containers and one short migration job:
+This starts three containers:
 
 | Container | URL |
 |---|---|
@@ -102,11 +102,12 @@ The init script runs only when the database volume is empty. After changing it, 
 
 ## Run with go run
 
-Start only Postgres in Docker and apply the migrations, then run a service from your editor or terminal:
+Start Postgres and apply the migrations in Docker, then run a service from your editor or terminal:
 
 ```bash
 docker compose up -d postgres
 docker compose run --rm platform-migrate     # safe to repeat
+docker compose run --rm social-migrate   # creates or updates the social tables
 go run ./services/platform/cmd      # uses PLATFORM_DATABASE_URL
 go run ./services/social/cmd        # uses SOCIAL_DATABASE_URL
 ```
@@ -122,9 +123,10 @@ Table definitions live in `services/<name>/migrations/` as `NNNNNN_name.up.sql` 
 so tables land in that service's schema. It remembers what already ran in a `schema_migrations` table in that
 schema, so running it again does nothing.
 
-Social has no migrations yet, and golang-migrate fails on an empty folder, so `social-migrate` is commented out in
-`docker-compose.yml`. **When you add the first file to `services/social/migrations/`, uncomment the `social-migrate`
-job and the `social-migrate` entry in social's `depends_on`.**
+```bash
+docker compose exec -T postgres psql -U platform_user -d clan -v ON_ERROR_STOP=1 \
+  < services/platform/migrations/000001_create_developers.up.sql
+```
 
 - **Add a migration:** create the next numbered pair, e.g. `000003_add_x.up.sql` and `.down.sql`, then run
   `docker compose up` (or `docker compose run --rm platform-migrate`).

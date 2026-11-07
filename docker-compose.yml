@@ -2,8 +2,8 @@
 #   1. copy .env.example to .env and set the passwords
 #   2. create the JWT signing key (README: "JWT signing key")
 #   3. docker compose up --build
-# platform-migrate applies the platform SQL migrations once, then exits;
-# platform starts only after it succeeded.
+# platform-migrate and social-migrate apply each service's SQL migrations once, then exit;
+# each service starts only after its migrations succeeded.
 name: clan
 
 services:
@@ -44,20 +44,17 @@ services:
       postgres:
         condition: service_healthy
 
-  # Social has no migrations yet, and golang-migrate fails on an empty folder.
-  # When you add the first file to services/social/migrations/, uncomment this job
-  # and the matching `social-migrate` entry in social's depends_on below.
-  # social-migrate:
-  #   image: migrate/migrate:v4.18.1
-  #   command:
-  #     - -path=/migrations
-  #     - -database=postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
-  #     - up
-  #   volumes:
-  #     - ./services/social/migrations:/migrations:ro
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
+  social-migrate:
+    image: migrate/migrate:v4.18.1
+    command:
+      - -path=/migrations
+      - -database=postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      - up
+    volumes:
+      - ./services/social/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   platform:
     build:
@@ -96,8 +93,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      # social-migrate:
-      #   condition: service_completed_successfully
+      social-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
