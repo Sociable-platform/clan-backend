@@ -77,7 +77,7 @@ func run() error {
 
 	mux := http.NewServeMux()
 	// Every /api/v1 route requires a player token signed by platform (checked with verifyKey).
-	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now)).Register(mux)
+	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now), log).Register(mux)
 
 	// Browser pages allowed to call this service (the demo game, where the SDK runs).
 	origins := config.List("SOCIAL_CORS_ORIGINS", []string{"http://localhost:5174"})

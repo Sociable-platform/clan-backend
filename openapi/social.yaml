@@ -19,6 +19,8 @@ servers:
 tags:
   - name: system
     description: Health checks
+  - name: players
+    description: The calling player
 paths:
   /health:
     get:
@@ -56,6 +58,35 @@ paths:
           $ref: "#/components/responses/OriginNotAllowed"
         "503":
           $ref: "#/components/responses/NotReady"
+  /api/v1/players/me:
+    get:
+      tags: [players]
+      operationId: getMyPlayer
+      summary: The calling player, created on first use
+      description: |
+        Returns the player named by the player token. The first call for a
+        (game, player) pair creates the player record; later calls return the same
+        record. The display name is updated from the token on every call, so a
+        rename in the game shows up here.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The player.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Player"
+              example:
+                id: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+                gameId: a6c1e2f0-1111-4222-8333-944455556666
+                externalId: u_42
+                displayName: Ali
+                createdAt: "2026-11-07T10:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
 components:
   securitySchemes:
     playerToken:
@@ -78,6 +109,28 @@ components:
           enum: [ok, ready]
         service:
           type: string
+    Player:
+      type: object
+      required: [id, gameId, externalId, displayName, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Our own ID for the player.
+        gameId:
+          type: string
+          format: uuid
+          description: The game the player belongs to (from the token).
+        externalId:
+          type: string
+          description: The game's own player ID (the token's sub).
+        displayName:
+          type: string
+          description: Name shown to other players (from the token).
+        createdAt:
+          type: string
+          format: date-time
+          description: When the player was first seen.
     Error:
       type: object
       required: [error]

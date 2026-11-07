@@ -23,7 +23,7 @@ func newProtectedMux(t *testing.T) (*http.ServeMux, ed25519.PrivateKey) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := New("social", fakeService{}, auth.RequirePlayer(pub, time.Now))
+	h := New("social", fakeService{}, auth.RequirePlayer(pub, time.Now), testLog())
 	dummy := Route{http.MethodGet, "/api/v1/test", func(w http.ResponseWriter, r *http.Request) {
 		p, _ := auth.PlayerFrom(r.Context())
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"game_id": p.GameID})
@@ -94,5 +94,5 @@ func TestNewRequiresTokenMiddleware(t *testing.T) {
 			t.Fatal("New without the token middleware should refuse (panic)")
 		}
 	}()
-	New("social", fakeService{}, nil)
+	New("social", fakeService{}, nil, testLog())
 }
