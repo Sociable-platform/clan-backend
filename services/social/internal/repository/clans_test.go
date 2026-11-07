@@ -410,3 +410,99 @@ func TestJoinTwoClansAtTheSameTime(t *testing.T) {
 		t.Fatalf("member counts add up to %d, want 3 (two owners + one join)", total)
 	}
 }
+
+func TestMyClan(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, other := newGameID(t), newGameID(t)
+	defer cleanup(game, other)
+	ctx := context.Background()
+
+	// never seen, and seen but not in a clan
+	if _, err := r.MyClan(ctx, game, "u_nobody"); !errors.Is(err, ErrNotInClan) {
+		t.Fatalf("unknown player: err = %v, want ErrNotInClan", err)
+	}
+	ali := newPlayer(t, r, game, "u_ali")
+	if _, err := r.MyClan(ctx, game, "u_ali"); !errors.Is(err, ErrNotInClan) {
+		t.Fatalf("player without clan: err = %v, want ErrNotInClan", err)
+	}
+
+	created, err := r.CreateClan(ctx, game, ali, "Wolves")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.MyClan(ctx, game, "u_ali")
+	if err != nil || got.Role != "owner" || got.Clan != created {
+		t.Fatalf("owner: got %+v, %v; want %+v as owner", got, err, created)
+	}
+
+	if _, err := r.JoinClan(ctx, game, created.ID, newPlayer(t, r, game, "u_leyla")); err != nil {
+		t.Fatal(err)
+	}
+	got, err = r.MyClan(ctx, game, "u_leyla")
+	if err != nil || got.Role != "member" || got.Clan.ID != created.ID || got.Clan.MemberCount != 2 {
+		t.Fatalf("member: got %+v, %v", got, err)
+	}
+
+	// the same game player ID in another game is another player, not in a clan
+	newPlayer(t, r, other, "u_ali")
+	if _, err := r.MyClan(ctx, other, "u_ali"); !errors.Is(err, ErrNotInClan) {
+		t.Fatalf("other game: err = %v, want ErrNotInClan", err)
+	}
+}
+
+func TestListMembers(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	owner := newPlayer(t, r, game, "u_owner")
+	c, err := r.CreateClan(ctx, game, owner, "Wolves")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"u_b", "u_a", "u_c"} { // joined in this order
+		if _, err := r.JoinClan(ctx, game, c.ID, newPlayer(t, r, game, p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// a member who joined before the owner's row (only possible by hand) must still list after the owner
+	if _, err := r.pool.Exec(ctx, "update clan_members set joined_at = joined_at - interval '1 hour' where clan_id = $1 and role = 'member' and player_id = (select id from players where game_id = $2 and external_id = 'u_c')", c.ID, game); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := r.ListMembers(ctx, game, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, m := range got {
+		order = append(order, m.DisplayName+":"+m.Role)
+		if m.PlayerID == "" || m.JoinedAt.IsZero() {
+			t.Errorf("member without ID or join time: %+v", m)
+		}
+	}
+	if want := "[u_owner:owner u_c:member u_b:member u_a:member]"; fmt.Sprint(order) != want {
+		t.Fatalf("order %v, want %s (owner first, then by join time)", order, want)
+	}
+	if got[0].PlayerID != owner {
+		t.Fatalf("owner's playerId = %q, want %q", got[0].PlayerID, owner)
+	}
+}
+
+func TestListMembersNotFound(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, other := newGameID(t), newGameID(t)
+	defer cleanup(game, other)
+	clanOfGame := ownClan(t, r, game, "Wolves")
+
+	for name, clanID := range map[string]string{
+		"clan of another game": clanOfGame,
+		"unknown clan":         newGameID(t),
+		"not a UUID":           "abc",
+	} {
+		if _, err := r.ListMembers(context.Background(), other, clanID); !errors.Is(err, ErrClanNotFound) {
+			t.Errorf("%s: err = %v, want ErrClanNotFound", name, err)
+		}
+	}
+}
