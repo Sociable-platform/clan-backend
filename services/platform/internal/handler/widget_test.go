@@ -251,7 +251,7 @@ func TestWidgetDraftFlow(t *testing.T) {
 	}
 
 	// save, then read it back
-	const first = `{"schemaVersion":1,"theme":{"accent":"#8B65EE"}}`
+	first := cfg("Accent")
 	if rec := put(alice, `{"config":`+first+`}`); rec.Code != http.StatusOK {
 		t.Fatalf("save: %d %s", rec.Code, rec.Body.String())
 	}
@@ -263,17 +263,17 @@ func TestWidgetDraftFlow(t *testing.T) {
 	}
 
 	// a second save replaces the first
-	if rec := put(alice, `{"config":{"schemaVersion":1}}`); rec.Code != http.StatusOK {
+	if rec := put(alice, `{"config":`+cfg("Plain")+`}`); rec.Code != http.StatusOK {
 		t.Fatalf("second save: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = get(alice)
 	_ = json.Unmarshal(rec.Body.Bytes(), &got)
-	if string(got.Config) != `{"schemaVersion":1}` {
+	if string(got.Config) != cfg("Plain") {
 		t.Fatalf("second save should replace the first, got %s", rec.Body.String())
 	}
 
 	// bob cannot read or change alice's draft
-	for _, rec := range []*httptest.ResponseRecorder{get(bob), put(bob, `{"config":{"hacked":true}}`)} {
+	for _, rec := range []*httptest.ResponseRecorder{get(bob), put(bob, `{"config":`+cfg("Hacked")+`}`)} {
 		if rec.Code != http.StatusNotFound || errorCode(t, rec) != "game_not_found" {
 			t.Fatalf("bob: want 404 game_not_found, got %d %s", rec.Code, rec.Body.String())
 		}
@@ -292,7 +292,7 @@ func TestWidgetDraftFlow(t *testing.T) {
 	}
 	rec = get(alice)
 	_ = json.Unmarshal(rec.Body.Bytes(), &got)
-	if string(got.Config) != `{"schemaVersion":1}` {
+	if string(got.Config) != cfg("Plain") {
 		t.Fatalf("refused configs must not change the draft, got %s", rec.Body.String())
 	}
 
@@ -556,18 +556,18 @@ func TestWidgetPublishFlow(t *testing.T) {
 	}
 
 	// draft A -> version 1
-	if rec := do(alice, http.MethodPut, "/draft", `{"config":{"look":"A"}}`); rec.Code != http.StatusOK {
+	if rec := do(alice, http.MethodPut, "/draft", `{"config":`+cfg("LookA")+`}`); rec.Code != http.StatusOK {
 		t.Fatalf("save A: %d %s", rec.Code, rec.Body.String())
 	}
 	rec := do(alice, http.MethodPost, "/publish", "")
 	var v widgetVersionResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &v)
-	if rec.Code != http.StatusCreated || v.Version != 1 || string(v.Config) != `{"look":"A"}` {
+	if rec.Code != http.StatusCreated || v.Version != 1 || string(v.Config) != cfg("LookA") {
 		t.Fatalf("publish 1: %d %s", rec.Code, rec.Body.String())
 	}
 
 	// draft B -> version 2
-	do(alice, http.MethodPut, "/draft", `{"config":{"look":"B"}}`)
+	do(alice, http.MethodPut, "/draft", `{"config":`+cfg("LookB")+`}`)
 	if rec := do(alice, http.MethodPost, "/publish", ""); rec.Code != http.StatusCreated {
 		t.Fatalf("publish 2: %d %s", rec.Code, rec.Body.String())
 	}
@@ -578,7 +578,7 @@ func TestWidgetPublishFlow(t *testing.T) {
 	// version 1 still has A
 	rec = do(alice, http.MethodGet, "/versions/1", "")
 	_ = json.Unmarshal(rec.Body.Bytes(), &v)
-	if rec.Code != http.StatusOK || string(v.Config) != `{"look":"A"}` {
+	if rec.Code != http.StatusOK || string(v.Config) != cfg("LookA") {
 		t.Fatalf("version 1: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := do(alice, http.MethodGet, "/versions/3", ""); rec.Code != http.StatusNotFound || errorCode(t, rec) != "widget_version_not_found" {
@@ -588,7 +588,7 @@ func TestWidgetPublishFlow(t *testing.T) {
 	// roll back to 1: a new version 3 with A; the draft stays B
 	rec = do(alice, http.MethodPost, "/versions/1/rollback", "")
 	_ = json.Unmarshal(rec.Body.Bytes(), &v)
-	if rec.Code != http.StatusCreated || v.Version != 3 || string(v.Config) != `{"look":"A"}` {
+	if rec.Code != http.StatusCreated || v.Version != 3 || string(v.Config) != cfg("LookA") {
 		t.Fatalf("rollback: %d %s", rec.Code, rec.Body.String())
 	}
 	if got := versionNumbers(alice); len(got) != 3 || got[0] != 3 {
@@ -596,7 +596,7 @@ func TestWidgetPublishFlow(t *testing.T) {
 	}
 	var d widgetDraftResponse
 	_ = json.Unmarshal(do(alice, http.MethodGet, "/draft", "").Body.Bytes(), &d)
-	if string(d.Config) != `{"look":"B"}` {
+	if string(d.Config) != cfg("LookB") {
 		t.Fatalf("rollback must not touch the draft, got %s", d.Config)
 	}
 

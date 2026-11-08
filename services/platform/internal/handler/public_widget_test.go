@@ -185,19 +185,19 @@ func TestPublicWidgetFlow(t *testing.T) {
 	if rec := getPublic(t, svc, public, ""); rec.Code != http.StatusNotFound || errorCode(t, rec) != "widget_not_published" {
 		t.Fatalf("before publish: %d %s", rec.Code, rec.Body.String())
 	}
-	dev(http.MethodPut, "/draft", `{"config":{"look":"A"}}`)
+	dev(http.MethodPut, "/draft", `{"config":`+cfg("LookA")+`}`)
 	if rec := getPublic(t, svc, public, ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("a draft must stay hidden, got %d %s", rec.Code, rec.Body.String())
 	}
 
 	dev(http.MethodPost, "/publish", "")
 	code, p, tag1 := players()
-	if code != http.StatusOK || p.Version != 1 || string(p.Config) != `{"look":"A"}` || tag1 != `"v1"` {
+	if code != http.StatusOK || p.Version != 1 || string(p.Config) != cfg("LookA") || tag1 != `"v1"` {
 		t.Fatalf("after publish 1: %d %+v %s", code, p, tag1)
 	}
 
 	// editing the draft changes nothing for players, and the ETag stays: 304
-	dev(http.MethodPut, "/draft", `{"config":{"look":"B, not published yet"}}`)
+	dev(http.MethodPut, "/draft", `{"config":`+cfg("LookB")+`}`)
 	code, p, tag := players()
 	if code != http.StatusOK || p.Version != 1 || tag != tag1 {
 		t.Fatalf("draft edit leaked: %d %+v %s", code, p, tag)
@@ -219,7 +219,7 @@ func TestPublicWidgetFlow(t *testing.T) {
 	// rollback to 1 is a new version 3 with the old config
 	dev(http.MethodPost, "/versions/1/rollback", "")
 	code, p, tag3 := players()
-	if code != http.StatusOK || p.Version != 3 || string(p.Config) != `{"look":"A"}` || tag3 == tag2 {
+	if code != http.StatusOK || p.Version != 3 || string(p.Config) != cfg("LookA") || tag3 == tag2 {
 		t.Fatalf("after rollback: %d %+v %s", code, p, tag3)
 	}
 

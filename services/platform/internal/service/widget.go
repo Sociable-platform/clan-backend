@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,11 +10,12 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/platform/internal/repository"
+	"gitlab.com/clan-platform/clan-backend/services/platform/internal/widgetconfig"
 )
 
 const (
-	// maxWidgetConfigBytes is the largest config a developer can save.
-	maxWidgetConfigBytes = 64 * 1024
+	// maxWidgetConfigBytes is the largest config a developer can save (the contract's 64 KB).
+	maxWidgetConfigBytes = widgetconfig.MaxBytes
 
 	// defaultWidgetConfig is what a game with no saved draft starts from.
 	// Placeholder until the config contract (W1) defines the real default.
@@ -29,22 +29,26 @@ type WidgetDraft struct {
 	UpdatedAt *time.Time
 }
 
-// errInvalidWidgetConfig is the 400 for a config that cannot be saved.
-func errInvalidWidgetConfig(message string) *httpx.Error {
-	return httpx.NewError(http.StatusBadRequest, "invalid_widget_config", message)
+// errInvalidWidgetConfig is the 400 for a config that cannot be saved. details lists every
+// problem as { path, rule, message }, so Studio can mark the field that is wrong.
+func errInvalidWidgetConfig(message string, details []widgetconfig.Issue) *httpx.Error {
+	return httpx.NewErrorWithDetails(http.StatusBadRequest, "invalid_widget_config", message, details)
 }
 
-// checkWidgetConfig makes sure raw is a JSON object of reasonable size.
-// The field-by-field rules of the config contract come later (W3).
+// checkWidgetConfig makes sure raw is a valid config v1 document: not over 64 KB, valid
+// JSON, and following every rule of the contract (internal/widgetconfig). It is used when a
+// draft is saved and again when it is published.
 func checkWidgetConfig(raw []byte) error {
-	if len(raw) > maxWidgetConfigBytes {
-		return errInvalidWidgetConfig(fmt.Sprintf("Config must be at most %d KB", maxWidgetConfigBytes/1024))
+	issues := widgetconfig.Validate(raw)
+	switch {
+	case len(issues) == 0:
+		return nil
+	case len(issues) == 1 && (issues[0].Rule == widgetconfig.RuleSize || issues[0].Rule == widgetconfig.RuleJSON):
+		return errInvalidWidgetConfig(issues[0].Message, issues)
+	case len(issues) == 1:
+		return errInvalidWidgetConfig("Config is not valid: 1 problem, see details", issues)
 	}
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
-		return errInvalidWidgetConfig("Config must be a JSON object")
-	}
-	return nil
+	return errInvalidWidgetConfig(fmt.Sprintf("Config is not valid: %d problems, see details", len(issues)), issues)
 }
 
 // WidgetDraft returns the draft of a game the developer owns, or the default config
