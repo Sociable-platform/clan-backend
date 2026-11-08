@@ -140,6 +140,31 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 	return Clan{ID: row.ID, Name: row.Name, MemberCount: row.MemberCount, MaxMembers: row.MaxMembers}, nil
 }
 
+// LeaveClan removes the calling player from clan clanID of their game. If the caller is
+// the owner and others remain, the member who joined first becomes the owner; if the
+// caller is the only member, the clan is deleted. It does not create a player record: a
+// player we have never seen is simply not a member.
+//
+// Errors the client can act on:
+//   - 404 clan_not_found: no such clan in the player's game (a clan of another game counts
+//     as not found)
+//   - 409 not_in_clan: the player is not a member of this clan
+func (s *Service) LeaveClan(ctx context.Context, gameID, externalID, clanID string) error {
+	if !uuidPattern.MatchString(clanID) {
+		return errClanNotFound()
+	}
+	err := s.store.LeaveClan(ctx, gameID, strings.ToLower(clanID), externalID)
+	switch {
+	case errors.Is(err, repository.ErrClanNotFound):
+		return errClanNotFound()
+	case errors.Is(err, repository.ErrNotInClan):
+		return httpx.NewError(http.StatusConflict, "not_in_clan", "You are not a member of this clan")
+	case err != nil:
+		return fmt.Errorf("leave clan: %w", err)
+	}
+	return nil
+}
+
 func errClanNotFound() error {
 	return httpx.NewError(http.StatusNotFound, "clan_not_found", "Clan not found")
 }
