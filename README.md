@@ -102,6 +102,20 @@ go run ./tools/devtoken -ttl -1m                              # already expired:
 
 Send it as `Authorization: Bearer <token>`. `go run ./tools/devtoken -h` lists all options.
 
+### Widget config validation
+
+`PUT /api/v1/games/{gameID}/widget/draft` and `POST .../widget/publish` check the config against the
+config v1 contract (JSON Schema 2020-12, owned by the frontend team: `docs/config-v1` in
+`clan-frontend`). The schema is copied to `services/platform/internal/widgetconfig/` together with the
+shared fixtures in `testdata/examples/`; when the contract changes, copy the new files over and run
+`go test ./services/platform/...`.
+
+A config over 64 KB, text that is not JSON, or a config that breaks the contract gets
+`400 invalid_widget_config`. `error.details` lists every problem as `{ path, rule, message }`
+(`path` is a JSON Pointer such as `/clan/maxMembers`, `rule` a JSON Schema keyword such as `maximum`).
+Nothing is saved or published in that case. Publishing checks the saved draft again, so a draft saved
+under older rules cannot go public.
+
 ## Run with Docker (recommended)
 
 ```bash
