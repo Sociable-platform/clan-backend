@@ -33,6 +33,7 @@ type Service interface {
 	WidgetVersions(ctx context.Context, developerID, gameID string) ([]service.WidgetVersion, error)
 	WidgetVersion(ctx context.Context, developerID, gameID string, version int) (service.WidgetVersion, error)
 	RollbackWidget(ctx context.Context, developerID, gameID string, version int) (service.WidgetVersion, error)
+	PublicWidgetConfig(ctx context.Context, gameID string) (service.WidgetVersion, error)
 }
 
 // Handler holds the routes of the service.
@@ -61,6 +62,9 @@ type Route struct {
 //
 //	{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
 //
+// Endpoints under /api/v1/public/ need no login at all and are open to every website
+// (see the CORS setup in cmd/main.go); they must never return anything secret.
+//
 // Endpoints under /api/v1/games/{gameID} must first call svc.OwnedGame, so one developer
 // can never reach another developer's game.
 //
@@ -84,6 +88,7 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/games/{gameID}/widget/versions", h.requireDeveloper(h.listWidgetVersions)},
 		{http.MethodGet, "/api/v1/games/{gameID}/widget/versions/{version}", h.requireDeveloper(h.getWidgetVersion)},
 		{http.MethodPost, "/api/v1/games/{gameID}/widget/versions/{version}/rollback", h.requireDeveloper(h.rollbackWidget)},
+		{http.MethodGet, "/api/v1/public/games/{gameID}/widget-config", h.getPublicWidgetConfig},
 		{http.MethodPost, "/api/v1/players/auth", h.requireAPIKey(h.authPlayer)},
 	}
 }
