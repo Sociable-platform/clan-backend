@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,6 +11,21 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/services/platform/internal/repository"
 )
+
+// validConfigTemplate is the farm-minimal example from the config v1 contract with one
+// player-facing word left open, so tests can make configs that are valid but different.
+const validConfigTemplate = `{"schemaVersion":1,"game_id":"b21d94e7-3c0a-4f68-8e15-a9d7c4f02b61",` +
+	`"theme":{"mode":"light","fonts":{"heading":{"family":"Fredoka","source":"google"},"body":{"family":"Nunito","source":"google"}},` +
+	`"frame":{"style":"none","width":1,"color":"#D9DBD5","corners":"round"},"buttons":{"style":"outline","case":"normal"},` +
+	`"panel":{"opacity":0.9,"blur":true},"colors":{"brand":"#2E8B57","background":"#FFFFFF","surface":"#F2F3F1","text":"#000000","muted":"#5B5D56"},"textures":{}},` +
+	`"layout":{"position":"bottom-left","startCollapsed":false},"friends":{"enabled":true},` +
+	`"clan":{"enabled":false,"maxMembers":10,"tags":false,"descriptionMax":140,"badges":{"source":"developer","allowed":[]},` +
+	`"screens":{"discover":{"enabled":false},"create":{"enabled":false},"home":{"enabled":false,"header":"compact","showStats":false},"members":{"enabled":false}}},` +
+	`"chat":{"enabled":true,"layout":"bubbles","directMessages":true,"clanChat":false,"maxMessageLength":500,"slowModeSeconds":0,"profanityFilter":false,"historyLimit":50},` +
+	`"texts":{"terms":{"clan":"%s","clans":"%ss"},"labels":{}}}`
+
+// cfg returns a valid config; different words give different (but equally valid) configs.
+func cfg(word string) string { return fmt.Sprintf(validConfigTemplate, word, word) }
 
 // These methods make fakeStore keep one draft per game, like the widget_drafts table.
 
@@ -127,7 +143,7 @@ func TestSaveWidgetDraft_ThenRead(t *testing.T) {
 	svc, alice, _, game := aliceGame(t)
 	ctx := context.Background()
 
-	saved, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(`{"schemaVersion":1,"theme":{"accent":"#8B65EE"}}`))
+	saved, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(cfg("Accent")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +154,7 @@ func TestSaveWidgetDraft_ThenRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got.Config) != `{"schemaVersion":1,"theme":{"accent":"#8B65EE"}}` {
+	if string(got.Config) != cfg("Accent") {
 		t.Fatalf("read back %s", got.Config)
 	}
 }
@@ -146,13 +162,13 @@ func TestSaveWidgetDraft_ThenRead(t *testing.T) {
 func TestSaveWidgetDraft_SecondSaveReplacesTheFirst(t *testing.T) {
 	svc, alice, _, game := aliceGame(t)
 	ctx := context.Background()
-	for _, cfg := range []string{`{"a":1}`, `{"a":2}`} {
-		if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(cfg)); err != nil {
+	for _, word := range []string{"A1", "A2"} {
+		if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(cfg(word))); err != nil {
 			t.Fatal(err)
 		}
 	}
 	got, _ := svc.WidgetDraft(ctx, alice.ID, game.ID)
-	if string(got.Config) != `{"a":2}` {
+	if string(got.Config) != cfg("A2") {
 		t.Fatalf("want the last config, got %s", got.Config)
 	}
 }
@@ -160,19 +176,19 @@ func TestSaveWidgetDraft_SecondSaveReplacesTheFirst(t *testing.T) {
 func TestWidgetDraft_OnlyTheOwnerCanUseIt(t *testing.T) {
 	svc, alice, bob, game := aliceGame(t)
 	ctx := context.Background()
-	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(`{"a":1}`)); err != nil {
+	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(cfg("A1"))); err != nil {
 		t.Fatal(err)
 	}
 
 	_, err := svc.WidgetDraft(ctx, bob.ID, game.ID)
 	wantError(t, err, http.StatusNotFound, "game_not_found")
-	_, err = svc.SaveWidgetDraft(ctx, bob.ID, game.ID, json.RawMessage(`{"a":1}`))
+	_, err = svc.SaveWidgetDraft(ctx, bob.ID, game.ID, json.RawMessage(cfg("A1")))
 	wantError(t, err, http.StatusNotFound, "game_not_found")
 	_, err = svc.WidgetDraft(ctx, alice.ID, "not-a-uuid")
 	wantError(t, err, http.StatusNotFound, "game_not_found")
 
 	got, _ := svc.WidgetDraft(ctx, alice.ID, game.ID)
-	if string(got.Config) != `{"a":1}` {
+	if string(got.Config) != cfg("A1") {
 		t.Fatalf("bob must not change alice's draft, got %s", got.Config)
 	}
 }
@@ -198,14 +214,18 @@ func TestSaveWidgetDraft_RejectsBadConfig(t *testing.T) {
 
 	t.Run("exactly the size limit is fine", func(t *testing.T) {
 		svc, alice, _, game := aliceGame(t)
-		pad := maxWidgetConfigBytes - len(`{"a":""}`)
-		cfg := `{"a":"` + strings.Repeat("x", pad) + `"}`
-		if len(cfg) != maxWidgetConfigBytes {
-			t.Fatalf("test setup: %d bytes", len(cfg))
+		// trailing spaces are legal JSON, so a valid config can be padded to the exact limit
+		padded := cfg("Exact")
+		padded += strings.Repeat(" ", maxWidgetConfigBytes-len(padded))
+		if len(padded) != maxWidgetConfigBytes {
+			t.Fatalf("test setup: %d bytes", len(padded))
 		}
-		if _, err := svc.SaveWidgetDraft(context.Background(), alice.ID, game.ID, json.RawMessage(cfg)); err != nil {
+		if _, err := svc.SaveWidgetDraft(context.Background(), alice.ID, game.ID, json.RawMessage(padded)); err != nil {
 			t.Fatal(err)
 		}
+		// one byte more is refused
+		_, err := svc.SaveWidgetDraft(context.Background(), alice.ID, game.ID, json.RawMessage(padded+" "))
+		wantError(t, err, http.StatusBadRequest, "invalid_widget_config")
 	})
 }
 
@@ -229,12 +249,12 @@ func TestPublishWidget_NumbersCountUpAndKeepTheirConfig(t *testing.T) {
 	svc, alice, _, game := aliceGame(t)
 	ctx := context.Background()
 
-	saveDraft(t, svc, alice.ID, game.ID, `{"v":"one"}`)
+	saveDraft(t, svc, alice.ID, game.ID, cfg("One"))
 	v1, err := svc.PublishWidget(ctx, alice.ID, game.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v1.Version != 1 || string(v1.Config) != `{"v":"one"}` || v1.PublishedBy != alice.ID {
+	if v1.Version != 1 || string(v1.Config) != cfg("One") || v1.PublishedBy != alice.ID {
 		t.Fatalf("first publish: %+v", v1)
 	}
 
@@ -244,18 +264,18 @@ func TestPublishWidget_NumbersCountUpAndKeepTheirConfig(t *testing.T) {
 	}
 
 	// editing the draft afterwards does not touch what was published
-	saveDraft(t, svc, alice.ID, game.ID, `{"v":"three"}`)
+	saveDraft(t, svc, alice.ID, game.ID, cfg("Three"))
 	v3, err := svc.PublishWidget(ctx, alice.ID, game.ID)
-	if err != nil || v3.Version != 3 || string(v3.Config) != `{"v":"three"}` {
+	if err != nil || v3.Version != 3 || string(v3.Config) != cfg("Three") {
 		t.Fatalf("third publish: %+v, %v", v3, err)
 	}
 	old, err := svc.WidgetVersion(ctx, alice.ID, game.ID, 1)
-	if err != nil || string(old.Config) != `{"v":"one"}` {
+	if err != nil || string(old.Config) != cfg("One") {
 		t.Fatalf("version 1 must keep its config: %+v, %v", old, err)
 	}
 
 	// publishing does not consume or change the draft
-	if d, _ := svc.WidgetDraft(ctx, alice.ID, game.ID); string(d.Config) != `{"v":"three"}` {
+	if d, _ := svc.WidgetDraft(ctx, alice.ID, game.ID); string(d.Config) != cfg("Three") {
 		t.Fatalf("draft changed by publishing: %s", d.Config)
 	}
 }
@@ -291,8 +311,8 @@ func TestWidgetVersions_NewestFirstWithoutConfigs(t *testing.T) {
 		t.Fatalf("never published: want an empty non-nil list, got %#v, %v", empty, err)
 	}
 
-	for _, cfg := range []string{`{"n":1}`, `{"n":2}`, `{"n":3}`} {
-		saveDraft(t, svc, alice.ID, game.ID, cfg)
+	for _, word := range []string{"N1", "N2", "N3"} {
+		saveDraft(t, svc, alice.ID, game.ID, cfg(word))
 		if _, err := svc.PublishWidget(ctx, alice.ID, game.ID); err != nil {
 			t.Fatal(err)
 		}
@@ -313,7 +333,7 @@ func TestWidgetVersions_NewestFirstWithoutConfigs(t *testing.T) {
 
 func TestWidgetVersion_UnknownNumbersAreNotFound(t *testing.T) {
 	svc, alice, _, game := aliceGame(t)
-	saveDraft(t, svc, alice.ID, game.ID, `{"n":1}`)
+	saveDraft(t, svc, alice.ID, game.ID, cfg("N1"))
 	if _, err := svc.PublishWidget(context.Background(), alice.ID, game.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -327,11 +347,11 @@ func TestRollbackWidget_PublishesTheOldConfigAsANewVersion(t *testing.T) {
 	svc, alice, _, game := aliceGame(t)
 	ctx := context.Background()
 
-	saveDraft(t, svc, alice.ID, game.ID, `{"look":"A"}`)
+	saveDraft(t, svc, alice.ID, game.ID, cfg("LookA"))
 	if _, err := svc.PublishWidget(ctx, alice.ID, game.ID); err != nil { // version 1
 		t.Fatal(err)
 	}
-	saveDraft(t, svc, alice.ID, game.ID, `{"look":"B"}`)
+	saveDraft(t, svc, alice.ID, game.ID, cfg("LookB"))
 	if _, err := svc.PublishWidget(ctx, alice.ID, game.ID); err != nil { // version 2
 		t.Fatal(err)
 	}
@@ -340,19 +360,19 @@ func TestRollbackWidget_PublishesTheOldConfigAsANewVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if back.Version != 3 || string(back.Config) != `{"look":"A"}` {
+	if back.Version != 3 || string(back.Config) != cfg("LookA") {
 		t.Fatalf("rollback should make version 3 with version 1's config, got %+v", back)
 	}
 
 	// nothing was rewritten: version 2 is still B, and the history grew by one
-	if v2, _ := svc.WidgetVersion(ctx, alice.ID, game.ID, 2); string(v2.Config) != `{"look":"B"}` {
+	if v2, _ := svc.WidgetVersion(ctx, alice.ID, game.ID, 2); string(v2.Config) != cfg("LookB") {
 		t.Fatalf("version 2 changed: %s", v2.Config)
 	}
 	if list, _ := svc.WidgetVersions(ctx, alice.ID, game.ID); len(list) != 3 {
 		t.Fatalf("want 3 versions, got %d", len(list))
 	}
 	// the draft is left as the developer had it
-	if d, _ := svc.WidgetDraft(ctx, alice.ID, game.ID); string(d.Config) != `{"look":"B"}` {
+	if d, _ := svc.WidgetDraft(ctx, alice.ID, game.ID); string(d.Config) != cfg("LookB") {
 		t.Fatalf("rollback must not touch the draft, got %s", d.Config)
 	}
 }
@@ -371,7 +391,7 @@ func TestRollbackWidget_UnknownVersion(t *testing.T) {
 func TestWidgetVersions_OnlyTheOwnerCanUseThem(t *testing.T) {
 	svc, alice, bob, game := aliceGame(t)
 	ctx := context.Background()
-	saveDraft(t, svc, alice.ID, game.ID, `{"n":1}`)
+	saveDraft(t, svc, alice.ID, game.ID, cfg("N1"))
 	if _, err := svc.PublishWidget(ctx, alice.ID, game.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +414,7 @@ func TestWidgetVersions_OnlyTheOwnerCanUseThem(t *testing.T) {
 
 func TestWidgetVersions_StoreFailureIsAnError(t *testing.T) {
 	svc, alice, _, game := aliceGame(t)
-	saveDraft(t, svc, alice.ID, game.ID, `{"n":1}`)
+	saveDraft(t, svc, alice.ID, game.ID, cfg("N1"))
 	svc.store.(*fakeStore).err = context.DeadlineExceeded // from now on every store call fails
 	// every store call fails, so none of these may report success
 	if _, err := svc.PublishWidget(context.Background(), alice.ID, game.ID); err == nil {
@@ -413,7 +433,7 @@ func TestPublicWidgetConfig_ReturnsTheLatestPublishedVersionNotTheDraft(t *testi
 	wantError(t, err, http.StatusNotFound, "widget_not_published")
 
 	// a draft alone is not published
-	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(`{"a":1}`)); err != nil {
+	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(cfg("A1"))); err != nil {
 		t.Fatal(err)
 	}
 	_, err = svc.PublicWidgetConfig(ctx, game.ID)
@@ -422,14 +442,14 @@ func TestPublicWidgetConfig_ReturnsTheLatestPublishedVersionNotTheDraft(t *testi
 	if _, err := svc.PublishWidget(ctx, alice.ID, game.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(`{"a":2}`)); err != nil {
+	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(cfg("A2"))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.PublishWidget(ctx, alice.ID, game.ID); err != nil {
 		t.Fatal(err)
 	}
 	// work in progress after the last publish must stay hidden from players
-	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(`{"a":"secret draft"}`)); err != nil {
+	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(cfg("Secret"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -437,7 +457,7 @@ func TestPublicWidgetConfig_ReturnsTheLatestPublishedVersionNotTheDraft(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Version != 2 || string(got.Config) != `{"a":2}` {
+	if got.Version != 2 || string(got.Config) != cfg("A2") {
 		t.Fatalf("want version 2 with {\"a\":2}, got %d %s", got.Version, got.Config)
 	}
 
@@ -446,7 +466,7 @@ func TestPublicWidgetConfig_ReturnsTheLatestPublishedVersionNotTheDraft(t *testi
 		t.Fatal(err)
 	}
 	got, _ = svc.PublicWidgetConfig(ctx, game.ID)
-	if got.Version != 3 || string(got.Config) != `{"a":1}` {
+	if got.Version != 3 || string(got.Config) != cfg("A1") {
 		t.Fatalf("after rollback want version 3 with {\"a\":1}, got %d %s", got.Version, got.Config)
 	}
 }
