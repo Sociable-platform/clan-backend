@@ -67,6 +67,14 @@ func (m *memStore) WidgetVersionOfGame(_ context.Context, gameID string, version
 	return m.versions[gameID][version-1], nil
 }
 
+func (m *memStore) LatestWidgetVersion(_ context.Context, gameID string) (repository.WidgetVersion, error) {
+	all := m.versions[gameID]
+	if len(all) == 0 {
+		return repository.WidgetVersion{}, repository.ErrNotFound
+	}
+	return all[len(all)-1], nil
+}
+
 // fakeService answers the widget calls from fields, like its other calls.
 // (Its fields, widgetDraft and saveWidgetDraft, are declared with the others in handler_test.go.)
 

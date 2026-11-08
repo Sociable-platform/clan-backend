@@ -235,6 +235,7 @@ Each run uses new random game IDs and deletes its rows afterwards, so it does no
 | GET | `/api/v1/games/{gameID}/widget/versions` | 200 `{ versions: [...] }`, newest first, without configs; an empty list if never published. 404 unless you own the game |
 | GET | `/api/v1/games/{gameID}/widget/versions/{version}` | 200 with that version and its `config`. 404 `widget_version_not_found` (also for a number that is not a positive whole number) |
 | POST | `/api/v1/games/{gameID}/widget/versions/{version}/rollback` | 201 with a **new** version that has the old version's config; nothing is deleted and the draft is untouched. 404 `widget_version_not_found` |
+| GET | `/api/v1/public/games/{gameID}/widget-config` | **No login, open to every website.** 200 `{ version, config }`: the latest **published** version (never a draft), with a strong `ETag` (`"v3"`) and `Cache-Control: public, max-age=60`. Send `If-None-Match` to get 304. 404 `widget_not_published` (also for an unknown game ID). Not rate-limited in the service: put a CDN or proxy limit in front of `/api/v1/public/` |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |
 

@@ -97,6 +97,28 @@ func errWidgetVersionNotFound() *httpx.Error {
 	return httpx.NewError(http.StatusNotFound, "widget_version_not_found", "Widget version not found")
 }
 
+func errWidgetNotPublished() *httpx.Error {
+	return httpx.NewError(http.StatusNotFound, "widget_not_published", "This game has no published widget")
+}
+
+// PublicWidgetConfig returns the newest published version of a game's widget, for the players'
+// page. It needs no developer: the game ID is public. A game that does not exist, and a
+// game that was never published, both answer widget_not_published, so the route does not
+// tell a stranger which game IDs exist. Drafts are never returned.
+func (s *Service) PublicWidgetConfig(ctx context.Context, gameID string) (WidgetVersion, error) {
+	if !uuidPattern.MatchString(gameID) {
+		return WidgetVersion{}, errWidgetNotPublished()
+	}
+	v, err := s.store.LatestWidgetVersion(ctx, gameID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return WidgetVersion{}, errWidgetNotPublished()
+	}
+	if err != nil {
+		return WidgetVersion{}, fmt.Errorf("get latest widget version of game %s: %w", gameID, err)
+	}
+	return toWidgetVersion(v), nil
+}
+
 // PublishWidget publishes the saved draft of a game the developer owns as its next version.
 // The draft stays as it is, so the developer can keep editing from it.
 func (s *Service) PublishWidget(ctx context.Context, developerID, gameID string) (WidgetVersion, error) {

@@ -87,7 +87,7 @@ func run() error {
 
 	// Browser pages allowed to call this service (the developer dashboard).
 	origins := config.List("PLATFORM_CORS_ORIGINS", []string{"http://localhost:5173"})
-	cors, err := httpx.CORS(origins)
+	cors, err := httpx.CORS(origins, "/api/v1/public/")
 	if err != nil {
 		return err
 	}

@@ -35,6 +35,8 @@ type fakeService struct {
 	widgetVersion   func(developerID, gameID string, version int) (service.WidgetVersion, error)
 	rollbackWidget  func(developerID, gameID string, version int) (service.WidgetVersion, error)
 
+	publicWidgetConfig func(gameID string) (service.WidgetVersion, error)
+
 	gameForAPIKey    func(key string) (string, error)
 	issuePlayerToken func(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)
 }

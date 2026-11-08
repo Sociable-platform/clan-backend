@@ -10,6 +10,7 @@ info:
     - Browser calls are only accepted from the origins in `PLATFORM_CORS_ORIGINS`
       (default `http://localhost:5173`, the dashboard). Other origins get 403 `origin_not_allowed`.
       Calls without an `Origin` header (the game's own server, curl) are not affected.
+      The one exception is `GET /api/v1/public/...`: it is open to every website (`Access-Control-Allow-Origin: *`).
 
     This file lists only implemented routes. `TestOpenAPIMatchesRoutes` fails when it
     and `services/platform/internal/handler` drift apart.
@@ -29,6 +30,8 @@ tags:
     description: The clan widget's look, edited as a draft in the dashboard
   - name: players
     description: Player tokens, issued to a game's own server
+  - name: public
+    description: Read-only routes for a game's page in the player's browser; no login, open to every website
 paths:
   /health:
     get:
@@ -608,6 +611,89 @@ paths:
                 error:
                   code: api_key_not_found
                   message: API key not found
+  /api/v1/public/games/{gameID}/widget-config:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [public]
+      operationId: getPublicWidgetConfig
+      summary: Get the published widget config of a game
+      description: |
+        What the clan widget on a game's page loads to know how to look. It returns the **latest
+        published version** (a publish or a rollback makes a new latest version). A draft is never
+        returned, however recently it was saved.
+
+        No login, no API key: the game ID is public, and the answer holds only the config and its
+        version number (not who published it or when). Any website may call it
+        (`Access-Control-Allow-Origin: *`, `ETag` readable from JavaScript); every other route keeps
+        the origin list. A game that does not exist and a game that was never published get the same
+        404 `widget_not_published`, so the route does not reveal which game IDs exist.
+
+        **Caching.** Every 200 and 304 carries a strong `ETag` such as `"v3"`: the version number,
+        so it changes only when a publish or rollback adds a version. Send it back in
+        `If-None-Match` to get `304 Not Modified` with no body. `Cache-Control` is
+        `public, max-age=60`, so browsers and a CDN keep the answer for a minute and a new publish
+        reaches players within about that time. Errors are sent with `Cache-Control: no-store`.
+
+        **Load and rate limits.** The route is meant to be cached in front of the service. There is
+        no rate limit in the service itself; put a CDN or reverse-proxy limit in front of
+        `/api/v1/public/` before heavy production use. Each uncached call is one indexed query.
+      security: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The `ETag` of the copy the page already has. A match returns 304.
+          schema:
+            type: string
+          example: '"v3"'
+      responses:
+        "200":
+          description: The latest published config.
+          headers:
+            ETag:
+              description: Strong ETag, the version number in quotes.
+              schema:
+                type: string
+              example: '"v3"'
+            Cache-Control:
+              schema:
+                type: string
+              example: public, max-age=60
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicWidgetConfig"
+              example:
+                version: 3
+                config:
+                  schemaVersion: 1
+        "304":
+          description: The page already has this version. No body.
+          headers:
+            ETag:
+              schema:
+                type: string
+              example: '"v3"'
+            Cache-Control:
+              schema:
+                type: string
+              example: public, max-age=60
+        "404":
+          description: The game has no published widget (or no such game).
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: widget_not_published
+                  message: This game has no published widget
   /api/v1/players/auth:
     post:
       tags: [players]
@@ -877,6 +963,18 @@ components:
             config:
               type: object
               additionalProperties: true
+    PublicWidgetConfig:
+      type: object
+      description: The latest published config and its version. Nothing else.
+      required: [version, config]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        config:
+          type: object
+          description: The widget config JSON, as published.
+          additionalProperties: true
     WidgetVersionList:
       type: object
       required: [versions]

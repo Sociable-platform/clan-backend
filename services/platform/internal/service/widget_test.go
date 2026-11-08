@@ -89,6 +89,17 @@ func (f *fakeStore) WidgetVersionOfGame(_ context.Context, gameID string, versio
 	return f.versions[gameID][version-1], nil
 }
 
+func (f *fakeStore) LatestWidgetVersion(_ context.Context, gameID string) (repository.WidgetVersion, error) {
+	if f.err != nil {
+		return repository.WidgetVersion{}, f.err
+	}
+	all := f.versions[gameID]
+	if len(all) == 0 {
+		return repository.WidgetVersion{}, repository.ErrNotFound
+	}
+	return all[len(all)-1], nil
+}
+
 // aliceGame returns a service with a game owned by alice, and bob as a second developer.
 func aliceGame(t *testing.T) (svc *Service, alice, bob Developer, game Game) {
 	t.Helper()
@@ -391,5 +402,59 @@ func TestWidgetVersions_StoreFailureIsAnError(t *testing.T) {
 	}
 	if _, err := svc.WidgetVersions(context.Background(), alice.ID, game.ID); err == nil {
 		t.Fatal("list: want an error when the store fails")
+	}
+}
+
+func TestPublicWidgetConfig_ReturnsTheLatestPublishedVersionNotTheDraft(t *testing.T) {
+	svc, alice, _, game := aliceGame(t)
+	ctx := context.Background()
+
+	_, err := svc.PublicWidgetConfig(ctx, game.ID)
+	wantError(t, err, http.StatusNotFound, "widget_not_published")
+
+	// a draft alone is not published
+	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(`{"a":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.PublicWidgetConfig(ctx, game.ID)
+	wantError(t, err, http.StatusNotFound, "widget_not_published")
+
+	if _, err := svc.PublishWidget(ctx, alice.ID, game.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(`{"a":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PublishWidget(ctx, alice.ID, game.ID); err != nil {
+		t.Fatal(err)
+	}
+	// work in progress after the last publish must stay hidden from players
+	if _, err := svc.SaveWidgetDraft(ctx, alice.ID, game.ID, json.RawMessage(`{"a":"secret draft"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.PublicWidgetConfig(ctx, game.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != 2 || string(got.Config) != `{"a":2}` {
+		t.Fatalf("want version 2 with {\"a\":2}, got %d %s", got.Version, got.Config)
+	}
+
+	// a rollback is a new version, and players get it
+	if _, err := svc.RollbackWidget(ctx, alice.ID, game.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = svc.PublicWidgetConfig(ctx, game.ID)
+	if got.Version != 3 || string(got.Config) != `{"a":1}` {
+		t.Fatalf("after rollback want version 3 with {\"a\":1}, got %d %s", got.Version, got.Config)
+	}
+}
+
+func TestPublicWidgetConfig_UnknownOrMalformedGameLooksLikeNotPublished(t *testing.T) {
+	svc, _, _, _ := aliceGame(t)
+	for _, id := range []string{"00000000-0000-4000-8000-00000000dead", "not-a-uuid", ""} {
+		_, err := svc.PublicWidgetConfig(context.Background(), id)
+		wantError(t, err, http.StatusNotFound, "widget_not_published")
 	}
 }
