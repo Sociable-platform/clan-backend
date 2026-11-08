@@ -506,3 +506,484 @@ func TestListMembersNotFound(t *testing.T) {
 		}
 	}
 }
+
+// A clan with exactly one free place and two players pressing "Join" at the same moment:
+// one gets in, the other is told the clan is full. Repeated, because a race only shows up
+// on some runs.
+func TestJoinLastFreePlaceAtTheSameTime(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	for round := 0; round < 20; round++ {
+		clan := ownClan(t, r, game, fmt.Sprintf("Duo%d", round))
+		// room for the owner and one more
+		if _, err := r.pool.Exec(ctx, "update clans set max_members = 2 where id = $1", clan); err != nil {
+			t.Fatal(err)
+		}
+		players := []string{
+			newPlayer(t, r, game, fmt.Sprintf("a_%d", round)),
+			newPlayer(t, r, game, fmt.Sprintf("b_%d", round)),
+		}
+
+		ok, full := race(t, len(players), func(i int) error {
+			_, err := r.JoinClan(ctx, game, clan, players[i])
+			return err
+		}, ErrClanFull)
+		if ok != 1 || full != 1 {
+			t.Fatalf("round %d: joined=%d full=%d, want 1 and 1", round, ok, full)
+		}
+
+		var count, members int
+		_ = r.pool.QueryRow(ctx, "select member_count from clans where id = $1", clan).Scan(&count)
+		_ = r.pool.QueryRow(ctx, "select count(*) from clan_members where clan_id = $1", clan).Scan(&members)
+		if count != 2 || members != 2 {
+			t.Fatalf("round %d: member_count=%d, member rows=%d, want 2 and 2", round, count, members)
+		}
+	}
+}
+
+// ---- LeaveClan ----
+
+// checkClanIsConsistent fails the test unless the clan has member_count equal to its member
+// rows and exactly one owner, and clans.owner_id is that owner.
+func checkClanIsConsistent(t *testing.T, r *Repository, clanID string) {
+	t.Helper()
+	ctx := context.Background()
+	var count, rows, owners int
+	var ownerID, ownerRow string
+	err := r.pool.QueryRow(ctx,
+		`select c.member_count, c.owner_id::text,
+		        (select count(*) from clan_members where clan_id = c.id),
+		        (select count(*) from clan_members where clan_id = c.id and role = 'owner'),
+		        coalesce((select player_id::text from clan_members where clan_id = c.id and role = 'owner'), '')
+		 from clans c where c.id = $1`, clanID).Scan(&count, &ownerID, &rows, &owners, &ownerRow)
+	if err != nil {
+		t.Fatalf("clan %s: %v", clanID, err)
+	}
+	if count != rows || owners != 1 || ownerID != ownerRow {
+		t.Fatalf("clan is inconsistent: member_count=%d member rows=%d owner rows=%d clans.owner_id=%s owner row=%s",
+			count, rows, owners, ownerID, ownerRow)
+	}
+}
+
+func clanExists(t *testing.T, r *Repository, clanID string) bool {
+	t.Helper()
+	var n int
+	if err := r.pool.QueryRow(context.Background(), "select count(*) from clans where id = $1", clanID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n == 1
+}
+
+// memberOf reports whether the player (internal ID) has a membership row in the clan.
+func memberOf(t *testing.T, r *Repository, clanID, playerID string) bool {
+	t.Helper()
+	var n int
+	if err := r.pool.QueryRow(context.Background(),
+		"select count(*) from clan_members where clan_id = $1 and player_id = $2", clanID, playerID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n == 1
+}
+
+// ownerOf returns the clan's owner_id.
+func ownerOf(t *testing.T, r *Repository, clanID string) string {
+	t.Helper()
+	var id string
+	if err := r.pool.QueryRow(context.Background(), "select owner_id::text from clans where id = $1", clanID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// setJoinedAt makes a member's join time deterministic ("hours ago"), because members
+// added within the same millisecond would otherwise tie.
+func setJoinedAt(t *testing.T, r *Repository, clanID, playerID string, hoursAgo int) {
+	t.Helper()
+	if _, err := r.pool.Exec(context.Background(),
+		`update clan_members set joined_at = now() - make_interval(hours => $3) where clan_id = $1 and player_id = $2`,
+		clanID, playerID, hoursAgo); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// joinAs joins a new player (external ID ext) to the clan and returns the player's internal ID.
+func joinAs(t *testing.T, r *Repository, game, clanID, ext string) string {
+	t.Helper()
+	id := newPlayer(t, r, game, ext)
+	if _, err := r.JoinClan(context.Background(), game, clanID, id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestLeaveClanNormalMember(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	clan := ownClan(t, r, game, "Wolves")
+	owner := ownerOf(t, r, clan)
+	joinAs(t, r, game, clan, "u_1")
+	leaver := joinAs(t, r, game, clan, "u_2")
+
+	if err := r.LeaveClan(ctx, game, clan, "u_2"); err != nil {
+		t.Fatal(err)
+	}
+	if memberOf(t, r, clan, leaver) {
+		t.Fatal("the member is still in the clan")
+	}
+	var count int
+	_ = r.pool.QueryRow(ctx, "select member_count from clans where id = $1", clan).Scan(&count)
+	if count != 2 || ownerOf(t, r, clan) != owner {
+		t.Fatalf("member_count=%d (want 2), owner changed=%v (want unchanged)", count, ownerOf(t, r, clan) != owner)
+	}
+	checkClanIsConsistent(t, r, clan)
+	if _, err := r.MyClan(ctx, game, "u_2"); !errors.Is(err, ErrNotInClan) {
+		t.Fatalf("MyClan after leaving: %v, want ErrNotInClan", err)
+	}
+
+	// the player can join another clan afterwards, and can come back to the same one
+	other := ownClan(t, r, game, "Bears")
+	if _, err := r.JoinClan(ctx, game, other, leaver); err != nil {
+		t.Fatalf("joining another clan after leaving: %v", err)
+	}
+	if err := r.LeaveClan(ctx, game, other, "u_2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.JoinClan(ctx, game, clan, leaver); err != nil {
+		t.Fatalf("joining the old clan again: %v", err)
+	}
+	checkClanIsConsistent(t, r, clan)
+	checkClanIsConsistent(t, r, other)
+}
+
+func TestLeaveClanOwnerLeavesAndTheOldestMemberTakesOver(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	clan := ownClan(t, r, game, "Wolves")
+	a := joinAs(t, r, game, clan, "u_a")
+	b := joinAs(t, r, game, clan, "u_b")
+	c := joinAs(t, r, game, clan, "u_c")
+	// b joined first of the three even though a was added to the database first
+	setJoinedAt(t, r, clan, b, 30)
+	setJoinedAt(t, r, clan, a, 20)
+	setJoinedAt(t, r, clan, c, 10)
+
+	if err := r.LeaveClan(ctx, game, clan, "owner_Wolves"); err != nil {
+		t.Fatal(err)
+	}
+	if got := ownerOf(t, r, clan); got != b {
+		t.Fatalf("new owner = %s, want the oldest member %s", got, b)
+	}
+	var role string
+	for _, m := range []string{a, c} {
+		_ = r.pool.QueryRow(ctx, "select role from clan_members where clan_id = $1 and player_id = $2", clan, m).Scan(&role)
+		if role != "member" {
+			t.Fatalf("player %s has role %q, want member", m, role)
+		}
+	}
+	var count int
+	_ = r.pool.QueryRow(ctx, "select member_count from clans where id = $1", clan).Scan(&count)
+	if count != 3 {
+		t.Fatalf("member_count = %d, want 3", count)
+	}
+	checkClanIsConsistent(t, r, clan)
+	// the old owner is a normal player again: free to start a new clan
+	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "owner_Wolves"), "Wolves Reborn"); err != nil {
+		t.Fatalf("old owner creating a clan: %v", err)
+	}
+	// the new owner can leave too: the next oldest takes over
+	if err := r.LeaveClan(ctx, game, clan, "u_b"); err != nil {
+		t.Fatal(err)
+	}
+	if got := ownerOf(t, r, clan); got != a {
+		t.Fatalf("second new owner = %s, want %s", got, a)
+	}
+	checkClanIsConsistent(t, r, clan)
+}
+
+func TestLeaveClanOwnerLeavesTiesGoToTheLowerPlayerID(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	clan := ownClan(t, r, game, "Wolves")
+	a := joinAs(t, r, game, clan, "u_a")
+	b := joinAs(t, r, game, clan, "u_b")
+	if _, err := r.pool.Exec(context.Background(),
+		`update clan_members set joined_at = '2026-01-01 00:00:00+00' where clan_id = $1 and role = 'member'`, clan); err != nil {
+		t.Fatal(err)
+	}
+	want := a
+	if b < a {
+		want = b
+	}
+
+	if err := r.LeaveClan(context.Background(), game, clan, "owner_Wolves"); err != nil {
+		t.Fatal(err)
+	}
+	if got := ownerOf(t, r, clan); got != want {
+		t.Fatalf("new owner = %s, want the lower ID %s", got, want)
+	}
+	checkClanIsConsistent(t, r, clan)
+}
+
+func TestLeaveClanOwnerAloneDeletesTheClan(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	clan := ownClan(t, r, game, "Wolves")
+	other := ownClan(t, r, game, "Bears")
+
+	if err := r.LeaveClan(ctx, game, clan, "owner_Wolves"); err != nil {
+		t.Fatal(err)
+	}
+	if clanExists(t, r, clan) {
+		t.Fatal("the clan should be deleted")
+	}
+	var n int
+	_ = r.pool.QueryRow(ctx, "select count(*) from clan_members where clan_id = $1", clan).Scan(&n)
+	if n != 0 {
+		t.Fatalf("%d member rows left behind", n)
+	}
+	if list, _ := r.ListClans(ctx, game, "", 100); len(list) != 1 || list[0].ID != other {
+		t.Fatalf("only the other clan should be listed, got %+v", list)
+	}
+	checkClanIsConsistent(t, r, other)
+	// the name and the player are free again
+	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "owner_Wolves"), "Wolves"); err != nil {
+		t.Fatalf("creating the clan again: %v", err)
+	}
+	// and the deleted clan is gone for everyone
+	if err := r.LeaveClan(ctx, game, clan, "owner_Wolves"); !errors.Is(err, ErrClanNotFound) {
+		t.Fatalf("leaving the deleted clan: %v, want ErrClanNotFound", err)
+	}
+}
+
+func TestLeaveClanNotAMember(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	wolves := ownClan(t, r, game, "Wolves")
+	bears := ownClan(t, r, game, "Bears")
+	joinAs(t, r, game, bears, "u_bear")
+	newPlayer(t, r, game, "u_free") // a player without a clan
+
+	for _, ext := range []string{
+		"u_free",      // in no clan
+		"u_bear",      // in another clan
+		"owner_Bears", // the owner of another clan
+		"u_never_seen",
+	} {
+		if err := r.LeaveClan(ctx, game, wolves, ext); !errors.Is(err, ErrNotInClan) {
+			t.Fatalf("%s leaving Wolves: %v, want ErrNotInClan", ext, err)
+		}
+	}
+	checkClanIsConsistent(t, r, wolves)
+	checkClanIsConsistent(t, r, bears)
+	var wolfCount, bearCount int
+	_ = r.pool.QueryRow(ctx, "select member_count from clans where id = $1", wolves).Scan(&wolfCount)
+	_ = r.pool.QueryRow(ctx, "select member_count from clans where id = $1", bears).Scan(&bearCount)
+	if wolfCount != 1 || bearCount != 2 {
+		t.Fatalf("counts changed: Wolves=%d Bears=%d, want 1 and 2", wolfCount, bearCount)
+	}
+	// a player we have never seen must not be created by trying to leave
+	var n int
+	_ = r.pool.QueryRow(ctx, "select count(*) from players where game_id = $1 and external_id = 'u_never_seen'", game).Scan(&n)
+	if n != 0 {
+		t.Fatal("leaving created a player record")
+	}
+}
+
+func TestLeaveClanNotFound(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, otherGame := newGameID(t), newGameID(t)
+	defer cleanup(game, otherGame)
+	ctx := context.Background()
+	foreign := ownClan(t, r, otherGame, "Wolves")
+	newPlayer(t, r, game, "owner_Wolves") // same external ID as the foreign clan's owner
+
+	for name, id := range map[string]string{
+		"unknown":        "00000000-0000-4000-8000-00000000dead",
+		"another game's": foreign,
+		"not a UUID":     "nope",
+		"empty":          "",
+		"not hex":        "ZZZZZZZZ-0000-4000-8000-00000000dead",
+	} {
+		if err := r.LeaveClan(ctx, game, id, "owner_Wolves"); !errors.Is(err, ErrClanNotFound) {
+			t.Errorf("%s: %v, want ErrClanNotFound", name, err)
+		}
+	}
+	// the foreign clan is untouched
+	checkClanIsConsistent(t, r, foreign)
+	if n := countRows(t, r, "clan_members", otherGame); n != 1 {
+		t.Fatalf("the other game's members changed: %d rows", n)
+	}
+}
+
+// Two members press "Leave" at the same moment. Both must succeed, and the counts must
+// end up right. Repeated, because a race only shows up on some runs.
+func TestLeaveClanTwoMembersAtTheSameTime(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	for round := 0; round < 20; round++ {
+		clan := ownClan(t, r, game, fmt.Sprintf("Duo%d", round))
+		exts := []string{fmt.Sprintf("a_%d", round), fmt.Sprintf("b_%d", round)}
+		for _, e := range exts {
+			joinAs(t, r, game, clan, e)
+		}
+
+		ok, _ := race(t, 2, func(i int) error { return r.LeaveClan(ctx, game, clan, exts[i]) }, ErrNotInClan)
+		if ok != 2 {
+			t.Fatalf("round %d: %d of 2 left", round, ok)
+		}
+		var count int
+		_ = r.pool.QueryRow(ctx, "select member_count from clans where id = $1", clan).Scan(&count)
+		if count != 1 {
+			t.Fatalf("round %d: member_count = %d, want 1 (the owner)", round, count)
+		}
+		checkClanIsConsistent(t, r, clan)
+	}
+}
+
+// The same player leaves twice at the same moment (a double click): one succeeds, the
+// other is told they are not a member, and the count goes down only once.
+func TestLeaveClanSamePlayerTwiceAtTheSameTime(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	clan := ownClan(t, r, game, "Wolves")
+	joinAs(t, r, game, clan, "u_1")
+	joinAs(t, r, game, clan, "u_2")
+
+	ok, notIn := race(t, 6, func(int) error { return r.LeaveClan(ctx, game, clan, "u_1") }, ErrNotInClan)
+	if ok != 1 || notIn != 5 {
+		t.Fatalf("left=%d notInClan=%d, want 1 and 5", ok, notIn)
+	}
+	var count int
+	_ = r.pool.QueryRow(ctx, "select member_count from clans where id = $1", clan).Scan(&count)
+	if count != 2 {
+		t.Fatalf("member_count = %d, want 2", count)
+	}
+	checkClanIsConsistent(t, r, clan)
+}
+
+// Everybody, the owner included, leaves at once. Whatever the order, nobody is left
+// behind and the clan is deleted exactly when its last member goes.
+func TestLeaveClanEveryoneAtTheSameTime(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	for round := 0; round < 10; round++ {
+		clan := ownClan(t, r, game, fmt.Sprintf("Crowd%d", round))
+		exts := []string{fmt.Sprintf("owner_Crowd%d", round)}
+		for i := 0; i < 5; i++ {
+			e := fmt.Sprintf("m_%d_%d", round, i)
+			joinAs(t, r, game, clan, e)
+			exts = append(exts, e)
+		}
+
+		ok, _ := race(t, len(exts), func(i int) error { return r.LeaveClan(ctx, game, clan, exts[i]) }, ErrNotInClan)
+		if ok != len(exts) {
+			t.Fatalf("round %d: %d of %d left", round, ok, len(exts))
+		}
+		if clanExists(t, r, clan) {
+			t.Fatalf("round %d: the empty clan still exists", round)
+		}
+	}
+	if n := countRows(t, r, "clan_members", game); n != 0 {
+		t.Fatalf("%d member rows left behind", n)
+	}
+}
+
+// The owner leaves while another player joins. Either order is fine, but the clan must
+// end up consistent with exactly one owner, and the oldest member must be that owner.
+func TestLeaveClanOwnerLeavesWhileSomeoneJoins(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	for round := 0; round < 20; round++ {
+		clan := ownClan(t, r, game, fmt.Sprintf("Race%d", round))
+		oldest := joinAs(t, r, game, clan, fmt.Sprintf("old_%d", round))
+		setJoinedAt(t, r, clan, oldest, 5)
+		joiner := newPlayer(t, r, game, fmt.Sprintf("new_%d", round))
+
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		wg.Add(2)
+		go func() { defer wg.Done(); errs[0] = r.LeaveClan(ctx, game, clan, fmt.Sprintf("owner_Race%d", round)) }()
+		go func() { defer wg.Done(); _, errs[1] = r.JoinClan(ctx, game, clan, joiner) }()
+		wg.Wait()
+		if errs[0] != nil || errs[1] != nil {
+			t.Fatalf("round %d: leave: %v, join: %v", round, errs[0], errs[1])
+		}
+		checkClanIsConsistent(t, r, clan)
+		if got := ownerOf(t, r, clan); got != oldest {
+			t.Fatalf("round %d: owner = %s, want the oldest member %s", round, got, oldest)
+		}
+		var count int
+		_ = r.pool.QueryRow(ctx, "select member_count from clans where id = $1", clan).Scan(&count)
+		if count != 2 {
+			t.Fatalf("round %d: member_count = %d, want 2 (oldest + joiner)", round, count)
+		}
+	}
+}
+
+// The owner is alone and leaves while someone joins. If the leave wins, the clan is gone
+// and the join says "not found". If the join wins, the newcomer becomes the owner.
+func TestLeaveClanAloneOwnerLeavesWhileSomeoneJoins(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	var deleted, kept int
+
+	for round := 0; round < 30; round++ {
+		clan := ownClan(t, r, game, fmt.Sprintf("Solo%d", round))
+		joiner := newPlayer(t, r, game, fmt.Sprintf("j_%d", round))
+
+		var wg sync.WaitGroup
+		var leaveErr, joinErr error
+		wg.Add(2)
+		go func() { defer wg.Done(); leaveErr = r.LeaveClan(ctx, game, clan, fmt.Sprintf("owner_Solo%d", round)) }()
+		go func() { defer wg.Done(); _, joinErr = r.JoinClan(ctx, game, clan, joiner) }()
+		wg.Wait()
+		if leaveErr != nil {
+			t.Fatalf("round %d: leave: %v", round, leaveErr)
+		}
+
+		if clanExists(t, r, clan) {
+			kept++
+			if joinErr != nil {
+				t.Fatalf("round %d: the clan exists but the join failed: %v", round, joinErr)
+			}
+			checkClanIsConsistent(t, r, clan)
+			if got := ownerOf(t, r, clan); got != joiner {
+				t.Fatalf("round %d: owner = %s, want the newcomer %s", round, got, joiner)
+			}
+		} else {
+			deleted++
+			if !errors.Is(joinErr, ErrClanNotFound) {
+				t.Fatalf("round %d: the clan is gone, so the join should say not found, got %v", round, joinErr)
+			}
+			if memberOf(t, r, clan, joiner) {
+				t.Fatalf("round %d: the newcomer is a member of a deleted clan", round)
+			}
+		}
+	}
+	t.Logf("leave first: %d times, join first: %d times", deleted, kept)
+}

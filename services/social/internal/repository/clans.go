@@ -226,7 +226,8 @@ func joinClanError(err error) error {
 	return fmt.Errorf("join clan: %w", err)
 }
 
-// ErrNotInClan means the player is not a member of any clan in this game.
+// ErrNotInClan means the player is not a member of the clan asked about (MyClan: of any
+// clan of the game; LeaveClan: of that clan).
 var ErrNotInClan = errors.New("player is not in a clan")
 
 // PlayerClan is the clan a player is in, and their role in it ("owner" or "member").
@@ -309,4 +310,109 @@ func (r *Repository) ListMembers(ctx context.Context, gameID, clanID string) ([]
 		return nil, fmt.Errorf("list members: %w", err)
 	}
 	return members, nil
+}
+
+// LeaveClan removes the player (gameID, externalID) from clan clanID. Everything happens in
+// one transaction, and the clan row is locked first (like JoinClan), so member_count and
+// the owner cannot get out of step when members join or leave at the same time.
+//
+//   - A normal member leaves: the membership is deleted and member_count goes down by one.
+//   - The owner leaves and others remain: the member who joined first (ties: the lower
+//     player ID) becomes the owner, in clans.owner_id and in clan_members.role, and the
+//     old owner's membership is deleted.
+//   - The owner is the only member: the clan is deleted.
+//
+// It never creates a player record: a player we have never seen is simply not a member.
+//
+// Errors: ErrClanNotFound (also for another game's clan and for an ID that is not a UUID),
+// ErrNotInClan.
+func (r *Repository) LeaveClan(ctx context.Context, gameID, clanID, externalID string) error {
+	if r.pool == nil {
+		return ErrNoDatabase
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("leave clan: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1. Lock the clan. "and game_id = $2" makes another game's clan look like it does not exist.
+	var locked string
+	err = tx.QueryRow(ctx,
+		`select id::text from clans where id = $1 and game_id = $2 for update`,
+		clanID, gameID).Scan(&locked)
+	if err != nil {
+		return leaveClanError(err)
+	}
+
+	// 2. Delete the membership. No row means the player is not in this clan.
+	var role string
+	err = tx.QueryRow(ctx,
+		`delete from clan_members m
+		 using players p
+		 where m.clan_id = $1 and m.game_id = $2
+		   and p.id = m.player_id and p.game_id = m.game_id and p.external_id = $3
+		 returning m.role`,
+		clanID, gameID, externalID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotInClan
+	}
+	if err != nil {
+		return leaveClanError(err)
+	}
+
+	// 3. Count down. Safe to trust member_count because we hold the lock.
+	var left int
+	err = tx.QueryRow(ctx,
+		`update clans set member_count = member_count - 1 where id = $1 returning member_count`,
+		clanID).Scan(&left)
+	if err != nil {
+		return leaveClanError(err)
+	}
+
+	switch {
+	case left == 0:
+		// 4a. Nobody is left: the clan goes away (its member rows are already gone).
+		if _, err := tx.Exec(ctx, `delete from clans where id = $1`, clanID); err != nil {
+			return leaveClanError(err)
+		}
+	case role == "owner":
+		// 4b. The owner left and others remain: the member who joined first takes over.
+		var heir string
+		err = tx.QueryRow(ctx,
+			`select player_id::text from clan_members
+			 where clan_id = $1
+			 order by joined_at, player_id
+			 limit 1`,
+			clanID).Scan(&heir)
+		if err != nil {
+			return leaveClanError(err)
+		}
+		if _, err := tx.Exec(ctx,
+			`update clan_members set role = 'owner' where clan_id = $1 and player_id = $2`,
+			clanID, heir); err != nil {
+			return leaveClanError(err)
+		}
+		if _, err := tx.Exec(ctx,
+			`update clans set owner_id = $2 where id = $1`, clanID, heir); err != nil {
+			return leaveClanError(err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return leaveClanError(err)
+	}
+	return nil
+}
+
+// leaveClanError turns database errors into our own errors where it can.
+func leaveClanError(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrClanNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "22P02" { // the clan ID is not a UUID
+		return ErrClanNotFound
+	}
+	return fmt.Errorf("leave clan: %w", err)
 }
