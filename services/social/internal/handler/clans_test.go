@@ -20,11 +20,11 @@ import (
 )
 
 // The other fakes must satisfy the Service interface too.
-func (f fakeService) ListClans(context.Context, string, string) ([]service.Clan, error) {
+func (f fakeService) ListClans(context.Context, string, service.ListClansInput) ([]service.Clan, error) {
 	return []service.Clan{}, f.err
 }
 
-func (s *recordingService) ListClans(context.Context, string, string) ([]service.Clan, error) {
+func (s *recordingService) ListClans(context.Context, string, service.ListClansInput) ([]service.Clan, error) {
 	return []service.Clan{}, s.err
 }
 
@@ -64,16 +64,17 @@ func (s *recordingService) ListMembers(context.Context, string, string) ([]servi
 	return []service.Member{}, s.err
 }
 
-// clanService remembers which game and search text the handler asked for.
+// clanService remembers which game and list options the handler asked for.
 type clanService struct {
 	fakeService
-	clans     []service.Clan
-	err       error
-	gameID, q string
+	clans  []service.Clan
+	err    error
+	gameID string
+	in     service.ListClansInput
 }
 
-func (s *clanService) ListClans(_ context.Context, gameID, q string) ([]service.Clan, error) {
-	s.gameID, s.q = gameID, q
+func (s *clanService) ListClans(_ context.Context, gameID string, in service.ListClansInput) ([]service.Clan, error) {
+	s.gameID, s.in = gameID, in
 	return s.clans, s.err
 }
 
@@ -103,8 +104,8 @@ func TestListClansUsesGameFromTokenAndQFromURL(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
 	}
-	if svc.gameID != tokenGame || svc.q != "Wol f" {
-		t.Fatalf("service got game=%q q=%q", svc.gameID, svc.q)
+	if svc.gameID != tokenGame || svc.in != (service.ListClansInput{Query: "Wol f"}) {
+		t.Fatalf("service got game=%q in=%+v", svc.gameID, svc.in)
 	}
 	want := `{"clans":[{"id":"c-1","name":"Wolves","memberCount":3,"maxMembers":10}]}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
@@ -473,5 +474,34 @@ func TestListMembersHandler(t *testing.T) {
 	}
 	if rec := postJoin(t, &readingService{}, http.MethodGet, "/api/v1/clans/"+joinClanID+"/members", true); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("no token: status %d, want 401", rec.Code)
+	}
+}
+
+// limit, sort and hasSpace go to the service as they are written in the URL, and a missing one stays empty.
+func TestListClansPassesLimitSortAndHasSpace(t *testing.T) {
+	svc := &clanService{clans: []service.Clan{}}
+	rec := callClans(t, svc, "?limit=3&sort=members&hasSpace=true")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	want := service.ListClansInput{Limit: "3", Sort: "members", HasSpace: "true"}
+	if svc.in != want {
+		t.Fatalf("service got %+v, want %+v", svc.in, want)
+	}
+
+	callClans(t, svc, "?q=nova")
+	if svc.in != (service.ListClansInput{Query: "nova"}) {
+		t.Fatalf("a search alone must not set the other options, got %+v", svc.in)
+	}
+}
+
+func TestListClansBadOptionsAre400(t *testing.T) {
+	for _, code := range []string{"invalid_limit", "invalid_sort", "invalid_has_space"} {
+		svc := &clanService{err: httpx.NewError(http.StatusBadRequest, code, "bad")}
+		rec := callClans(t, svc, "?limit=x")
+		var body httpx.ErrorBody
+		if rec.Code != http.StatusBadRequest || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error.Code != code {
+			t.Fatalf("%s: status %d, body %s", code, rec.Code, rec.Body.String())
+		}
 	}
 }

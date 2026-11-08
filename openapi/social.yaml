@@ -133,9 +133,19 @@ paths:
       operationId: listClans
       summary: Clans of the player's game
       description: |
-        Returns the clans of the caller's game (the game in the player token), sorted
-        by name, at most 100. With `q`, only clans whose name contains that text are
-        returned, ignoring upper/lower case. Clans of other games are never returned.
+        Returns the clans of the caller's game (the game in the player token). By default they are
+        sorted by name, at most 100. Clans of other games are never returned.
+
+        - `q`: only clans whose name contains that text, ignoring upper/lower case. A search looks
+          through **all** clans of the game, full ones too.
+        - `limit`: at most this many clans (1 to 100, default 100).
+        - `sort`: `name` (default) or `members` (most members first; equal sizes by name).
+        - `hasSpace`: `true` keeps only clans that still have a free place.
+
+        **Featured clans.** The server has no separate "featured" list. A page that shows a few
+        suggested clans asks for the biggest ones that still have room:
+        `GET /api/v1/clans?hasSpace=true&sort=members&limit=5`. When the player types in the search
+        box, it calls `GET /api/v1/clans?q=...` with none of the other options, which searches all clans.
       security:
         - playerToken: []
       parameters:
@@ -147,6 +157,33 @@ paths:
             type: string
             maxLength: 50
           example: wol
+        - name: limit
+          in: query
+          required: false
+          description: The most clans to return, 1 to 100 (default 100).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+          example: 5
+        - name: sort
+          in: query
+          required: false
+          description: Order of the clans. `members` puts the biggest clan first and breaks ties by name.
+          schema:
+            type: string
+            enum: [name, members]
+            default: name
+          example: members
+        - name: hasSpace
+          in: query
+          required: false
+          description: When `true`, only clans with a free place are returned. `false` or missing returns all clans.
+          schema:
+            type: boolean
+            default: false
+          example: true
       responses:
         "200":
           description: The clans (an empty list when none match).
@@ -161,15 +198,18 @@ paths:
                     memberCount: 3
                     maxMembers: 10
         "400":
-          description: The search text is too long (code invalid_query).
+          description: |
+            Wrong input. `code` is `invalid_query` (search text over 50 characters), `invalid_limit`
+            (not a whole number from 1 to 100), `invalid_sort` (not `name` or `members`) or
+            `invalid_has_space` (not `true` or `false`).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
               example:
                 error:
-                  code: invalid_query
-                  message: Search text must be at most 50 characters
+                  code: invalid_limit
+                  message: limit must be a whole number from 1 to 100
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":

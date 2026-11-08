@@ -24,15 +24,22 @@ func toClanResponse(c service.Clan) clanResponse {
 	return clanResponse{ID: c.ID, Name: c.Name, MemberCount: c.MemberCount, MaxMembers: c.MaxMembers}
 }
 
-// listClans handles GET /api/v1/clans?q=: the clans of the caller's game, optionally searched by name.
-// The game comes only from the player token; q comes from the URL.
+// listClans handles GET /api/v1/clans?q=&limit=&sort=&hasSpace=: the clans of the caller's game,
+// optionally searched by name, limited, sorted and filtered. The game comes only from the
+// player token; the rest comes from the URL and is checked by the service.
 func (h *Handler) listClans(w http.ResponseWriter, r *http.Request) {
 	caller, ok := auth.PlayerFrom(r.Context())
 	if !ok {
 		h.fail(w, r, errNoPlayerInContext)
 		return
 	}
-	clans, err := h.svc.ListClans(r.Context(), caller.GameID, r.URL.Query().Get("q"))
+	params := r.URL.Query()
+	clans, err := h.svc.ListClans(r.Context(), caller.GameID, service.ListClansInput{
+		Query:    params.Get("q"),
+		Limit:    params.Get("limit"),
+		Sort:     params.Get("sort"),
+		HasSpace: params.Get("hasSpace"),
+	})
 	if err != nil {
 		h.fail(w, r, err)
 		return
