@@ -24,6 +24,28 @@ func TestWriteErrKeepsAppErrors(t *testing.T) {
 	}
 }
 
+func TestWriteErrWithoutDetailsHasNoDetailsField(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteErr(rec, NewError(http.StatusConflict, "clan_full", "Clan has reached 10 members"))
+	if want := `{"error":{"code":"clan_full","message":"Clan has reached 10 members"}}`; strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("body %s, want %s", rec.Body.String(), want)
+	}
+}
+
+func TestWriteErrSendsDetails(t *testing.T) {
+	type problem struct {
+		Path string `json:"path"`
+		Rule string `json:"rule"`
+	}
+	rec := httptest.NewRecorder()
+	WriteErr(rec, NewErrorWithDetails(http.StatusBadRequest, "invalid_widget_config", "Config is not valid",
+		[]problem{{Path: "/clan/maxMembers", Rule: "maximum"}}))
+	want := `{"error":{"code":"invalid_widget_config","message":"Config is not valid","details":[{"path":"/clan/maxMembers","rule":"maximum"}]}}`
+	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("status %d, body %s, want %s", rec.Code, rec.Body.String(), want)
+	}
+}
+
 func TestWriteErrHidesInternalErrors(t *testing.T) {
 	rec := httptest.NewRecorder()
 	WriteErr(rec, errors.New("pq: password authentication failed for user secret"))

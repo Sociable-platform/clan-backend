@@ -18,9 +18,12 @@ type ErrorBody struct {
 }
 
 // ErrorDetail is the inside of ErrorBody. Code is stable and machine-readable; Message is for people.
+// Details is optional extra data for the client (for example the list of fields that failed
+// validation); it is left out of the JSON when there is none.
 type ErrorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Details any    `json:"details,omitempty"`
 }
 
 // Error is an error that knows its HTTP status and code. Return it from service code
@@ -29,6 +32,7 @@ type Error struct {
 	Status  int
 	Code    string
 	Message string
+	Details any // optional, sent as "details"; must be JSON-encodable
 }
 
 func (e *Error) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Message) }
@@ -36,6 +40,11 @@ func (e *Error) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Message)
 // NewError builds an *Error.
 func NewError(status int, code, message string) *Error {
 	return &Error{Status: status, Code: code, Message: message}
+}
+
+// NewErrorWithDetails builds an *Error that also carries details for the client.
+func NewErrorWithDetails(status int, code, message string, details any) *Error {
+	return &Error{Status: status, Code: code, Message: message, Details: details}
 }
 
 // WriteJSON writes v as JSON with the given status.
@@ -57,7 +66,7 @@ func WriteError(w http.ResponseWriter, status int, code, message string) {
 func WriteErr(w http.ResponseWriter, err error) {
 	var e *Error
 	if errors.As(err, &e) {
-		WriteError(w, e.Status, e.Code, e.Message)
+		WriteJSON(w, e.Status, ErrorBody{Error: ErrorDetail{Code: e.Code, Message: e.Message, Details: e.Details}})
 		return
 	}
 	WriteError(w, http.StatusInternalServerError, "internal_error", "Something went wrong")
