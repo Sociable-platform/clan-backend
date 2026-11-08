@@ -45,14 +45,14 @@ func TestListClansOnlySameGame(t *testing.T) {
 	addClan(t, r, gameB, "Bears")
 	addClan(t, r, gameB, "Wolves") // same name, other game
 
-	got, err := r.ListClans(ctx, gameA, "", 100)
+	got, err := r.ListClans(ctx, gameA, "", ListClansOptions{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].Name != "Wolves" {
 		t.Fatalf("game A sees %v, want only its own [Wolves]", names(got))
 	}
-	if got, _ := r.ListClans(ctx, gameA, "bear", 100); len(got) != 0 {
+	if got, _ := r.ListClans(ctx, gameA, "bear", ListClansOptions{Limit: 100}); len(got) != 0 {
 		t.Fatalf("searching game B's clan name from game A found %v", names(got))
 	}
 	if got[0].ID == "" || got[0].MemberCount != 1 || got[0].MaxMembers != 10 {
@@ -81,7 +81,7 @@ func TestListClansSearchAndOrder(t *testing.T) {
 		{"zebra", "[]"},
 	}
 	for _, tc := range tests {
-		got, err := r.ListClans(ctx, game, tc.q, 100)
+		got, err := r.ListClans(ctx, game, tc.q, ListClansOptions{Limit: 100})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,10 +90,10 @@ func TestListClansSearchAndOrder(t *testing.T) {
 		}
 	}
 
-	if got, _ := r.ListClans(ctx, game, "", 2); len(got) != 2 {
+	if got, _ := r.ListClans(ctx, game, "", ListClansOptions{Limit: 2}); len(got) != 2 {
 		t.Errorf("limit 2 returned %d clans", len(got))
 	}
-	if got, _ := r.ListClans(ctx, newGameID(t), "", 100); got == nil {
+	if got, _ := r.ListClans(ctx, newGameID(t), "", ListClansOptions{Limit: 100}); got == nil {
 		t.Error("a game without clans must give an empty list, not nil")
 	}
 }
@@ -139,7 +139,7 @@ func TestCreateClanSavesClanAndOwner(t *testing.T) {
 	if err != nil || role != "owner" || gotGame != game {
 		t.Fatalf("owner membership: role=%q game=%q err=%v", role, gotGame, err)
 	}
-	if list, _ := r.ListClans(ctx, game, "", 100); len(list) != 1 || list[0].ID != c.ID {
+	if list, _ := r.ListClans(ctx, game, "", ListClansOptions{Limit: 100}); len(list) != 1 || list[0].ID != c.ID {
 		t.Fatalf("the new clan should be listed: %+v", list)
 	}
 }
@@ -291,7 +291,7 @@ func TestJoinClanAddsMember(t *testing.T) {
 		clan, player).Scan(&role); err != nil || role != "member" {
 		t.Fatalf("membership: role=%q err=%v", role, err)
 	}
-	if list, _ := r.ListClans(ctx, game, "", 100); len(list) != 1 || list[0].MemberCount != 2 {
+	if list, _ := r.ListClans(ctx, game, "", ListClansOptions{Limit: 100}); len(list) != 1 || list[0].MemberCount != 2 {
 		t.Fatalf("the list should show 2 members: %+v", list)
 	}
 }
@@ -751,7 +751,7 @@ func TestLeaveClanOwnerAloneDeletesTheClan(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("%d member rows left behind", n)
 	}
-	if list, _ := r.ListClans(ctx, game, "", 100); len(list) != 1 || list[0].ID != other {
+	if list, _ := r.ListClans(ctx, game, "", ListClansOptions{Limit: 100}); len(list) != 1 || list[0].ID != other {
 		t.Fatalf("only the other clan should be listed, got %+v", list)
 	}
 	checkClanIsConsistent(t, r, other)
@@ -986,4 +986,82 @@ func TestLeaveClanAloneOwnerLeavesWhileSomeoneJoins(t *testing.T) {
 		}
 	}
 	t.Logf("leave first: %d times, join first: %d times", deleted, kept)
+}
+
+// clanWith creates a clan with `members` members in all (the owner included) and room for max.
+func clanWith(t *testing.T, r *Repository, game, name string, members, max int) string {
+	t.Helper()
+	ctx := context.Background()
+	clan := ownClan(t, r, game, name)
+	if _, err := r.pool.Exec(ctx, "update clans set max_members = $1 where id = $2", max, clan); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < members; i++ {
+		if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, fmt.Sprintf("%s_%d", name, i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return clan
+}
+
+// "Featured" clans are the biggest ones that still have room; a search looks at all clans.
+func TestListClansFeaturedAndSearch(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, other := newGameID(t), newGameID(t)
+	defer cleanup(game, other)
+	ctx := context.Background()
+
+	// Echo is made before Bravo on purpose: they are the same size, and the name, not the
+	// order they were made in, must put Bravo first.
+	clanWith(t, r, game, "Echo", 5, 10)
+	clanWith(t, r, game, "Alpha", 3, 10)
+	clanWith(t, r, game, "Bravo", 5, 10)
+	clanWith(t, r, game, "Charlie", 6, 6) // the biggest, and full
+	clanWith(t, r, game, "Delta", 1, 10)
+	clanWith(t, r, other, "Zulu", 8, 10) // another game: never shows up
+
+	featured := ListClansOptions{Limit: 3, ByMembers: true, OnlyWithSpace: true}
+	got, err := r.ListClans(ctx, game, "", featured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"Bravo", "Echo", "Alpha"}; !equalStrings(names(got), want) {
+		t.Fatalf("featured = %v, want %v (full Charlie left out, ties by name)", names(got), want)
+	}
+
+	// sorting by members alone does not hide the full clan
+	got, _ = r.ListClans(ctx, game, "", ListClansOptions{Limit: 100, ByMembers: true})
+	if want := []string{"Charlie", "Bravo", "Echo", "Alpha", "Delta"}; !equalStrings(names(got), want) {
+		t.Fatalf("by members = %v, want %v", names(got), want)
+	}
+
+	// hasSpace alone keeps the default order, by name
+	got, _ = r.ListClans(ctx, game, "", ListClansOptions{Limit: 100, OnlyWithSpace: true})
+	if want := []string{"Alpha", "Bravo", "Delta", "Echo"}; !equalStrings(names(got), want) {
+		t.Fatalf("with space = %v, want %v", names(got), want)
+	}
+
+	// a search with no options finds every clan of the game, the full one too
+	got, _ = r.ListClans(ctx, game, "char", ListClansOptions{Limit: 100})
+	if want := []string{"Charlie"}; !equalStrings(names(got), want) {
+		t.Fatalf("search = %v, want the full clan to be found", names(got))
+	}
+
+	// the limit applies after sorting
+	got, _ = r.ListClans(ctx, game, "", ListClansOptions{Limit: 1, ByMembers: true})
+	if want := []string{"Charlie"}; !equalStrings(names(got), want) {
+		t.Fatalf("limit 1 by members = %v, want %v", names(got), want)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

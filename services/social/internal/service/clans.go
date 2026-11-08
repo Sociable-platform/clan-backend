@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -18,7 +19,8 @@ import (
 const (
 	// maxClanSearchLen is the longest search text accepted by ListClans.
 	maxClanSearchLen = 50
-	// clanListLimit is the most clans one list returns (paging can come later).
+	// clanListLimit is the most clans one list returns, and how many it returns when
+	// the caller does not ask for fewer (paging can come later).
 	clanListLimit = 100
 	// minClanNameLen and maxClanNameLen limit clan names, counted in characters (not bytes).
 	minClanNameLen = 3
@@ -33,17 +35,57 @@ type Clan struct {
 	MaxMembers  int
 }
 
-// ListClans returns the clans of gameID, sorted by name, at most clanListLimit.
-// query (optional) keeps only clans whose name contains it, ignoring upper/lower case.
+// limitText is a positive whole number written with plain digits.
+var limitText = regexp.MustCompile(`^[1-9][0-9]{0,2}$`)
+
+// ListClansInput is what a caller can ask of the clan list. Everything is text, as it comes
+// from the URL, and an empty value means "not given". ListClans checks it.
+type ListClansInput struct {
+	Query    string // name must contain it, ignoring upper/lower case; at most 50 characters
+	Limit    string // 1 to 100; default 100
+	Sort     string // "name" (default) or "members" (most members first)
+	HasSpace string // "true": only clans with a free place; "false" or empty: all clans
+}
+
+// ListClans returns the clans of gameID, by default sorted by name, at most clanListLimit.
+// A search (Query) looks through all clans, full ones too. To show "featured" clans a page
+// asks for the biggest clans that still have room: Sort "members", HasSpace "true", a small Limit.
 // gameID comes from the verified player token, so a player only ever sees their own game's clans.
-func (s *Service) ListClans(ctx context.Context, gameID, query string) ([]Clan, error) {
-	q := strings.TrimSpace(query)
+//
+// Wrong input is a 400: invalid_query, invalid_limit, invalid_sort or invalid_has_space.
+func (s *Service) ListClans(ctx context.Context, gameID string, in ListClansInput) ([]Clan, error) {
+	q := strings.TrimSpace(in.Query)
 	if utf8.RuneCountInString(q) > maxClanSearchLen {
 		return nil, httpx.NewError(http.StatusBadRequest, "invalid_query",
 			fmt.Sprintf("Search text must be at most %d characters", maxClanSearchLen))
 	}
 
-	rows, err := s.store.ListClans(ctx, gameID, q, clanListLimit)
+	opts := repository.ListClansOptions{Limit: clanListLimit}
+	if in.Limit != "" {
+		// plain digits only: no sign, no decimals, no leading zero
+		n, err := strconv.Atoi(in.Limit)
+		if !limitText.MatchString(in.Limit) || err != nil || n > clanListLimit {
+			return nil, httpx.NewError(http.StatusBadRequest, "invalid_limit",
+				fmt.Sprintf("limit must be a whole number from 1 to %d", clanListLimit))
+		}
+		opts.Limit = n
+	}
+	switch in.Sort {
+	case "", "name":
+	case "members":
+		opts.ByMembers = true
+	default:
+		return nil, httpx.NewError(http.StatusBadRequest, "invalid_sort", "sort must be name or members")
+	}
+	switch in.HasSpace {
+	case "", "false":
+	case "true":
+		opts.OnlyWithSpace = true
+	default:
+		return nil, httpx.NewError(http.StatusBadRequest, "invalid_has_space", "hasSpace must be true or false")
+	}
+
+	rows, err := s.store.ListClans(ctx, gameID, q, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list clans: %w", err)
 	}

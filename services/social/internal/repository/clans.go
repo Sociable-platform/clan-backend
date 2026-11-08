@@ -18,22 +18,44 @@ type Clan struct {
 	MaxMembers  int
 }
 
-// ListClans returns up to limit clans of gameID, sorted by name.
+// ListClansOptions say how many clans ListClans returns, in which order, and which ones.
+type ListClansOptions struct {
+	Limit         int  // at most this many clans
+	ByMembers     bool // most members first; otherwise sorted by name
+	OnlyWithSpace bool // only clans that still have a free place
+}
+
+// Two fixed orders. Nothing from the request is put into the SQL text: the options only
+// choose between these two.
+const (
+	orderClansByName    = "lower(name), id"
+	orderClansByMembers = "member_count desc, lower(name), id"
+)
+
+// ListClans returns up to opts.Limit clans of gameID, sorted by name (or by member count,
+// biggest first, with ByMembers). Ties are broken by name and then ID, so the order is
+// always the same.
 // When query is not empty, only clans whose name contains it are returned, ignoring
 // upper/lower case. strpos looks for the exact text, so characters like % and _ in the
 // search are not wildcards (as they would be with LIKE).
-func (r *Repository) ListClans(ctx context.Context, gameID, query string, limit int) ([]Clan, error) {
+// With OnlyWithSpace, full clans are left out.
+func (r *Repository) ListClans(ctx context.Context, gameID, query string, opts ListClansOptions) ([]Clan, error) {
 	if r.pool == nil {
 		return nil, ErrNoDatabase
+	}
+	order := orderClansByName
+	if opts.ByMembers {
+		order = orderClansByMembers
 	}
 	rows, err := r.pool.Query(ctx,
 		`select id::text, name, member_count, max_members
 		 from clans
 		 where game_id = $1
 		   and ($2 = '' or strpos(lower(name), lower($2)) > 0)
-		 order by lower(name), id
-		 limit $3`,
-		gameID, query, limit,
+		   and (not $3 or member_count < max_members)
+		 order by `+order+`
+		 limit $4`,
+		gameID, query, opts.OnlyWithSpace, opts.Limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list clans: %w", err)

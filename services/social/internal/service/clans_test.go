@@ -13,7 +13,7 @@ import (
 )
 
 // memStore is used by the player tests; it has no clans.
-func (m *memStore) ListClans(context.Context, string, string, int) ([]repository.Clan, error) {
+func (m *memStore) ListClans(context.Context, string, string, repository.ListClansOptions) ([]repository.Clan, error) {
 	return []repository.Clan{}, nil
 }
 
@@ -45,12 +45,12 @@ type clanStore struct {
 	called int
 	game   string
 	query  string
-	limit  int
+	opts   repository.ListClansOptions
 }
 
-func (c *clanStore) ListClans(_ context.Context, gameID, query string, limit int) ([]repository.Clan, error) {
+func (c *clanStore) ListClans(_ context.Context, gameID, query string, opts repository.ListClansOptions) ([]repository.Clan, error) {
 	c.called++
-	c.game, c.query, c.limit = gameID, query, limit
+	c.game, c.query, c.opts = gameID, query, opts
 	return c.clans, c.err
 }
 
@@ -60,12 +60,12 @@ func newClanStore(clans ...repository.Clan) *clanStore {
 
 func TestListClansPassesGameQueryAndLimit(t *testing.T) {
 	store := newClanStore(repository.Clan{ID: "c-1", Name: "Wolves", MemberCount: 3, MaxMembers: 10})
-	got, err := New(store).ListClans(context.Background(), gameA, "  wol  ")
+	got, err := New(store).ListClans(context.Background(), gameA, ListClansInput{Query: "  wol  "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.game != gameA || store.query != "wol" || store.limit != clanListLimit {
-		t.Fatalf("store got game=%q query=%q limit=%d", store.game, store.query, store.limit)
+	if store.game != gameA || store.query != "wol" || store.opts != (repository.ListClansOptions{Limit: clanListLimit}) {
+		t.Fatalf("store got game=%q query=%q opts=%+v", store.game, store.query, store.opts)
 	}
 	want := Clan{ID: "c-1", Name: "Wolves", MemberCount: 3, MaxMembers: 10}
 	if len(got) != 1 || got[0] != want {
@@ -74,7 +74,7 @@ func TestListClansPassesGameQueryAndLimit(t *testing.T) {
 }
 
 func TestListClansEmptyIsNotNil(t *testing.T) {
-	got, err := New(newClanStore()).ListClans(context.Background(), gameA, "")
+	got, err := New(newClanStore()).ListClans(context.Background(), gameA, ListClansInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,12 +88,12 @@ func TestListClansRejectsLongSearch(t *testing.T) {
 	svc := New(store)
 
 	// exactly 50 characters (multi-byte letters count as one) is fine
-	if _, err := svc.ListClans(context.Background(), gameA, strings.Repeat("Ə", maxClanSearchLen)); err != nil {
+	if _, err := svc.ListClans(context.Background(), gameA, ListClansInput{Query: strings.Repeat("Ə", maxClanSearchLen)}); err != nil {
 		t.Fatalf("50 characters should be allowed: %v", err)
 	}
 	store.called = 0
 
-	_, err := svc.ListClans(context.Background(), gameA, strings.Repeat("a", maxClanSearchLen+1))
+	_, err := svc.ListClans(context.Background(), gameA, ListClansInput{Query: strings.Repeat("a", maxClanSearchLen+1)})
 	var he *httpx.Error
 	if !errors.As(err, &he) || he.Status != http.StatusBadRequest || he.Code != "invalid_query" {
 		t.Fatalf("err = %v, want 400 invalid_query", err)
@@ -106,7 +106,7 @@ func TestListClansRejectsLongSearch(t *testing.T) {
 func TestListClansStoreError(t *testing.T) {
 	store := newClanStore()
 	store.err = errors.New("database is down")
-	if _, err := New(store).ListClans(context.Background(), gameA, ""); err == nil {
+	if _, err := New(store).ListClans(context.Background(), gameA, ListClansInput{}); err == nil {
 		t.Fatal("expected the database error to come back")
 	}
 }
@@ -477,5 +477,63 @@ func TestListMembersNotFound(t *testing.T) {
 	var he *httpx.Error
 	if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Code != "clan_not_found" {
 		t.Fatalf("clan of another game: err = %v, want 404 clan_not_found", err)
+	}
+}
+
+func TestListClansOptionsFromInput(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		in   ListClansInput
+		want repository.ListClansOptions
+	}{
+		{"nothing given", ListClansInput{}, repository.ListClansOptions{Limit: clanListLimit}},
+		{"featured clans", ListClansInput{Limit: "3", Sort: "members", HasSpace: "true"},
+			repository.ListClansOptions{Limit: 3, ByMembers: true, OnlyWithSpace: true}},
+		{"sort by name said out loud", ListClansInput{Sort: "name"}, repository.ListClansOptions{Limit: clanListLimit}},
+		{"hasSpace false", ListClansInput{HasSpace: "false"}, repository.ListClansOptions{Limit: clanListLimit}},
+		{"limit 1", ListClansInput{Limit: "1"}, repository.ListClansOptions{Limit: 1}},
+		{"limit at the top", ListClansInput{Limit: "100"}, repository.ListClansOptions{Limit: 100}},
+		{"a search does not change the options", ListClansInput{Query: "nova"}, repository.ListClansOptions{Limit: clanListLimit}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newClanStore()
+			if _, err := New(store).ListClans(context.Background(), gameA, tt.in); err != nil {
+				t.Fatal(err)
+			}
+			if store.opts != tt.want {
+				t.Fatalf("opts = %+v, want %+v", store.opts, tt.want)
+			}
+		})
+	}
+}
+
+func TestListClansRejectsBadOptions(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		in   ListClansInput
+		code string
+	}{
+		{"limit zero", ListClansInput{Limit: "0"}, "invalid_limit"},
+		{"limit negative", ListClansInput{Limit: "-1"}, "invalid_limit"},
+		{"limit too big", ListClansInput{Limit: "101"}, "invalid_limit"},
+		{"limit not a number", ListClansInput{Limit: "three"}, "invalid_limit"},
+		{"limit with a decimal", ListClansInput{Limit: "2.5"}, "invalid_limit"},
+		{"limit with a plus sign", ListClansInput{Limit: "+3"}, "invalid_limit"},
+		{"unknown sort", ListClansInput{Sort: "random"}, "invalid_sort"},
+		{"sort in capitals", ListClansInput{Sort: "MEMBERS"}, "invalid_sort"},
+		{"hasSpace yes", ListClansInput{HasSpace: "yes"}, "invalid_has_space"},
+		{"hasSpace 1", ListClansInput{HasSpace: "1"}, "invalid_has_space"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newClanStore()
+			_, err := New(store).ListClans(context.Background(), gameA, tt.in)
+			var he *httpx.Error
+			if !errors.As(err, &he) || he.Status != http.StatusBadRequest || he.Code != tt.code {
+				t.Fatalf("err = %v, want 400 %s", err, tt.code)
+			}
+			if store.called != 0 {
+				t.Fatal("the database must not be asked when the input is invalid")
+			}
+		})
 	}
 }
