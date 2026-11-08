@@ -219,10 +219,11 @@ func TestUnexpectedErrorIsLoggedAndNotLeaked(t *testing.T) {
 
 // memStore is a tiny in-memory repository for the end-to-end test below.
 type memStore struct {
-	devs   []repository.Developer
-	games  []repository.Game
-	keys   []memKey
-	drafts map[string]repository.WidgetDraft // by game ID
+	devs     []repository.Developer
+	games    []repository.Game
+	keys     []memKey
+	drafts   map[string]repository.WidgetDraft     // by game ID
+	versions map[string][]repository.WidgetVersion // by game ID, oldest first
 }
 
 func (m *memStore) Ping(context.Context) error { return nil }

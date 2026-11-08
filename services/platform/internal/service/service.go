@@ -30,6 +30,9 @@ type Store interface {
 	GameIDByActiveKeyHash(ctx context.Context, keyHash string) (string, error)
 	WidgetDraftOfGame(ctx context.Context, gameID string) (repository.WidgetDraft, error)
 	SaveWidgetDraft(ctx context.Context, gameID string, config []byte) (repository.WidgetDraft, error)
+	AddWidgetVersion(ctx context.Context, gameID, developerID string, config []byte) (repository.WidgetVersion, error)
+	WidgetVersionsOfGame(ctx context.Context, gameID string) ([]repository.WidgetVersion, error)
+	WidgetVersionOfGame(ctx context.Context, gameID string, version int) (repository.WidgetVersion, error)
 }
 
 // Service is the platform service's logic.

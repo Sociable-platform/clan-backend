@@ -37,6 +37,36 @@ func (m *memStore) SaveWidgetDraft(_ context.Context, gameID string, config []by
 	return d, nil
 }
 
+func (m *memStore) AddWidgetVersion(_ context.Context, gameID, developerID string, config []byte) (repository.WidgetVersion, error) {
+	if m.versions == nil {
+		m.versions = map[string][]repository.WidgetVersion{}
+	}
+	v := repository.WidgetVersion{
+		GameID: gameID, Version: len(m.versions[gameID]) + 1, Config: config,
+		PublishedAt: time.Now(), PublishedBy: developerID,
+	}
+	m.versions[gameID] = append(m.versions[gameID], v)
+	return v, nil
+}
+
+func (m *memStore) WidgetVersionsOfGame(_ context.Context, gameID string) ([]repository.WidgetVersion, error) {
+	out := []repository.WidgetVersion{}
+	all := m.versions[gameID]
+	for i := len(all) - 1; i >= 0; i-- { // newest first, without configs
+		v := all[i]
+		v.Config = nil
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func (m *memStore) WidgetVersionOfGame(_ context.Context, gameID string, version int) (repository.WidgetVersion, error) {
+	if version < 1 || version > len(m.versions[gameID]) {
+		return repository.WidgetVersion{}, repository.ErrNotFound
+	}
+	return m.versions[gameID][version-1], nil
+}
+
 // fakeService answers the widget calls from fields, like its other calls.
 // (Its fields, widgetDraft and saveWidgetDraft, are declared with the others in handler_test.go.)
 
