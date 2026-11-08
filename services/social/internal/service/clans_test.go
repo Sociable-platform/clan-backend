@@ -25,6 +25,10 @@ func (m *memStore) JoinClan(context.Context, string, string, string) (repository
 	return repository.Clan{}, errors.New("memStore has no clans")
 }
 
+func (m *memStore) LeaveClan(context.Context, string, string, string) error {
+	return errors.New("memStore has no clans")
+}
+
 func (m *memStore) MyClan(context.Context, string, string) (repository.PlayerClan, error) {
 	return repository.PlayerClan{}, repository.ErrNotInClan
 }
@@ -238,6 +242,24 @@ func (j *joiningStore) JoinClan(_ context.Context, gameID, clanID, playerID stri
 
 func newJoiningStore() *joiningStore { return &joiningStore{memStore: newMemStore()} }
 
+// leavingStore records what LeaveClan was asked and answers with leaveErr.
+type leavingStore struct {
+	*memStore
+	leaveErr error
+	leaves   int
+	game     string
+	clan     string
+	external string
+}
+
+func (l *leavingStore) LeaveClan(_ context.Context, gameID, clanID, externalID string) error {
+	l.leaves++
+	l.game, l.clan, l.external = gameID, clanID, externalID
+	return l.leaveErr
+}
+
+func newLeavingStore() *leavingStore { return &leavingStore{memStore: newMemStore()} }
+
 const someClan = "3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69"
 
 func TestJoinClanAddsThePlayer(t *testing.T) {
@@ -326,6 +348,62 @@ func (s *readingStore) ListMembers(_ context.Context, gameID, clanID string) ([]
 }
 
 func newReadingStore() *readingStore { return &readingStore{memStore: newMemStore()} }
+
+func TestLeaveClanPassesTheTokensGameAndPlayer(t *testing.T) {
+	store := newLeavingStore()
+	if err := New(store).LeaveClan(context.Background(), gameA, "u_42", strings.ToUpper(someClan)); err != nil {
+		t.Fatal(err)
+	}
+	if store.game != gameA || store.clan != someClan || store.external != "u_42" {
+		t.Fatalf("store got game=%q clan=%q player=%q", store.game, store.clan, store.external)
+	}
+	// leaving never creates the player record
+	if len(store.rows) != 0 || store.memStore.called != 0 {
+		t.Fatalf("leaving must not touch the player table: rows=%d calls=%d", len(store.rows), store.memStore.called)
+	}
+}
+
+func TestLeaveClanBadIDIsNotFound(t *testing.T) {
+	for _, id := range []string{"", "abc", someClan + "0", "' or 1=1 --"} {
+		store := newLeavingStore()
+		err := New(store).LeaveClan(context.Background(), gameA, "u_42", id)
+		var he *httpx.Error
+		if !errors.As(err, &he) || he.Status != http.StatusNotFound || he.Code != "clan_not_found" {
+			t.Errorf("id %q: err = %v, want 404 clan_not_found", id, err)
+		}
+		if store.leaves != 0 {
+			t.Errorf("id %q: a bad ID must not reach the database", id)
+		}
+	}
+}
+
+func TestLeaveClanErrors(t *testing.T) {
+	tests := []struct {
+		storeErr error
+		status   int
+		code     string
+	}{
+		{repository.ErrClanNotFound, http.StatusNotFound, "clan_not_found"},
+		{repository.ErrNotInClan, http.StatusConflict, "not_in_clan"},
+	}
+	for _, tc := range tests {
+		store := newLeavingStore()
+		store.leaveErr = tc.storeErr
+		err := New(store).LeaveClan(context.Background(), gameA, "u_42", someClan)
+		var he *httpx.Error
+		if !errors.As(err, &he) || he.Status != tc.status || he.Code != tc.code {
+			t.Errorf("%v: err = %v, want %d %s", tc.storeErr, err, tc.status, tc.code)
+		}
+	}
+
+	store := newLeavingStore()
+	store.leaveErr = errors.New("database is down")
+	err := New(store).LeaveClan(context.Background(), gameA, "u_42", someClan)
+	var he *httpx.Error
+	if err == nil || errors.As(err, &he) {
+		t.Fatalf("err = %v, want a plain internal error", err)
+	}
+}
 
 func TestMyClanReturnsClanAndRole(t *testing.T) {
 	store := newReadingStore()

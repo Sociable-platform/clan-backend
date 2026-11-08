@@ -17,6 +17,7 @@ type Store interface {
 	ListClans(ctx context.Context, gameID, query string, limit int) ([]repository.Clan, error)
 	CreateClan(ctx context.Context, gameID, ownerID, name string) (repository.Clan, error)
 	JoinClan(ctx context.Context, gameID, clanID, playerID string) (repository.Clan, error)
+	LeaveClan(ctx context.Context, gameID, clanID, externalID string) error
 	MyClan(ctx context.Context, gameID, externalID string) (repository.PlayerClan, error)
 	ListMembers(ctx context.Context, gameID, clanID string) ([]repository.Member, error)
 }

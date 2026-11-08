@@ -44,6 +44,10 @@ func (s *recordingService) JoinClan(context.Context, string, string, string, str
 	return service.Clan{}, s.err
 }
 
+func (f fakeService) LeaveClan(context.Context, string, string, string) error { return f.err }
+
+func (s *recordingService) LeaveClan(context.Context, string, string, string) error { return s.err }
+
 func (f fakeService) MyClan(context.Context, string, string) (service.PlayerClan, error) {
 	return service.PlayerClan{}, f.err
 }
@@ -321,6 +325,72 @@ func TestJoinClanRouting(t *testing.T) {
 	// the clan ID is one path segment; extra segments do not reach the handler
 	svc = &joiningService{}
 	if rec := postJoin(t, svc, http.MethodPost, "/api/v1/clans/a/b/join", false); svc.called {
+		t.Errorf("extra path segment: status %d, but the service was called", rec.Code)
+	}
+}
+
+// leavingService remembers what leaveClan passed on and answers with err.
+type leavingService struct {
+	fakeService
+	err                        error
+	called                     bool
+	gameID, externalID, clanID string
+}
+
+func (s *leavingService) LeaveClan(_ context.Context, gameID, externalID, clanID string) error {
+	s.called = true
+	s.gameID, s.externalID, s.clanID = gameID, externalID, clanID
+	return s.err
+}
+
+func TestLeaveClanReturns204WithNoBody(t *testing.T) {
+	svc := &leavingService{}
+	rec := postJoin(t, svc, http.MethodPost, "/api/v1/clans/"+joinClanID+"/leave", false)
+	if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
+		t.Fatalf("status %d, body %q; want 204 and nothing", rec.Code, rec.Body.String())
+	}
+	if svc.gameID != tokenGame || svc.externalID != "u_42" || svc.clanID != joinClanID {
+		t.Fatalf("service got game=%q player=%q clan=%q; want the token's game and player, and the URL's clan",
+			svc.gameID, svc.externalID, svc.clanID)
+	}
+}
+
+func TestLeaveClanPassesServiceErrors(t *testing.T) {
+	tests := []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{httpx.NewError(http.StatusNotFound, "clan_not_found", "x"), http.StatusNotFound, "clan_not_found"},
+		{httpx.NewError(http.StatusConflict, "not_in_clan", "x"), http.StatusConflict, "not_in_clan"},
+		{errors.New("db down at 10.0.0.5"), http.StatusInternalServerError, "internal_error"},
+	}
+	for _, tc := range tests {
+		rec := postJoin(t, &leavingService{err: tc.err}, http.MethodPost, "/api/v1/clans/"+joinClanID+"/leave", false)
+		var e httpx.ErrorBody
+		_ = json.Unmarshal(rec.Body.Bytes(), &e)
+		if rec.Code != tc.status || e.Error.Code != tc.code || strings.Contains(rec.Body.String(), "10.0.0.5") {
+			t.Errorf("%v: status %d, body %s; want %d %s", tc.err, rec.Code, rec.Body.String(), tc.status, tc.code)
+		}
+	}
+}
+
+func TestLeaveClanRouting(t *testing.T) {
+	// no token
+	svc := &leavingService{}
+	if rec := postJoin(t, svc, http.MethodPost, "/api/v1/clans/"+joinClanID+"/leave", true); rec.Code != http.StatusUnauthorized || svc.called {
+		t.Errorf("no token: status %d, service called=%v; want 401 and no call", rec.Code, svc.called)
+	}
+	// only POST leaves; GET and DELETE on the same path are not routes
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		svc = &leavingService{}
+		if rec := postJoin(t, svc, method, "/api/v1/clans/"+joinClanID+"/leave", false); rec.Code == http.StatusNoContent || svc.called {
+			t.Errorf("%s leave: status %d, service called=%v; want it refused", method, rec.Code, svc.called)
+		}
+	}
+	// the clan ID is one path segment; extra segments do not reach the handler
+	svc = &leavingService{}
+	if rec := postJoin(t, svc, http.MethodPost, "/api/v1/clans/a/b/leave", false); svc.called {
 		t.Errorf("extra path segment: status %d, but the service was called", rec.Code)
 	}
 }
