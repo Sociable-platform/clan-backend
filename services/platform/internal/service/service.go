@@ -28,6 +28,8 @@ type Store interface {
 	APIKeysByGame(ctx context.Context, gameID string) ([]repository.APIKey, error)
 	RevokeAPIKey(ctx context.Context, keyID, developerID string) error
 	GameIDByActiveKeyHash(ctx context.Context, keyHash string) (string, error)
+	WidgetDraftOfGame(ctx context.Context, gameID string) (repository.WidgetDraft, error)
+	SaveWidgetDraft(ctx context.Context, gameID string, config []byte) (repository.WidgetDraft, error)
 }
 
 // Service is the platform service's logic.

@@ -25,6 +25,8 @@ tags:
     description: Existing games a developer has registered with the toolkit
   - name: api-keys
     description: Secret keys a game's own server uses to get player tokens
+  - name: widget
+    description: The clan widget's look, edited as a draft in the dashboard
   - name: players
     description: Player tokens, issued to a game's own server
 paths:
@@ -324,6 +326,88 @@ paths:
           $ref: "#/components/responses/OriginNotAllowed"
         "404":
           $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/widget/draft:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [widget]
+      operationId: getWidgetDraft
+      summary: Get a game's widget draft
+      description: |
+        The config the developer is editing. When nothing was saved yet it returns the default
+        config and `updatedAt` is null. Players never see drafts, only published versions.
+        Only the game's owner can read it; for anyone else the game does not exist (404).
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The current draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetDraft"
+              example:
+                config:
+                  schemaVersion: 1
+                updatedAt: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+    put:
+      tags: [widget]
+      operationId: saveWidgetDraft
+      summary: Save a game's widget draft
+      description: |
+        Replaces the whole draft with the config in the body. The config must be a JSON object
+        of at most 64 KB. Only the game's owner can save it; for anyone else the game does not
+        exist (404).
+      security:
+        - developerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveWidgetDraftRequest"
+            example:
+              config:
+                schemaVersion: 1
+                theme:
+                  accent: "#8B65EE"
+      responses:
+        "200":
+          description: The saved draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetDraft"
+              example:
+                config:
+                  schemaVersion: 1
+                  theme:
+                    accent: "#8B65EE"
+                updatedAt: "2026-11-08T12:00:00Z"
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_widget_config` (not a JSON object, or too large)
+            or `invalid_json` (the request body itself is not valid JSON).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_widget_config
+                  message: Config must be a JSON object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
   /api/v1/api-keys/{keyID}:
     delete:
       tags: [api-keys]
@@ -576,6 +660,26 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ApiKey"
+    SaveWidgetDraftRequest:
+      type: object
+      required: [config]
+      properties:
+        config:
+          type: object
+          description: The widget config. Any JSON object up to 64 KB; its fields are defined by the config contract.
+          additionalProperties: true
+    WidgetDraft:
+      type: object
+      required: [config, updatedAt]
+      properties:
+        config:
+          type: object
+          additionalProperties: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the draft was last saved. Null while nothing was saved and `config` is the default.
     PlayerAuthRequest:
       type: object
       required: [externalPlayerId, displayName]

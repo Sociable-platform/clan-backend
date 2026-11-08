@@ -28,6 +28,9 @@ type fakeService struct {
 	listAPIKeys  func(developerID, gameID string) ([]service.APIKey, error)
 	revokeAPIKey func(developerID, keyID string) error
 
+	widgetDraft     func(developerID, gameID string) (service.WidgetDraft, error)
+	saveWidgetDraft func(developerID, gameID string, config json.RawMessage) (service.WidgetDraft, error)
+
 	gameForAPIKey    func(key string) (string, error)
 	issuePlayerToken func(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)
 }

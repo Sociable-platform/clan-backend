@@ -23,7 +23,8 @@ type fakeStore struct {
 	byEmail map[string]repository.Developer
 	games   []repository.Game
 	keys    []storedKey
-	err     error // returned by every call when set
+	drafts  map[string]repository.WidgetDraft // by game ID
+	err     error                             // returned by every call when set
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{byEmail: map[string]repository.Developer{}} }

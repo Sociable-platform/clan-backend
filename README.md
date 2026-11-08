@@ -229,6 +229,8 @@ Each run uses new random game IDs and deletes its rows afterwards, so it does no
 | POST | `/api/v1/games/{gameID}/api-keys` | 201 with the new key; **the full `key` is in this response only** (the database stores just a hash). 404 `game_not_found` unless you own the game |
 | GET | `/api/v1/games/{gameID}/api-keys` | 200 `{ apiKeys: [...] }`: prefix, created and revoked time, never the key. 404 unless you own the game |
 | DELETE | `/api/v1/api-keys/{keyID}` | 204; the key stops working at once and stays listed as revoked. 404 `api_key_not_found` unless it is a key of your game |
+| GET | `/api/v1/games/{gameID}/widget/draft` | 200 `{ config, updatedAt }`: the widget config being edited, or the default config with `updatedAt: null` when nothing was saved yet. Players never see drafts. 404 `game_not_found` unless you own the game |
+| PUT | `/api/v1/games/{gameID}/widget/draft` | 200 with the saved draft. Body `{ "config": { ... } }`: a JSON object of at most 64 KB that replaces the whole draft. 400 `invalid_widget_config` / `invalid_json`; 404 unless you own the game |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |
 

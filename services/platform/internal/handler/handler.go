@@ -4,6 +4,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -26,6 +27,8 @@ type Service interface {
 	RevokeAPIKey(ctx context.Context, developerID, keyID string) error
 	GameForAPIKey(ctx context.Context, key string) (gameID string, err error)
 	IssuePlayerToken(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)
+	WidgetDraft(ctx context.Context, developerID, gameID string) (service.WidgetDraft, error)
+	SaveWidgetDraft(ctx context.Context, developerID, gameID string, config json.RawMessage) (service.WidgetDraft, error)
 }
 
 // Handler holds the routes of the service.
@@ -71,6 +74,8 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.createAPIKey)},
 		{http.MethodGet, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.listAPIKeys)},
 		{http.MethodDelete, "/api/v1/api-keys/{keyID}", h.requireDeveloper(h.revokeAPIKey)},
+		{http.MethodGet, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.getWidgetDraft)},
+		{http.MethodPut, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.saveWidgetDraft)},
 		{http.MethodPost, "/api/v1/players/auth", h.requireAPIKey(h.authPlayer)},
 	}
 }
