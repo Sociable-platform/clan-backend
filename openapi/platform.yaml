@@ -408,6 +408,171 @@ paths:
           $ref: "#/components/responses/OriginNotAllowed"
         "404":
           $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/widget/publish:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    post:
+      tags: [widget]
+      operationId: publishWidget
+      summary: Publish the widget draft
+      description: |
+        Publishes the saved draft as the next version of the game's widget (1, 2, 3 ...).
+        No request body: the server publishes the draft it holds, so a stale browser tab cannot
+        publish a different config. Wait until the last draft save has finished before calling it.
+        The draft stays as it is. Only the game's owner can publish; for anyone else the game does
+        not exist (404).
+      security:
+        - developerToken: []
+      responses:
+        "201":
+          description: Published. The response is the new version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetVersion"
+              example:
+                version: 3
+                publishedAt: "2026-11-08T12:00:00Z"
+                publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+                config:
+                  schemaVersion: 1
+        "400":
+          description: |
+            The saved draft is not accepted any more (`invalid_widget_config`), for example because
+            the rules became stricter after it was saved. Save a corrected draft and publish again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_widget_config
+                  message: Config must be a JSON object
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+        "409":
+          description: Nothing was saved yet, so there is nothing to publish (`widget_draft_missing`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: widget_draft_missing
+                  message: Save a draft before publishing
+  /api/v1/games/{gameID}/widget/versions:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [widget]
+      operationId: listWidgetVersions
+      summary: List published widget versions
+      description: |
+        Newest first, without the configs (read one with `GET .../versions/{version}`).
+        An empty list when the widget was never published. Only the game's owner can list them;
+        for anyone else the game does not exist (404).
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The published versions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetVersionList"
+              example:
+                versions:
+                  - version: 2
+                    publishedAt: "2026-11-08T12:00:00Z"
+                    publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+                  - version: 1
+                    publishedAt: "2026-11-07T18:30:00Z"
+                    publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/widget/versions/{version}:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+      - $ref: "#/components/parameters/WidgetVersionNumber"
+    get:
+      tags: [widget]
+      operationId: getWidgetVersion
+      summary: Get one published widget version
+      description: |
+        A published version with its config, for example to preview it or to copy it into the draft
+        with `PUT .../draft`. A number that is not a positive whole number is a version that does
+        not exist (404). Only the game's owner can read it.
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetVersion"
+              example:
+                version: 1
+                publishedAt: "2026-11-07T18:30:00Z"
+                publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+                config:
+                  schemaVersion: 1
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/WidgetVersionNotFound"
+  /api/v1/games/{gameID}/widget/versions/{version}/rollback:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+      - $ref: "#/components/parameters/WidgetVersionNumber"
+    post:
+      tags: [widget]
+      operationId: rollbackWidget
+      summary: Roll back to an earlier widget version
+      description: |
+        Publishes the config of that version again, as a **new** version on top of the history
+        (rolling back to 1 when 2 exists makes version 3). Nothing is deleted or changed, and the
+        draft is left alone: to edit the old config, read it with `GET .../versions/{version}` and
+        save it with `PUT .../draft`. No request body. Only the game's owner can roll back.
+      security:
+        - developerToken: []
+      responses:
+        "201":
+          description: Rolled back. The response is the new version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetVersion"
+              example:
+                version: 3
+                publishedAt: "2026-11-08T12:05:00Z"
+                publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+                config:
+                  schemaVersion: 1
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such game (`game_not_found`) or no such version (`widget_version_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: widget_version_not_found
+                  message: Widget version not found
   /api/v1/api-keys/{keyID}:
     delete:
       tags: [api-keys]
@@ -513,6 +678,14 @@ components:
       schema:
         type: string
         format: uuid
+    WidgetVersionNumber:
+      name: version
+      in: path
+      required: true
+      description: Published version number, 1 or higher.
+      schema:
+        type: integer
+        minimum: 1
   securitySchemes:
     developerToken:
       type: http
@@ -680,6 +853,38 @@ components:
           format: date-time
           nullable: true
           description: When the draft was last saved. Null while nothing was saved and `config` is the default.
+    WidgetVersionSummary:
+      type: object
+      required: [version, publishedAt, publishedBy]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: 1, 2, 3 ... per game. Never reused.
+        publishedAt:
+          type: string
+          format: date-time
+        publishedBy:
+          type: string
+          format: uuid
+          description: ID of the developer who published (or rolled back).
+    WidgetVersion:
+      allOf:
+        - $ref: "#/components/schemas/WidgetVersionSummary"
+        - type: object
+          required: [config]
+          properties:
+            config:
+              type: object
+              additionalProperties: true
+    WidgetVersionList:
+      type: object
+      required: [versions]
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/WidgetVersionSummary"
     PlayerAuthRequest:
       type: object
       required: [externalPlayerId, displayName]
@@ -730,6 +935,16 @@ components:
             error:
               code: game_not_found
               message: Game not found
+    WidgetVersionNotFound:
+      description: No such game, it belongs to another developer (`game_not_found`), or the game has no such version (`widget_version_not_found`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: widget_version_not_found
+              message: Widget version not found
     Unauthorized:
       description: The developer token is missing, malformed, expired, of the wrong type, or its account no longer exists.
       content:

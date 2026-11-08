@@ -30,6 +30,10 @@ type fakeService struct {
 
 	widgetDraft     func(developerID, gameID string) (service.WidgetDraft, error)
 	saveWidgetDraft func(developerID, gameID string, config json.RawMessage) (service.WidgetDraft, error)
+	publishWidget   func(developerID, gameID string) (service.WidgetVersion, error)
+	widgetVersions  func(developerID, gameID string) ([]service.WidgetVersion, error)
+	widgetVersion   func(developerID, gameID string, version int) (service.WidgetVersion, error)
+	rollbackWidget  func(developerID, gameID string, version int) (service.WidgetVersion, error)
 
 	gameForAPIKey    func(key string) (string, error)
 	issuePlayerToken func(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)

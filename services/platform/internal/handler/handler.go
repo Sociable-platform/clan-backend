@@ -29,6 +29,10 @@ type Service interface {
 	IssuePlayerToken(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)
 	WidgetDraft(ctx context.Context, developerID, gameID string) (service.WidgetDraft, error)
 	SaveWidgetDraft(ctx context.Context, developerID, gameID string, config json.RawMessage) (service.WidgetDraft, error)
+	PublishWidget(ctx context.Context, developerID, gameID string) (service.WidgetVersion, error)
+	WidgetVersions(ctx context.Context, developerID, gameID string) ([]service.WidgetVersion, error)
+	WidgetVersion(ctx context.Context, developerID, gameID string, version int) (service.WidgetVersion, error)
+	RollbackWidget(ctx context.Context, developerID, gameID string, version int) (service.WidgetVersion, error)
 }
 
 // Handler holds the routes of the service.
@@ -76,6 +80,10 @@ func (h *Handler) Routes() []Route {
 		{http.MethodDelete, "/api/v1/api-keys/{keyID}", h.requireDeveloper(h.revokeAPIKey)},
 		{http.MethodGet, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.getWidgetDraft)},
 		{http.MethodPut, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.saveWidgetDraft)},
+		{http.MethodPost, "/api/v1/games/{gameID}/widget/publish", h.requireDeveloper(h.publishWidget)},
+		{http.MethodGet, "/api/v1/games/{gameID}/widget/versions", h.requireDeveloper(h.listWidgetVersions)},
+		{http.MethodGet, "/api/v1/games/{gameID}/widget/versions/{version}", h.requireDeveloper(h.getWidgetVersion)},
+		{http.MethodPost, "/api/v1/games/{gameID}/widget/versions/{version}/rollback", h.requireDeveloper(h.rollbackWidget)},
 		{http.MethodPost, "/api/v1/players/auth", h.requireAPIKey(h.authPlayer)},
 	}
 }
