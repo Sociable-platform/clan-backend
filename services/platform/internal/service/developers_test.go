@@ -20,11 +20,12 @@ import (
 
 // fakeStore is an in-memory Store. Like the real table, it rejects a second row with the same email.
 type fakeStore struct {
-	byEmail map[string]repository.Developer
-	games   []repository.Game
-	keys    []storedKey
-	drafts  map[string]repository.WidgetDraft // by game ID
-	err     error                             // returned by every call when set
+	byEmail  map[string]repository.Developer
+	games    []repository.Game
+	keys     []storedKey
+	drafts   map[string]repository.WidgetDraft     // by game ID
+	versions map[string][]repository.WidgetVersion // by game ID, oldest first
+	err      error                                 // returned by every call when set
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{byEmail: map[string]repository.Developer{}} }
