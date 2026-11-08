@@ -287,6 +287,61 @@ paths:
                 error:
                   code: clan_full
                   message: This clan has no free places
+  /api/v1/clans/{clanID}/leave:
+    post:
+      tags: [clans]
+      operationId: leaveClan
+      summary: Leave a clan
+      description: |
+        Removes the caller from the clan, and the caller can join another clan afterwards.
+        The clan must belong to the caller's game (the game in the player token); a clan of
+        another game answers 404 like a clan that does not exist.
+
+        - A normal member leaves: the membership is deleted and `memberCount` goes down by one.
+        - The owner leaves and other members remain: the member who joined first becomes the
+          new owner (ties: the lower player ID), then the old owner's membership is deleted.
+          The clan always has exactly one owner.
+        - The owner is the only member: the clan is deleted.
+
+        Everything happens in one transaction with the clan row locked (like joining), so the
+        counts and the owner never get out of step. No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The ID of the clan the caller is in.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: The caller left the clan. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such clan in the caller's game (clan_not_found). This also happens when the clan was deleted because its last member left.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_not_found
+                  message: Clan not found
+        "409":
+          description: The caller is not a member of this clan (not_in_clan).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_in_clan
+                  message: You are not a member of this clan
   /api/v1/clans/{clanID}/members:
     get:
       tags: [clans]
