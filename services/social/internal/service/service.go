@@ -21,6 +21,10 @@ type Store interface {
 	LeaveClan(ctx context.Context, gameID, clanID, externalID string) error
 	MyClan(ctx context.Context, gameID, externalID string) (repository.PlayerClan, error)
 	ListMembers(ctx context.Context, gameID, clanID string) ([]repository.Member, error)
+	SendFriendRequest(ctx context.Context, gameID, senderID, receiverID string) (repository.SendFriendRequestResult, error)
+	AcceptFriendRequest(ctx context.Context, gameID, requestID, playerID string) (repository.Friendship, error)
+	ListFriendRequests(ctx context.Context, gameID, playerID string) ([]repository.FriendRequest, error)
+	ListFriends(ctx context.Context, gameID, playerID string) ([]repository.Friend, error)
 }
 
 // Service is the social service's logic.
