@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 )
 
@@ -24,12 +25,20 @@ type Store interface {
 
 // Service is the social service's logic.
 type Service struct {
-	store Store
+	store  Store
+	events events.Publisher
 }
 
-// New returns a Service.
+// New returns a Service. Its events are dropped until WithPublisher sets a publisher.
 func New(store Store) *Service {
-	return &Service{store: store}
+	return &Service{store: store, events: events.Noop{}}
+}
+
+// WithPublisher sets where the service sends events for the other services (see pkg/events).
+// It returns s, so it can follow New: service.New(repo).WithPublisher(p).
+func (s *Service) WithPublisher(p events.Publisher) *Service {
+	s.events = p
+	return s
 }
 
 // Ready reports whether the service can do its work (for now: the database answers).

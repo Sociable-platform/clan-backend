@@ -5,6 +5,7 @@ go 1.25.11
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/rabbitmq/amqp091-go v1.10.0
 	golang.org/x/crypto v0.37.0
 )
 

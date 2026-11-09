@@ -207,6 +207,47 @@ Open http://localhost:15672, go to **Queues**, and watch `realtime.events` count
   `friend.accepted`, and the `realtime.events` message count goes up by one. A key no queue is bound to
   (for example `other.thing`) is dropped.
 
+### Event format
+
+Every message on `socialkit.events` is JSON with the same envelope (`events.Event` in `pkg/events`), and its routing
+key is its `type`. Realtime decodes the same struct, so a renamed field breaks both sides at compile time.
+
+| Field | Meaning |
+|---|---|
+| `event_id` | Random UUID, also the message's `message_id`. Lets a consumer notice the same event delivered twice. |
+| `type` | The event name and the routing key, for example `friend.accepted` |
+| `occurred_at` | When it happened, RFC 3339 in UTC |
+| `game_id` | The game the event belongs to |
+| `data` | Fields that depend on `type` (table below); left out when empty |
+
+```json
+{ "event_id": "3f1c0b7e-9a2d-4c51-8e0f-6b7a1d2c3e4f", "type": "friend.accepted",
+  "occurred_at": "2026-11-10T08:00:00Z", "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15", "data": { } }
+```
+
+Messages are persistent (`delivery_mode` 2) with `content_type` `application/json`.
+
+| Event (routing key) | Published by | `data` |
+|---|---|---|
+| none yet | | Each friend and clan event is added here, with its `data`, by the task that publishes it. |
+
+### Publishing from a service
+
+- Social publishes when `SOCIAL_RABBITMQ_URL` is set (docker compose sets it). Without it social starts anyway, logs
+  `SOCIAL_RABBITMQ_URL is not set`, and drops its events.
+- The publisher (`events.NewRabbitMQ`) connects on the first event, not at startup, and reconnects by itself. After a
+  failed connection it waits 5 s before trying again, so requests never queue up behind a dead broker.
+- Every publish waits for the broker to confirm it (up to 5 s).
+- Services get the publisher wrapped in `events.Safe`: a failed publish is logged as `publish event failed` with its
+  `event_id` and `type`, and the user's request still succeeds.
+- Publish only after the database change has committed, so an event never announces something that was rolled back.
+- Service tests use `events.Recorder` to check which events were published.
+
+**Known gap: an event can be lost.** If RabbitMQ is down or does not confirm in time, the database change stays and
+the event is gone (only the log line remains). Realtime then misses it until it is restarted or backfilled.
+*Future work:* a transactional outbox: write the event to an `outbox` table in the same transaction as the change,
+and let a background worker publish it and mark it sent, retrying until the broker accepts it.
+
 ## Run with go run
 
 Start Postgres and apply the migrations in Docker, then run a service from your editor or terminal:
@@ -293,6 +334,16 @@ go test ./services/social/internal/repository/ -v
 ```
 
 Each run uses new random game IDs and deletes its rows afterwards, so it does not disturb other data.
+
+The event publisher has one test that needs a real RabbitMQ (`docker compose up -d rabbitmq`), skipped unless
+`TEST_RABBITMQ_URL` is set. It uses its own temporary queue and the routing key `test.published`, so nothing lands in
+`realtime.events`:
+
+```bash
+# PowerShell
+$env:TEST_RABBITMQ_URL="amqp://clan:<RABBITMQ_PASSWORD>@localhost:5672/"
+go test -run TestPublishToRealBroker -v ./pkg/events/
+```
 
 ## Endpoints so far
 
