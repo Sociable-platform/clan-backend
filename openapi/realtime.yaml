@@ -1,0 +1,321 @@
+openapi: 3.0.3
+info:
+  title: Realtime service
+  version: 0.1.0
+  description: |
+    Chat history and the conversation list. Everything live (new messages, presence, notifications)
+    goes through the WebSocket described in `openapi/realtime-ws.md`; this file only covers the two REST reads.
+
+    Conventions for every endpoint:
+    - Errors always use the `Error` shape: `{ "error": { "code": "...", "message": "..." } }`.
+    - Every endpoint needs `Authorization: Bearer <player token>`. The game comes only from the token, never from
+      the request: a player never sees conversations or messages of another game.
+    - Browser calls are only accepted from the origins in `REALTIME_CORS_ORIGINS`. Other origins get
+      403 `origin_not_allowed`. Calls without an `Origin` header are not affected.
+    - JSON fields are camelCase, like the other services.
+
+    Status: this is the contract the SDK codes against. The realtime service is not built yet, so the
+    route test that keeps this file and `Routes()` in sync is added together with the service.
+    The WebSocket endpoint `GET /api/v1/ws` is not an OpenAPI operation; it is described in `realtime-ws.md`.
+servers:
+  - url: http://localhost:8083
+    description: Local (docker compose or go run)
+tags:
+  - name: conversations
+    description: The caller's direct-message and clan conversations
+paths:
+  /api/v1/conversations:
+    get:
+      tags: [conversations]
+      operationId: listConversations
+      summary: Conversations of the calling player
+      description: |
+        Returns every conversation the caller is a member of in the game of the player token:
+        one direct-message conversation per friend and one for the caller's clan, if any.
+        The list is not paged.
+
+        Each conversation carries its last message (null while empty), the number of unread messages
+        and the members with their online status. `online` is always `false` when the game turned the
+        online status off in its published config.
+
+        The SDK calls this once after the WebSocket `hello` frame and then keeps the list up to date from
+        `conversation.added`, `conversation.removed`, `message.new` and `presence.update` frames.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The caller's conversations, most recently active first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationList"
+              example:
+                conversations:
+                  - id: 0193a6b4-7c1e-7d2a-9f10-2b3c4d5e6f70
+                    kind: dm
+                    clanId: null
+                    members:
+                      - id: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+                        name: Ali
+                        online: true
+                      - id: 5a2b3c4d-1e2f-4a3b-8c9d-0e1f2a3b4c5d
+                        name: Rashad
+                        online: false
+                    lastMessage:
+                      id: 0193a6c0-1111-7222-8333-944455556666
+                      senderId: 5a2b3c4d-1e2f-4a3b-8c9d-0e1f2a3b4c5d
+                      senderName: Rashad
+                      body: gg, again tomorrow?
+                      createdAt: "2026-11-09T18:20:00Z"
+                    unread: 2
+                  - id: 0193a6b9-0000-7aaa-8bbb-ccccddddeeee
+                    kind: clan
+                    clanId: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                    members:
+                      - id: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+                        name: Ali
+                        online: true
+                    lastMessage: null
+                    unread: 0
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/conversations/{conversationId}/messages:
+    get:
+      tags: [conversations]
+      operationId: listMessages
+      summary: Message history of one conversation
+      description: |
+        Returns one page of messages, **newest first**. Without `before` it returns the latest page. To load
+        older messages pass the `id` of the oldest message you already have as `before`, and repeat while
+        `hasMore` is true. The SDK reverses each page to show it oldest first.
+
+        - `before`: only messages older than this message ID (the message itself is not returned).
+        - `limit`: at most this many messages (1 to 100, default 50).
+
+        Messages are plain text. Render them with `textContent`, never as HTML.
+
+        A caller who is not a member of the conversation gets 403 `not_member`. The same answer is given
+        for an ID that does not exist or belongs to another game, so IDs cannot be probed.
+        Messages stay in the history after their sender left the clan or the friendship ended.
+      security:
+        - playerToken: []
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: before
+          in: query
+          required: false
+          description: A message ID. Only older messages are returned.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: Page size, 1 to 100.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: A page of messages, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessagePage"
+              example:
+                messages:
+                  - id: 0193a6c0-1111-7222-8333-944455556666
+                    senderId: 5a2b3c4d-1e2f-4a3b-8c9d-0e1f2a3b4c5d
+                    senderName: Rashad
+                    body: gg, again tomorrow?
+                    createdAt: "2026-11-09T18:20:00Z"
+                  - id: 0193a6bf-aaaa-7bbb-8ccc-ddddeeeeffff
+                    senderId: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+                    senderName: Ali
+                    body: good match
+                    createdAt: "2026-11-09T18:19:12Z"
+                hasMore: true
+        "400":
+          description: |
+            Wrong input. `code` is `invalid_limit` (not a whole number from 1 to 100) or
+            `invalid_before` (not a valid message ID).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_limit
+                  message: limit must be a whole number from 1 to 100
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            `not_member` when the caller is not in the conversation (or it does not exist),
+            or `origin_not_allowed` when the request came from a website that is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_member
+                  message: You are not a member of this conversation
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  securitySchemes:
+    playerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Player token (typ "player") issued by the platform service. Sent by the SDK.
+  schemas:
+    ConversationList:
+      type: object
+      required: [conversations]
+      properties:
+        conversations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Conversation"
+    Conversation:
+      type: object
+      required: [id, kind, clanId, members, lastMessage, unread]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [dm, clan]
+          description: "`dm` is a conversation between two friends, `clan` is the chat of a clan."
+        clanId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The clan's ID in the social service. Null for `dm`.
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationMember"
+        lastMessage:
+          allOf:
+            - $ref: "#/components/schemas/Message"
+          nullable: true
+          description: The newest message, or null when nobody has written yet.
+        unread:
+          type: integer
+          minimum: 0
+          maximum: 99
+          description: Messages from other players after the caller's last read message. Capped at 99.
+    ConversationMember:
+      type: object
+      required: [id, name, online]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The social service's own ID for the player (not the game's player ID).
+        name:
+          type: string
+          description: Display name.
+        online:
+          type: boolean
+          description: Has at least one open WebSocket. Always false when the game hides online status.
+    Message:
+      type: object
+      required: [id, senderId, senderName, body, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: UUIDv7, so IDs sort in time order.
+        senderId:
+          type: string
+          format: uuid
+        senderName:
+          type: string
+          description: The sender's name when the message was sent; later renames do not change it.
+        body:
+          type: string
+          description: Plain text, after the game's profanity filter if it is on.
+        createdAt:
+          type: string
+          format: date-time
+    MessagePage:
+      type: object
+      required: [messages, hasMore]
+      properties:
+        messages:
+          type: array
+          description: Newest first.
+          items:
+            $ref: "#/components/schemas/Message"
+        hasMore:
+          type: boolean
+          description: True when older messages exist; ask again with `before` set to the last message's `id`.
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable, machine-readable code, e.g. not_member, invalid_limit, token_expired.
+            message:
+              type: string
+              description: Human-readable explanation.
+  responses:
+    Unauthorized:
+      description: |
+        No valid player token. Every endpoint needs `Authorization: Bearer <player token>`.
+        Codes: missing_token, invalid_token, token_expired (get a new token from the game),
+        wrong_token_type (for example a developer token).
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: Bearer realm="realtime"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: token_expired
+              message: The player token has expired; get a new one from the game
+    OriginNotAllowed:
+      description: The request came from a website that is not in the allowed origins.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: origin_not_allowed
+              message: This website is not allowed to call the API
+    InternalError:
+      description: Something failed on our side, for example the database is down. Safe to retry later.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: internal_error
+              message: Something went wrong
