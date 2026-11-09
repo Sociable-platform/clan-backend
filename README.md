@@ -6,7 +6,7 @@ Backend for the clan platform: three Go services in one repository (realtime is 
 |---|---|---|---|
 | `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
 | `services/social` | Players, clans, clan members | 8082 | `social` |
-| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub and `hello`; its tables exist) | 8083 | `realtime` |
+| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, and friend events from RabbitMQ that create and remove DM conversations) | 8083 | `realtime` |
 
 ## Layout
 
@@ -81,6 +81,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
 | `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
 | `REALTIME_SOCIAL_URL` | `http://localhost:8082` | Where realtime reaches the social service to learn each connecting player's own ID. Docker Compose sets it to `http://social:8082`. |
+| `REALTIME_RABBITMQ_URL` | none | RabbitMQ address (`amqp://user:password@host:5672/`) realtime reads events from, queue `realtime.events`. Empty means: do not read events (the service still runs). Use letters and digits only in the password. Docker Compose builds it from `RABBITMQ_USER` and `RABBITMQ_PASSWORD`. The password is never logged. |
 
 ### Get a player token from platform
 
@@ -336,6 +337,9 @@ With the Docker stack running (`docker compose up -d`, so the migrations are app
 $env:SOCIAL_TEST_DATABASE_URL="postgres://social_user:<SOCIAL_DB_PASSWORD>@localhost:5432/clan?sslmode=disable"
 go test ./services/social/internal/repository/ -v
 ```
+
+The realtime repository tests work the same way with `REALTIME_TEST_DATABASE_URL`
+(`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/`.
 
 Each run uses new random game IDs and deletes its rows afterwards, so it does not disturb other data.
 

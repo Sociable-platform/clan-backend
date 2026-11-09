@@ -37,6 +37,8 @@ type WSOptions struct {
 	// whose Origin header is not listed is refused with 403 before the upgrade. Requests
 	// without an Origin header (not from a browser) are not affected.
 	Origins []string
+	// Hub holds the open connections. Pass the one the event consumer sends to; nil makes a new one.
+	Hub *hub.Hub
 	// Shutdown is cancelled when the service stops; every open socket is then closed with 1001.
 	// Nil means never.
 	Shutdown context.Context

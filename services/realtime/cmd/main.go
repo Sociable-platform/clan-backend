@@ -19,7 +19,9 @@ import (
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/auth"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/consumer"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/handler"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/social"
@@ -73,8 +75,10 @@ func run() error {
 	}
 
 	// Wiring: repository (database) -> service (rules) -> handler (HTTP).
+	// The hub of open connections is shared: the WebSocket handler fills it, the event consumer sends to it.
+	connections := hub.New()
 	repo := repository.New(pool)
-	svc := service.New(repo)
+	svc := service.New(repo, service.WithPresence(connections))
 
 	// Browser pages allowed to call this service and to open a WebSocket (the demo game, where the SDK runs).
 	origins := config.List("REALTIME_CORS_ORIGINS", []string{"http://localhost:5174"})
@@ -95,15 +99,45 @@ func run() error {
 	hdl := handler.New(serviceName, svc, handler.WSOptions{
 		Verifier: auth.NewVerifier(verifyKey, time.Now),
 		Players:  socialClient,
+		Hub:      connections,
 		Origins:  origins,
 		Shutdown: ctx, // on SIGTERM every open socket is closed with 1001
 	}, log)
 	mux := http.NewServeMux()
 	hdl.Register(mux)
 
+	// Events from Social (friends, later clans) arrive through RabbitMQ. Without a broker URL, or while the
+	// broker is down, the service still runs; it just learns nothing new until the broker is back.
+	consumerDone := make(chan struct{})
+	brokerURL := config.String("REALTIME_RABBITMQ_URL", "")
+	switch {
+	case brokerURL == "":
+		log.Warn("REALTIME_RABBITMQ_URL is not set: not reading events, friendships will not reach realtime")
+		close(consumerDone)
+	case pool == nil:
+		// Events are dropped after one retry, so reading them with nowhere to store them would lose them.
+		log.Warn("not reading events: there is no database to store them in")
+		close(consumerDone)
+	default:
+		cons, err := consumer.New(consumer.Config{URL: brokerURL}, consumer.NewDispatcher(svc, connections, log), log)
+		if err != nil {
+			return fmt.Errorf("REALTIME_RABBITMQ_URL: %w", err)
+		}
+		go func() {
+			defer close(consumerDone)
+			cons.Run(ctx) // returns when ctx ends (SIGTERM)
+		}()
+	}
+
 	h := httpx.Chain(mux, httpx.Recover(log), httpx.RequestLog(log), cors)
 	err = httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
 	// Run does not wait for upgraded connections; give them time to send their close frame.
 	hdl.Wait(5 * time.Second)
+	// The consumer stops with ctx too; it finishes the event it is working on first.
+	select {
+	case <-consumerDone:
+	case <-time.After(5 * time.Second):
+		log.Warn("event consumer did not stop in time")
+	}
 	return err
 }
