@@ -1,19 +1,21 @@
 # clan-backend
 
-Backend for the clan platform: two Go services in one repository.
+Backend for the clan platform: three Go services in one repository (realtime is a skeleton so far).
 
 | Service | Owns | Port | Database schema |
 |---|---|---|---|
 | `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
 | `services/social` | Players, clans, clan members | 8082 | `social` |
+| `services/realtime` | WebSocket connections, chat, presence (skeleton: only `/health` and `/ready` so far) | 8083 | `realtime` |
 
 ## Layout
 
 ```
 clan-backend/
 ├── go.mod                     # one Go module for the whole repo
-├── docker-compose.yml         # postgres + rabbitmq + platform + social
+├── docker-compose.yml         # postgres + rabbitmq + platform + social + realtime + traefik
 ├── deploy/postgres/init/      # creates the schemas and database users on first start
+├── deploy/traefik/            # gateway: static config and the /realtime route
 ├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
 ├── pkg/                       # shared code, used by both services
@@ -31,7 +33,8 @@ clan-backend/
     │   │   └── repository/    # SQL, platform schema only
     │   ├── migrations/        # SQL for tables in the platform schema
     │   └── Dockerfile
-    └── social/                # same structure
+    ├── social/                # same structure
+    └── realtime/              # same structure, no migrations yet
 ```
 
 A request flows `handler -> service -> repository`. Each layer only calls the one below it.
@@ -58,7 +61,7 @@ If a service ever moves to its own repository, it gets its own `go.mod` then.
 ## JWT signing key
 
 Platform signs developer and player tokens with an Ed25519 private key.
-Social checks player tokens with the matching public key, so it can verify tokens but never create them.
+Social and realtime check player tokens with the matching public key, so they can verify tokens but never create them.
 Generate the pair once (in Git Bash on Windows); neither file is committed (`*.pem` is in `.gitignore`),
 and neither service starts without its key.
 
@@ -76,6 +79,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `PLATFORM_JWT_PRIVATE_KEY_FILE` | none (required) | Path to the PEM file. Docker Compose sets it to the mounted `secrets/platform_jwt_private.pem`. |
 | `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
+| `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
 
 ### Get a player token from platform
 
@@ -121,7 +125,7 @@ under older rules cannot go public.
 
 ```bash
 cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
-# edit .env: set the four passwords (letters and digits only)
+# edit .env: set the five passwords (letters and digits only)
 # create the JWT signing key first (see "JWT signing key" above)
 docker compose up --build
 ```
@@ -136,6 +140,8 @@ This starts these containers:
 | platform-migrate | none: applies pending platform SQL migrations, then exits (see "Database migrations") |
 | platform | http://localhost:8081/health, http://localhost:8081/ready |
 | social | http://localhost:8082/health, http://localhost:8082/ready |
+| realtime | http://localhost:8083/health, http://localhost:8083/ready |
+| traefik | gateway on `localhost:80` (change with `TRAEFIK_HOST_PORT`): http://localhost/realtime/v1/healthz (see "Gateway (Traefik)") |
 
 `platform` starts only after `platform-migrate` finished successfully.
 
@@ -145,9 +151,38 @@ On the first start, `deploy/postgres/init/01-schemas.sh` creates:
 |---|---|---|
 | `platform_user` | `platform` | No |
 | `social_user` | `social` | No |
+| `realtime_user` | `realtime` | No |
 
 The init script runs only when the database volume is empty. After changing it, reset the database with
 `docker compose down -v` (this deletes all local data) and start again.
+
+**Database created before realtime existed:** it has no `realtime_user`, and the init script will not run again.
+Either reset with `down -v`, or add the user and schema once (use your `REALTIME_DB_PASSWORD`, letters and digits only):
+
+```bash
+docker compose exec -T postgres psql -U postgres -d clan -v ON_ERROR_STOP=1 <<'SQL'
+CREATE ROLE realtime_user LOGIN PASSWORD 'your-realtime-password';
+GRANT CONNECT ON DATABASE clan TO realtime_user;
+CREATE SCHEMA realtime AUTHORIZATION realtime_user;
+ALTER ROLE realtime_user SET search_path = realtime;
+SQL
+```
+
+## Gateway (Traefik)
+
+Traefik is the public entry point; today it only routes realtime. Browsers and the SDK use the public paths, and Traefik
+rewrites them to the service's own paths (`deploy/traefik/dynamic/realtime.yml`):
+
+| Public URL (through Traefik, port 80) | Reaches realtime as |
+|---|---|
+| `/realtime/v1/healthz` | `/health` |
+| `/realtime/v1/readyz` | `/ready` |
+| `/realtime/v1/<rest>` (conversations, messages, `ws`) | `/api/v1/<rest>` |
+
+- Check it: `curl http://localhost/realtime/v1/healthz` returns 200 `{"service":"realtime","status":"ok"}`.
+- The entrypoint timeouts in `deploy/traefik/traefik.yml` are above 60 s so an idle WebSocket is not cut by the gateway.
+- There is no access log on purpose: the WebSocket URL carries the player token in its query string.
+- Port 80 busy on your computer? Set `TRAEFIK_HOST_PORT` in `.env` and use that port in the URLs.
 
 ## RabbitMQ events
 
@@ -180,6 +215,7 @@ docker compose run --rm platform-migrate     # safe to repeat
 docker compose run --rm social-migrate   # creates or updates the social tables
 go run ./services/platform/cmd      # uses PLATFORM_DATABASE_URL
 go run ./services/social/cmd        # uses SOCIAL_DATABASE_URL
+go run ./services/realtime/cmd      # uses REALTIME_DATABASE_URL
 ```
 
 Set the `*_DATABASE_URL` variables from `.env.example` in your terminal or GoLand run configuration.
@@ -215,7 +251,7 @@ docker compose exec -T postgres psql -U platform_user -d clan -v ON_ERROR_STOP=1
 |---|---|
 | platform | `openapi/platform.yaml` |
 | social | `openapi/social.yaml` |
-| realtime (planned) | `openapi/realtime.yaml` (REST) and `openapi/realtime-ws.md` (WebSocket frames) |
+| realtime | `openapi/realtime.yaml` (REST) and `openapi/realtime-ws.md` (WebSocket frames); the REST endpoints are not built yet, so there is no route test for it yet |
 
 These files are the contract the dashboard, SDK and demo game build against.
 When you add or change a route, update `Routes()` in the service's `internal/handler/handler.go` **and** its OpenAPI file in the same commit.
@@ -228,6 +264,7 @@ To browse a file, paste it into https://editor.swagger.io or open it with the Op
 |---|---|---|---|
 | platform | `PLATFORM_CORS_ORIGINS` | `http://localhost:5173` | Dashboard (clan-frontend) |
 | social | `SOCIAL_CORS_ORIGINS` | `http://localhost:5174` | Demo game with the SDK |
+| realtime | `REALTIME_CORS_ORIGINS` | `http://localhost:5174` | Demo game with the SDK |
 
 - Comma-separated list, each written exactly as `scheme://host:port` (no trailing slash). `*` is rejected at startup.
 - Requests from other websites get 403 `origin_not_allowed`.
@@ -292,3 +329,14 @@ always come from the token, never from the URL or the body.
 | POST | `/api/v1/clans/{clanID}/join` | no body. 200 with the clan and its new `memberCount`, the caller joins as a member. 404 `clan_not_found` (also for another game's clan); 409 `already_in_clan` / `clan_full` (default 10 members) |
 | POST | `/api/v1/clans/{clanID}/leave` | no body. 204: the caller left the clan and can join another one. A normal member is just removed. If the **owner** leaves and others remain, the member who joined first becomes the owner; if the owner is the only member, the clan is deleted. 404 `clan_not_found` (also for another game's clan); 409 `not_in_clan` (the caller is not a member of this clan) |
 | GET | `/api/v1/clans/{clanID}/members` | 200 `{ members: [...] }` with `playerId`, `displayName`, `role`, `joinedAt`; owner first, then by join time. 404 `clan_not_found` (also for another game's clan) |
+
+### Realtime service (port 8083)
+
+Skeleton: only the standard endpoints exist so far. The conversation list, history and WebSocket are specified in
+`openapi/realtime.yaml` and `openapi/realtime-ws.md` and are built in later tasks.
+
+| Method | Path | Answer |
+|---|---|---|
+| GET | `/health` | 200 while the process runs |
+| GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
+| any | anything else | 404 `not_found` in the standard error format |
