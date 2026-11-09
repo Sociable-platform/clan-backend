@@ -3,7 +3,7 @@ info:
   title: Social service
   version: 0.1.0
   description: |
-    Players, clans and clan members.
+    Players, clans, clan members and friends.
 
     Conventions for every endpoint:
     - Errors always use the `Error` shape: `{ "error": { "code": "...", "message": "..." } }`.
@@ -23,6 +23,8 @@ tags:
     description: The calling player
   - name: clans
     description: Clans of the player's game
+  - name: friends
+    description: Friend requests and friends inside the player's game
 paths:
   /health:
     get:
@@ -432,6 +434,200 @@ paths:
                 error:
                   code: clan_not_found
                   message: Clan not found
+  /api/v1/friends:
+    get:
+      tags: [friends]
+      operationId: listFriends
+      summary: The caller's friends
+      description: |
+        Returns the caller's friends in their game, sorted by name (ignoring upper/lower case).
+        An empty list when the caller has no friends yet.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The friends.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendList"
+              example:
+                friends:
+                  - id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                    displayName: Aysel
+                    since: "2026-11-10T08:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/friends/requests:
+    get:
+      tags: [friends]
+      operationId: listFriendRequests
+      summary: The caller's pending friend requests
+      description: |
+        Returns the caller's pending requests, newest first: `incoming` were sent to the caller
+        (they can accept them), `outgoing` were sent by the caller. `player` is always the
+        other player. Both lists are empty, never missing, when there are none.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The pending requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendRequests"
+              example:
+                incoming:
+                  - id: 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
+                    player:
+                      id: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                      displayName: Murad
+                    createdAt: "2026-11-10T08:00:00Z"
+                outgoing: []
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+    post:
+      tags: [friends]
+      operationId: sendFriendRequest
+      summary: Send a friend request
+      description: |
+        Asks another player of the caller's game to be friends. `playerId` is the social
+        service's own player ID (as in member lists), not the game's player ID.
+
+        If that player had already sent the caller a request, sending one back accepts it:
+        the answer is 200 with the new friend instead of 201. A pair of players has at most
+        one pending request, in either direction, and requests sent by both players at the
+        same moment end as one friendship.
+
+        After the change is saved, `friend.request_sent` (201) or `friend.accepted` (200) is
+        published to RabbitMQ (README "RabbitMQ events").
+      security:
+        - playerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendFriendRequest"
+            example:
+              playerId: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+      responses:
+        "201":
+          description: The new pending request. `player` is the player it was sent to.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendRequest"
+              example:
+                id: 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
+                player:
+                  id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                  displayName: Aysel
+                createdAt: "2026-11-10T08:00:00Z"
+        "200":
+          description: That player had already asked the caller, so they are friends now. The new friend.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Friend"
+              example:
+                id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                displayName: Aysel
+                since: "2026-11-10T08:00:00Z"
+        "400":
+          description: |
+            The body is not valid JSON or has unknown fields (invalid_json), `playerId` is missing
+            (invalid_player_id), or it is the caller (cannot_friend_yourself).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: cannot_friend_yourself
+                  message: You cannot send a friend request to yourself
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such player in the caller's game (player_not_found). A player of another game, or an ID that is not a UUID, counts as not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: player_not_found
+                  message: Player not found
+        "409":
+          description: The two are friends already (already_friends), or the caller already sent this player a request (friend_request_exists).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: friend_request_exists
+                  message: You already sent this player a friend request
+  /api/v1/friends/requests/{requestID}/accept:
+    post:
+      tags: [friends]
+      operationId: acceptFriendRequest
+      summary: Accept a friend request
+      description: |
+        Accepts a pending request sent to the caller: the request is removed and the two
+        players become friends, in one transaction. Publishes `friend.accepted` afterwards.
+        No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          description: The request's ID (from the incoming list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Accepted. The new friend (the player who sent the request).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Friend"
+              example:
+                id: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                displayName: Murad
+                since: "2026-11-10T08:05:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The website is not allowed (origin_not_allowed), or the caller sent this request and
+            only the other player can accept it (not_request_receiver).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_request_receiver
+                  message: Only the player who received this request can accept it
+        "404":
+          description: No such pending request for the caller (friend_request_not_found). A request of another game, one between two other players, or one already accepted counts as not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: friend_request_not_found
+                  message: Friend request not found
 components:
   securitySchemes:
     playerToken:
@@ -542,6 +738,73 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Clan"
+    FriendPlayer:
+      type: object
+      required: [id, displayName]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The social service's own ID for the player (not the game's player ID).
+        displayName:
+          type: string
+    Friend:
+      type: object
+      required: [id, displayName, since]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The friend's player ID in the social service.
+        displayName:
+          type: string
+        since:
+          type: string
+          format: date-time
+          description: When the two became friends.
+    FriendList:
+      type: object
+      required: [friends]
+      properties:
+        friends:
+          type: array
+          items:
+            $ref: "#/components/schemas/Friend"
+    FriendRequest:
+      type: object
+      required: [id, player, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        player:
+          $ref: "#/components/schemas/FriendPlayer"
+        createdAt:
+          type: string
+          format: date-time
+    FriendRequests:
+      type: object
+      required: [incoming, outgoing]
+      properties:
+        incoming:
+          type: array
+          description: Sent to the caller; they can accept them. `player` is the sender.
+          items:
+            $ref: "#/components/schemas/FriendRequest"
+        outgoing:
+          type: array
+          description: Sent by the caller, waiting for the other player. `player` is the receiver.
+          items:
+            $ref: "#/components/schemas/FriendRequest"
+    SendFriendRequest:
+      type: object
+      required: [playerId]
+      additionalProperties: false
+      properties:
+        playerId:
+          type: string
+          format: uuid
+          description: The social service's ID of the player to ask.
     Error:
       type: object
       required: [error]

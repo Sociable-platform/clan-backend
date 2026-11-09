@@ -229,7 +229,11 @@ Messages are persistent (`delivery_mode` 2) with `content_type` `application/jso
 
 | Event (routing key) | Published by | `data` |
 |---|---|---|
-| none yet | | Each friend and clan event is added here, with its `data`, by the task that publishes it. |
+| `friend.request_sent` | social, `POST /api/v1/friends/requests` (201) | `{ "sender": { "id", "name" }, "receiver": { "id", "name" } }` |
+| `friend.accepted` | social, accept, or a request sent back (200) | `{ "players": [ { "id", "name" }, { "id", "name" } ] }`, the smaller ID first |
+
+`id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
+`name` the display name at the time of the event. Clan events are added by the task that publishes them.
 
 ### Publishing from a service
 
@@ -383,6 +387,10 @@ always come from the token, never from the URL or the body.
 | POST | `/api/v1/clans/{clanID}/join` | no body. 200 with the clan and its new `memberCount`, the caller joins as a member. 404 `clan_not_found` (also for another game's clan); 409 `already_in_clan` / `clan_full` (default 10 members) |
 | POST | `/api/v1/clans/{clanID}/leave` | no body. 204: the caller left the clan and can join another one. A normal member is just removed. If the **owner** leaves and others remain, the member who joined first becomes the owner; if the owner is the only member, the clan is deleted. 404 `clan_not_found` (also for another game's clan); 409 `not_in_clan` (the caller is not a member of this clan) |
 | GET | `/api/v1/clans/{clanID}/members` | 200 `{ members: [...] }` with `playerId`, `displayName`, `role`, `joinedAt`; owner first, then by join time. 404 `clan_not_found` (also for another game's clan) |
+| GET | `/api/v1/friends` | 200 `{ friends: [...] }` with `id`, `displayName`, `since`, sorted by name |
+| GET | `/api/v1/friends/requests` | 200 `{ incoming: [...], outgoing: [...] }`, newest first; each has `id`, `player` (the other player: `id`, `displayName`) and `createdAt` |
+| POST | `/api/v1/friends/requests` | body `{ "playerId": "<social player ID>" }`. 201 with the new request. If that player had already asked the caller, it is accepted instead: 200 with the new friend. 400 `invalid_json` / `invalid_player_id` / `cannot_friend_yourself`; 404 `player_not_found` (also for another game's player); 409 `already_friends` / `friend_request_exists`. Publishes `friend.request_sent` or `friend.accepted` |
+| POST | `/api/v1/friends/requests/{requestID}/accept` | no body. 200 with the new friend. 403 `not_request_receiver` (the caller sent it); 404 `friend_request_not_found`. Publishes `friend.accepted` |
 
 ### Realtime service (port 8083)
 

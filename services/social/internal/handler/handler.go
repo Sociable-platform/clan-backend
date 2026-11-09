@@ -23,6 +23,10 @@ type Service interface {
 	LeaveClan(ctx context.Context, gameID, externalID, clanID string) error
 	MyClan(ctx context.Context, gameID, externalID string) (service.PlayerClan, error)
 	ListMembers(ctx context.Context, gameID, clanID string) ([]service.Member, error)
+	SendFriendRequest(ctx context.Context, gameID, externalID, displayName, playerID string) (service.SendFriendRequestResult, error)
+	AcceptFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) (service.Friend, error)
+	ListFriendRequests(ctx context.Context, gameID, externalID, displayName string) (service.FriendRequests, error)
+	ListFriends(ctx context.Context, gameID, externalID, displayName string) ([]service.Friend, error)
 }
 
 // Handler holds the routes of the service.
@@ -67,6 +71,10 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPost, "/api/v1/clans/{clanID}/join", h.joinClan},
 		{http.MethodPost, "/api/v1/clans/{clanID}/leave", h.leaveClan},
 		{http.MethodGet, "/api/v1/clans/{clanID}/members", h.listMembers},
+		{http.MethodGet, "/api/v1/friends", h.listFriends},
+		{http.MethodGet, "/api/v1/friends/requests", h.listFriendRequests},
+		{http.MethodPost, "/api/v1/friends/requests", h.sendFriendRequest},
+		{http.MethodPost, "/api/v1/friends/requests/{requestID}/accept", h.acceptFriendRequest},
 	}
 }
 
