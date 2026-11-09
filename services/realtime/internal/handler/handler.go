@@ -39,7 +39,11 @@ func New(name string, svc Service, ws WSOptions, log *slog.Logger) *Handler {
 	if ws.Players == nil {
 		panic("handler: WSOptions.Players is required")
 	}
-	return &Handler{name: name, svc: svc, wsOpts: ws.withDefaults(), log: log, hub: hub.New()}
+	h := ws.Hub
+	if h == nil {
+		h = hub.New()
+	}
+	return &Handler{name: name, svc: svc, wsOpts: ws.withDefaults(), log: log, hub: h}
 }
 
 // Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.
