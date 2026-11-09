@@ -146,6 +146,8 @@ services:
       SOCIAL_DATABASE_URL: postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
       SOCIAL_CORS_ORIGINS: ${SOCIAL_CORS_ORIGINS:-http://localhost:5174}
       SOCIAL_JWT_PUBLIC_KEY_FILE: /run/secrets/platform_jwt_public.pem
+      # Events for the other services (README "RabbitMQ events")
+      SOCIAL_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       # Platform's public key, created by you (see README "JWT signing key"). Never committed (*.pem).
@@ -156,6 +158,10 @@ services:
       postgres:
         condition: service_healthy
       social-migrate:
+        condition: service_completed_successfully
+      # Start after the queues and bindings exist, so the first events already reach realtime.events.
+      # Once running, social keeps working if RabbitMQ goes down (events are then lost, see README).
+      rabbitmq-setup:
         condition: service_completed_successfully
     restart: unless-stopped
 

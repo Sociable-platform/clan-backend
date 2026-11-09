@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/config"
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
@@ -71,9 +72,22 @@ func run() error {
 		log.Warn("SOCIAL_DATABASE_URL is not set: starting without a database, /ready will report not ready")
 	}
 
+	// Events for the other services (see README "RabbitMQ events"). Without a broker URL they are
+	// dropped. The publisher connects on its first event, so a broker that is down never stops
+	// social from starting, and events.Safe makes sure it never fails a request either.
+	var publisher events.Publisher = events.Noop{}
+	if url := config.String("SOCIAL_RABBITMQ_URL", ""); url != "" {
+		rabbit := events.NewRabbitMQ(url, log)
+		defer rabbit.Close()
+		publisher = rabbit
+		log.Info("publishing events to rabbitmq", "exchange", events.Exchange) // never log the URL: it holds the password
+	} else {
+		log.Warn("SOCIAL_RABBITMQ_URL is not set: events for other services are dropped")
+	}
+
 	// Wiring: repository (database) -> service (rules) -> handler (HTTP).
 	repo := repository.New(pool)
-	svc := service.New(repo)
+	svc := service.New(repo).WithPublisher(events.Safe(publisher, log))
 
 	mux := http.NewServeMux()
 	// Every /api/v1 route requires a player token signed by platform (checked with verifyKey).
