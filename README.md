@@ -6,7 +6,7 @@ Backend for the clan platform: three Go services in one repository (realtime is 
 |---|---|---|---|
 | `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
 | `services/social` | Players, clans, clan members | 8082 | `social` |
-| `services/realtime` | WebSocket connections, chat, presence (skeleton: only `/health` and `/ready` so far) | 8083 | `realtime` |
+| `services/realtime` | WebSocket connections, chat, presence (skeleton: only `/health` and `/ready` so far; its tables exist) | 8083 | `realtime` |
 
 ## Layout
 
@@ -31,10 +31,10 @@ clan-backend/
     │   │   ├── handler/       # HTTP: routes, reading requests, writing JSON
     │   │   ├── service/       # business rules, no HTTP and no SQL
     │   │   └── repository/    # SQL, platform schema only
-    │   ├── migrations/        # SQL for tables in the platform schema
+    │   │   ├── migrations/        # SQL for tables in the platform schema
     │   └── Dockerfile
     ├── social/                # same structure
-    └── realtime/              # same structure, no migrations yet
+    └── realtime/              # same structure
 ```
 
 A request flows `handler -> service -> repository`. Each layer only calls the one below it.
@@ -138,12 +138,13 @@ This starts these containers:
 | rabbitmq | `localhost:5672` (AMQP), management UI http://localhost:15672 (log in with `RABBITMQ_USER` / `RABBITMQ_PASSWORD`) |
 | rabbitmq-setup | none: declares the RabbitMQ exchange, queue and bindings, then exits (see "RabbitMQ events") |
 | platform-migrate | none: applies pending platform SQL migrations, then exits (see "Database migrations") |
+| social-migrate, realtime-migrate | none: the same for the social and realtime schemas |
 | platform | http://localhost:8081/health, http://localhost:8081/ready |
 | social | http://localhost:8082/health, http://localhost:8082/ready |
 | realtime | http://localhost:8083/health, http://localhost:8083/ready |
 | traefik | gateway on `localhost:80` (change with `TRAEFIK_HOST_PORT`): http://localhost/realtime/v1/healthz (see "Gateway (Traefik)") |
 
-`platform` starts only after `platform-migrate` finished successfully.
+Each service starts only after its own migrate job finished successfully.
 
 On the first start, `deploy/postgres/init/01-schemas.sh` creates:
 
@@ -213,6 +214,7 @@ Start Postgres and apply the migrations in Docker, then run a service from your 
 docker compose up -d postgres
 docker compose run --rm platform-migrate     # safe to repeat
 docker compose run --rm social-migrate   # creates or updates the social tables
+docker compose run --rm realtime-migrate # creates or updates the realtime tables
 go run ./services/platform/cmd      # uses PLATFORM_DATABASE_URL
 go run ./services/social/cmd        # uses SOCIAL_DATABASE_URL
 go run ./services/realtime/cmd      # uses REALTIME_DATABASE_URL
@@ -224,7 +226,7 @@ Without a database URL the services still start; `/health` answers 200 and `/rea
 ## Database migrations
 
 Table definitions live in `services/<name>/migrations/` as `NNNNNN_name.up.sql` / `NNNNNN_name.down.sql`.
-`docker compose up` applies the pending ones automatically: the `platform-migrate` job
+`docker compose up` applies the pending ones automatically: the `platform-migrate` job (and `social-migrate`, `realtime-migrate`)
 ([golang-migrate](https://github.com/golang-migrate/migrate)) runs first, as the service's own database user,
 so tables land in that service's schema. It remembers what already ran in a `schema_migrations` table in that
 schema, so running it again does nothing.
@@ -240,7 +242,7 @@ docker compose exec -T postgres psql -U platform_user -d clan -v ON_ERROR_STOP=1
 - **A migration failed:** the job logs the SQL error and the service does not start. Golang-migrate marks the database
   "dirty". Fix the problem by hand in the database, then clear the mark with
   `docker compose run --rm platform-migrate -path=/migrations -database="$URL" force <last good version>`
-  (`$URL` is the `-database` value from `docker-compose.yml`). On a local database it is usually quicker to run
+  (`$URL` is the `-database` value from `docker-compose.yml`; the same works for `social-migrate` and `realtime-migrate`). On a local database it is usually quicker to run
   `docker compose down -v` and start again.
 - **Roll back one step:** the same command with `down 1` instead of `force ...`.
 - **Database created before this existed** (tables applied by hand): `docker compose down -v` once, then start again.

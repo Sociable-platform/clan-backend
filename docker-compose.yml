@@ -2,7 +2,7 @@
 #   1. copy .env.example to .env and set the passwords
 #   2. create the JWT signing key (README: "JWT signing key")
 #   3. docker compose up --build
-# platform-migrate and social-migrate apply each service's SQL migrations once, then exit;
+# platform-migrate, social-migrate and realtime-migrate apply each service's SQL migrations once, then exit;
 # rabbitmq-setup declares the RabbitMQ queues once, then exits;
 # each service starts only after its migrations succeeded.
 name: clan
@@ -102,6 +102,18 @@ services:
       postgres:
         condition: service_healthy
 
+  realtime-migrate:
+    image: migrate/migrate:v4.18.1
+    command:
+      - -path=/migrations
+      - -database=postgres://realtime_user:${REALTIME_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      - up
+    volumes:
+      - ./services/realtime/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   platform:
     build:
       context: .
@@ -165,6 +177,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      realtime-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # Public entry point. Routes are in deploy/traefik/dynamic/; the entrypoint timeouts that keep idle
