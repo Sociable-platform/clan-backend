@@ -6,7 +6,11 @@ import (
 	"testing"
 )
 
-type fakeStore struct{ err error }
+// fakeStore only answers Ping; the embedded Store panics if a test calls anything else.
+type fakeStore struct {
+	Store
+	err error
+}
 
 func (f fakeStore) Ping(context.Context) error { return f.err }
 

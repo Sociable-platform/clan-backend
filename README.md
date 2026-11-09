@@ -6,7 +6,7 @@ Backend for the clan platform: three Go services in one repository (realtime is 
 |---|---|---|---|
 | `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
 | `services/social` | Players, clans, clan members | 8082 | `social` |
-| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub and `hello`; its tables exist) | 8083 | `realtime` |
+| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, and friend events from RabbitMQ that create and remove DM conversations) | 8083 | `realtime` |
 
 ## Layout
 
@@ -81,6 +81,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
 | `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
 | `REALTIME_SOCIAL_URL` | `http://localhost:8082` | Where realtime reaches the social service to learn each connecting player's own ID. Docker Compose sets it to `http://social:8082`. |
+| `REALTIME_RABBITMQ_URL` | none | RabbitMQ address (`amqp://user:password@host:5672/`) realtime reads events from, queue `realtime.events`. Empty means: do not read events (the service still runs). Use letters and digits only in the password. Docker Compose builds it from `RABBITMQ_USER` and `RABBITMQ_PASSWORD`. The password is never logged. |
 
 ### Get a player token from platform
 
@@ -229,7 +230,33 @@ Messages are persistent (`delivery_mode` 2) with `content_type` `application/jso
 
 | Event (routing key) | Published by | `data` |
 |---|---|---|
-| none yet | | Each friend and clan event is added here, with its `data`, by the task that publishes it. |
+| `friend.request_sent` | Social (not published yet) | `{ "request_id": "...", "from": { "id": "<uuid>", "name": "Ali" }, "to_id": "<uuid>" }` |
+| `friend.accepted` | Social (not published yet) | `{ "a": { "id": "<uuid>", "name": "Ali" }, "b": { "id": "<uuid>", "name": "Rashad" } }` |
+| `friend.removed` | Social (not published yet) | `{ "a_id": "<uuid>", "b_id": "<uuid>" }` |
+
+Each clan event is added here, with its `data`, by the task that publishes it. Player ids in `data` are **Social's own player ID**
+(a UUID, not the game's player ID). The three friend events above are the ones realtime handles today:
+
+| Event | Realtime does |
+|---|---|
+| `friend.request_sent` | sends a `friend_request` notification to `to_id` (nothing is stored) |
+| `friend.accepted` | creates the DM conversation of the pair and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both |
+| `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both |
+
+Other event types that reach the queue (`clan.*`, `player.*`, `config.published`) are acknowledged and ignored until their tasks exist.
+Whoever publishes these events must keep the field names above: realtime drops an event with a missing or malformed field.
+
+### How realtime reads the queue
+
+- One consumer, one event at a time, in order. Prefetch is 20, acknowledgement is manual and comes after the database write.
+- An event that fails (for example the database is down) is put back **once** after one second; if it fails again it is logged
+  and dropped. An unusable event (not JSON, missing field, id that is not a UUID) is logged and dropped at once.
+  There is no dead-letter queue yet, so a dropped event is lost.
+- Every database write is an upsert or a delete, so a redelivered event changes nothing. The WebSocket frames are sent again;
+  the SDK ignores a conversation it already has.
+- If the broker is down or restarts, realtime keeps running and reconnects (1 s, 2 s, 4 s ... up to 30 s).
+  Without a database it does not read events at all, because it would have nowhere to store them.
+
 
 ### Publishing from a service
 
@@ -332,6 +359,9 @@ With the Docker stack running (`docker compose up -d`, so the migrations are app
 $env:SOCIAL_TEST_DATABASE_URL="postgres://social_user:<SOCIAL_DB_PASSWORD>@localhost:5432/clan?sslmode=disable"
 go test ./services/social/internal/repository/ -v
 ```
+
+The realtime repository tests work the same way with `REALTIME_TEST_DATABASE_URL`
+(`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/`.
 
 Each run uses new random game IDs and deletes its rows afterwards, so it does not disturb other data.
 

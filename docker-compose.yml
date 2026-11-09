@@ -175,6 +175,7 @@ services:
       REALTIME_CORS_ORIGINS: ${REALTIME_CORS_ORIGINS:-http://localhost:5174}
       REALTIME_JWT_PUBLIC_KEY_FILE: /run/secrets/platform_jwt_public.pem
       REALTIME_SOCIAL_URL: http://social:8082
+      REALTIME_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       # Platform's public key only (never the private key). Created by you (see README "JWT signing key").
@@ -185,6 +186,10 @@ services:
       postgres:
         condition: service_healthy
       realtime-migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      rabbitmq-setup:
         condition: service_completed_successfully
     restart: unless-stopped
 

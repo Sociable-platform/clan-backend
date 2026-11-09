@@ -12,6 +12,7 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/auth"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/social"
 )
 
@@ -87,5 +88,17 @@ func TestHealthAndReady(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The event consumer sends to the hub it was given, so the handler must use that very hub.
+func TestHandlerUsesTheHubItIsGiven(t *testing.T) {
+	shared := hub.New()
+	h := New("realtime", fakeService{}, WSOptions{Verifier: noVerifier{}, Players: noPlayers{}, Hub: shared}, testLog())
+	if h.Hub() != shared {
+		t.Error("the handler made its own hub instead of using the one it was given")
+	}
+	if New("realtime", fakeService{}, WSOptions{Verifier: noVerifier{}, Players: noPlayers{}}, testLog()).Hub() == nil {
+		t.Error("without a hub option the handler has no hub")
 	}
 }

@@ -4,10 +4,11 @@ The live half of the realtime service: new messages, presence, notifications and
 WebSocket. The two REST reads (conversation list and history) are in [`realtime.yaml`](realtime.yaml).
 
 - **Status:** contract for the SDK. Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
-  the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), and the close codes `1001`, `1009`, `4001` and `4002`.
+  the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1009`, `4001` and `4002`,
+  and the friend frames: `conversation.added`, `conversation.removed` and the `friend_request` and `friend_accepted` notifications.
   In `hello`, `configVersion` is always `0` ("not known yet") and `onlineFriends` is always `[]` until the config cache and friendships exist.
-  Not built yet: `message.send`, `conversation.read` (both answer `error bad_frame` "not available yet"), presence, notifications,
-  `conversation.*` and `config.updated` frames, the 5-connections-per-player limit, and `1008`/`4003`.
+  Not built yet: `message.send`, `conversation.read` (both answer `error bad_frame` "not available yet"), presence, the clan notifications,
+  clan conversations, the `config.updated` frame, the 5-connections-per-player limit, and `1008`/`4003`.
 - **Endpoint:** `GET /api/v1/ws?token=<player token>` on the realtime service (`ws://localhost:8083/api/v1/ws` locally).
 - **Format:** every frame is one JSON object in a WebSocket **text** frame. Binary frames are a `bad_frame` error.
 - **Names:** frame types are lowercase with dots (`message.new`), JSON fields are camelCase, error codes are `snake_case`.
@@ -199,7 +200,8 @@ A notification can arrive twice (events are delivered at least once); showing it
 
 The list of conversations changed: a friendship started, the player joined or created a clan, or the opposite.
 `conversation.added` carries the full `conversation` object. The SDK ignores an `added` for an ID it already has.
-`conversation.removed` carries only the `conversationId`; remove it from the list. Messages stay in the history
+In `members`, `online` is true while the player has an open WebSocket right now (the 10 second grace period and the game's
+"hide online status" setting come with presence). `conversation.removed` carries only the `conversationId`; remove it from the list. Messages stay in the history
 on the server, and a conversation returns with its history if the players become friends again.
 
 ```json
