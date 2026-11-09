@@ -12,8 +12,9 @@ Backend for the clan platform: two Go services in one repository.
 ```
 clan-backend/
 ├── go.mod                     # one Go module for the whole repo
-├── docker-compose.yml         # postgres + platform + social
+├── docker-compose.yml         # postgres + rabbitmq + platform + social
 ├── deploy/postgres/init/      # creates the schemas and database users on first start
+├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
 ├── openapi/                   # API contracts: platform.yaml, social.yaml
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
@@ -120,16 +121,18 @@ under older rules cannot go public.
 
 ```bash
 cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
-# edit .env: set the three passwords (letters and digits only)
+# edit .env: set the four passwords (letters and digits only)
 # create the JWT signing key first (see "JWT signing key" above)
 docker compose up --build
 ```
 
-This starts three containers:
+This starts these containers:
 
 | Container | URL |
 |---|---|
 | postgres | `localhost:5432` (change with `POSTGRES_HOST_PORT`) |
+| rabbitmq | `localhost:5672` (AMQP), management UI http://localhost:15672 (log in with `RABBITMQ_USER` / `RABBITMQ_PASSWORD`) |
+| rabbitmq-setup | none: declares the RabbitMQ exchange, queue and bindings, then exits (see "RabbitMQ events") |
 | platform-migrate | none: applies pending platform SQL migrations, then exits (see "Database migrations") |
 | platform | http://localhost:8081/health, http://localhost:8081/ready |
 | social | http://localhost:8082/health, http://localhost:8082/ready |
@@ -145,6 +148,27 @@ On the first start, `deploy/postgres/init/01-schemas.sh` creates:
 
 The init script runs only when the database volume is empty. After changing it, reset the database with
 `docker compose down -v` (this deletes all local data) and start again.
+
+## RabbitMQ events
+
+Services talk to each other through one topic exchange, `socialkit.events`. `docker compose up` starts RabbitMQ and then
+runs the one-shot `rabbitmq-setup` job, which imports `deploy/rabbitmq/definitions.json`:
+
+| Queue (durable) | Bound to routing keys |
+|---|---|
+| `realtime.events` | `config.published`, `friend.*`, `player.*`, `clan.*` |
+
+The queue exists before the Realtime service does, so events published today wait in it instead of being lost.
+Open http://localhost:15672, go to **Queues**, and watch `realtime.events` count them.
+
+- The job is safe to repeat: importing definitions only adds what is missing and never deletes messages.
+  To re-apply it after editing `definitions.json`: `docker compose run --rm rabbitmq-setup`.
+- A new queue or binding goes into `definitions.json` in the same commit as the code that needs it.
+- Without `docker compose` (for example `go run` against your own broker), import the same file in the management UI
+  (**Overview > Import definitions**).
+- Check by hand: in the management UI open **Exchanges > socialkit.events > Publish message**, use routing key
+  `friend.accepted`, and the `realtime.events` message count goes up by one. A key no queue is bound to
+  (for example `other.thing`) is dropped.
 
 ## Run with go run
 

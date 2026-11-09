@@ -1,8 +1,9 @@
-# Local development stack: PostgreSQL + platform + social.
+# Local development stack: PostgreSQL + RabbitMQ + platform + social.
 #   1. copy .env.example to .env and set the passwords
 #   2. create the JWT signing key (README: "JWT signing key")
 #   3. docker compose up --build
 # platform-migrate and social-migrate apply each service's SQL migrations once, then exit;
+# rabbitmq-setup declares the RabbitMQ queues once, then exits;
 # each service starts only after its migrations succeeded.
 name: clan
 
@@ -28,6 +29,50 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  # Message broker for events between services (exchange socialkit.events). Management UI: http://localhost:15672
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-clan}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+    ports:
+      - "${RABBITMQ_HOST_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_HOST_PORT:-15672}:15672"
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      # passes once the management API (port 15672) is listening, which rabbitmq-setup needs
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_port_listener 15672"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  # One-shot job: declares the socialkit.events exchange, the durable realtime.events queue and its
+  # bindings from deploy/rabbitmq/definitions.json, so events published today wait in the queue even
+  # before Realtime exists. Safe to repeat: importing definitions only adds what is missing.
+  rabbitmq-setup:
+    image: curlimages/curl:8.11.1
+    command:
+      - --fail
+      - --silent
+      - --show-error
+      - --retry
+      - "5"
+      - --retry-connrefused
+      - --user
+      - ${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}
+      - --header
+      - "Content-Type: application/json"
+      - --data
+      - "@/definitions.json"
+      - http://rabbitmq:15672/api/definitions
+    volumes:
+      - ./deploy/rabbitmq/definitions.json:/definitions.json:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   # One-shot jobs: apply the SQL files in services/<name>/migrations/ that have not run yet,
   # as the service's own database user so the tables land in its own schema.
@@ -103,3 +148,4 @@ services:
 
 volumes:
   pgdata:
+  rabbitmqdata:
