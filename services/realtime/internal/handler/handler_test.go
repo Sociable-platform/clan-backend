@@ -9,9 +9,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/auth"
 )
 
 type fakeService struct{ err error }
+
+// noVerifier rejects every token; the tests in this file are not about the WebSocket.
+type noVerifier struct{}
+
+func (noVerifier) Verify(string) (auth.Player, error) {
+	return auth.Player{}, httpx.NewError(http.StatusUnauthorized, "invalid_token", "no")
+}
 
 func (f fakeService) Ready(context.Context) error { return f.err }
 
@@ -21,7 +31,7 @@ func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, ni
 func serve(t *testing.T, svc Service, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	New("test", svc, testLog()).Register(mux)
+	New("test", svc, WSOptions{Verifier: noVerifier{}}, testLog()).Register(mux)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
 	return rec

@@ -3,7 +3,11 @@
 The live half of the realtime service: new messages, presence, notifications and live re-skin all arrive on one
 WebSocket. The two REST reads (conversation list and history) are in [`realtime.yaml`](realtime.yaml).
 
-- **Status:** contract for the SDK; the service is not built yet.
+- **Status:** contract for the SDK. Built so far: the endpoint with the token and origin checks, `ping`/`pong`, the 8 KB limit,
+  `bad_frame` errors, the server's own keepalive ping, and the close codes `1001`, `1009` and `4001`.
+  Not built yet: the `hello` frame, `message.send`, `conversation.read` (both answer `error bad_frame` "not available yet"),
+  presence, notifications, `conversation.*` and `config.updated` frames, the 5-connections-per-player limit, and `1008`/`4002`/`4003`.
+  Until the `hello` frame exists, do not wait for it before sending.
 - **Endpoint:** `GET /api/v1/ws?token=<player token>` on the realtime service (`ws://localhost:8083/api/v1/ws` locally).
 - **Format:** every frame is one JSON object in a WebSocket **text** frame. Binary frames are a `bad_frame` error.
 - **Names:** frame types are lowercase with dots (`message.new`), JSON fields are camelCase, error codes are `snake_case`.
@@ -27,8 +31,13 @@ The server checks, in this order, and answers with a plain HTTP error **before**
 | `token` missing, wrong signature or malformed | 401 | `missing_token` / `invalid_token` |
 | token expired | 401 | `token_expired` |
 | token is not a player token | 401 | `wrong_token_type` |
-| `Origin` not in the game's allowed origins | 403 | `origin_not_allowed` |
-| game config cannot be loaded (platform down) | 503 | `not_ready` |
+| `Origin` not in the allowed origins (see the note below) | 403 | `origin_not_allowed` |
+| the service is shutting down | 503 | `shutting_down` |
+| game config cannot be loaded (platform down) | 503 | `not_ready` (not built yet) |
+
+Requests without an `Origin` header (not from a browser, for example Postman) are not affected by the origin check.
+**Today** the allowed origins are the service-wide `REALTIME_CORS_ORIGINS` list; the per-game `allowed_origins` list
+needs Platform to store and serve it and is added later.
 
 The body is the usual `{ "error": { "code": "...", "message": "..." } }`. After a successful upgrade the server
 sends `hello` (below). Send nothing before you have received it.
@@ -247,6 +256,7 @@ Errors are for client frames only. Problems before the upgrade are plain HTTP er
 | `1000` | Normal close (also: the oldest connection when a sixth opens) | None |
 | `1001` | Server shutting down | Reconnect with backoff |
 | `1008` | Policy: rate limit hit too often | Reconnect after 30 s |
+| `1009` | A frame was larger than 8 KB | A bug in the SDK; do not resend the frame. Reconnect with backoff |
 | `4001` | Token expired | Get a new token from the game (`getToken()`) and reconnect now |
 | `4002` | Slow client: the server could not send fast enough | Reconnect with backoff |
 | `4003` | The game's config turned chat off | Do not reconnect. Fetch the public config again later (for example on the next page load) and connect only if chat is on |
