@@ -3,28 +3,16 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/auth"
-)
-
-const (
-	// maxFrameBytes is the biggest frame a client may send; a larger one closes the connection (1009).
-	maxFrameBytes = 8 << 10
-
-	// closeTokenExpired tells the SDK to get a new token and reconnect at once.
-	closeTokenExpired websocket.StatusCode = 4001
-
-	writeTimeout = 10 * time.Second
-
-	defaultPingInterval = 30 * time.Second
-	defaultPongTimeout  = 60 * time.Second
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/social"
 )
 
 // TokenVerifier checks the player token of a WebSocket request.
@@ -33,10 +21,18 @@ type TokenVerifier interface {
 	Verify(token string) (auth.Player, error)
 }
 
+// PlayerResolver turns a verified token into social's own player ID.
+// It fails with social.ErrUnavailable when social cannot answer.
+type PlayerResolver interface {
+	Player(ctx context.Context, token, gameID string) (social.Player, error)
+}
+
 // WSOptions configure the WebSocket endpoint.
 type WSOptions struct {
 	// Verifier checks the token in ?token=. Required.
 	Verifier TokenVerifier
+	// Players looks up social's player ID for the token. Required.
+	Players PlayerResolver
 	// Origins are the pages allowed to open a socket, exactly scheme://host:port. A request
 	// whose Origin header is not listed is refused with 403 before the upgrade. Requests
 	// without an Origin header (not from a browser) are not affected.
@@ -44,30 +40,39 @@ type WSOptions struct {
 	// Shutdown is cancelled when the service stops; every open socket is then closed with 1001.
 	// Nil means never.
 	Shutdown context.Context
-	// PingInterval is how often the server pings an idle connection (default 30 s).
+	// PingInterval is how often the server pings an idle connection (default 25 s).
 	PingInterval time.Duration
 	// PongTimeout is how long the server waits for the answer before dropping the connection (default 60 s).
 	PongTimeout time.Duration
+	// SendBuffer is how many frames may wait for one slow client before it is dropped (default 64).
+	SendBuffer int
+	// WriteTimeout is how long writing one frame may take (default 10 s).
+	WriteTimeout time.Duration
 }
 
 func (o WSOptions) withDefaults() WSOptions {
 	if o.Shutdown == nil {
 		o.Shutdown = context.Background()
 	}
-	if o.PingInterval <= 0 {
-		o.PingInterval = defaultPingInterval
-	}
-	if o.PongTimeout <= 0 {
-		o.PongTimeout = defaultPongTimeout
-	}
 	return o
+}
+
+// resolveTimeout limits the call to social that happens before the upgrade.
+const resolveTimeout = 3 * time.Second
+
+// helloData is the data of the first frame every connection gets.
+type helloData struct {
+	PlayerID      string   `json:"playerId"`
+	ConfigVersion int      `json:"configVersion"`
+	OnlineFriends []string `json:"onlineFriends"`
 }
 
 // ws upgrades GET /api/v1/ws to a WebSocket. The token and the origin are checked before the
 // upgrade, so a client that fails them gets a normal HTTP error and never holds a socket.
 // The URL carries the token, so nothing here logs the URL or the query string.
 func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
-	player, err := h.wsOpts.Verifier.Verify(r.URL.Query().Get("token"))
+	token := r.URL.Query().Get("token")
+	player, err := h.wsOpts.Verifier.Verify(token)
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="realtime"`)
 		httpx.WriteErr(w, err)
@@ -80,125 +85,99 @@ func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 	}
 	defer h.conns.Done()
 
+	// Social's player ID is what conversations, members and events use. Asking before the
+	// upgrade means a failure is a plain HTTP error the SDK can retry with backoff.
+	ctx, cancel := context.WithTimeout(r.Context(), resolveTimeout)
+	sp, err := h.wsOpts.Players.Player(ctx, token, player.GameID)
+	cancel()
+	if err != nil {
+		if errors.Is(err, social.ErrUnavailable) {
+			h.log.Warn("cannot resolve the player in social", "game_id", player.GameID, "error", err)
+		} else {
+			h.log.Error("resolve the player in social", "game_id", player.GameID, "error", err)
+		}
+		httpx.WriteError(w, http.StatusServiceUnavailable, "social_unavailable", "Cannot reach the social service; try again shortly")
+		return
+	}
+
 	// Accept checks the Origin again (scheme, host and port) and answers 403 itself when it does not match.
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.wsOpts.Origins})
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.wsOpts.Origins})
 	if err != nil {
 		h.log.Debug("websocket upgrade refused", "error", err)
 		return
 	}
-	h.serve(r.Context(), c, player)
-}
 
-// serve runs one connection until the client leaves, the token expires, the service stops
-// or the client stops answering pings.
-func (h *Handler) serve(ctx context.Context, c *websocket.Conn, p auth.Player) {
-	defer c.CloseNow() // no-op after a clean close; frees the connection on every other path
-	c.SetReadLimit(maxFrameBytes)
+	log := h.log.With("game_id", player.GameID, "player", player.ExternalID, "player_id", sp.ID)
+	conn := hub.NewConn(ws, hub.Identity{
+		GameID:     player.GameID,
+		PlayerID:   sp.ID,
+		ExternalID: player.ExternalID,
+		Name:       sp.DisplayName,
+	}, hub.ConnOptions{
+		SendBuffer:   h.wsOpts.SendBuffer,
+		ExpiresAt:    player.ExpiresAt,
+		PingInterval: h.wsOpts.PingInterval,
+		PongTimeout:  h.wsOpts.PongTimeout,
+		WriteTimeout: h.wsOpts.WriteTimeout,
+		Shutdown:     h.wsOpts.Shutdown,
+		Log:          log,
+	})
 
-	ctx, cancel := context.WithCancel(ctx)
-	var helpers sync.WaitGroup
-	defer func() {
-		cancel()
-		helpers.Wait()
-	}()
-	helpers.Go(func() { h.closeWhenDue(ctx, c, p) })
-	helpers.Go(func() { h.keepAlive(ctx, c) })
-
-	log := h.log.With("game_id", p.GameID, "player", p.ExternalID)
+	h.hub.Register(conn)
+	defer h.hub.Unregister(conn)
 	log.Info("websocket connected")
-	defer func() { log.Info("websocket disconnected") }()
 
-	for {
-		typ, data, err := c.Read(ctx)
-		if err != nil {
-			if status := websocket.CloseStatus(err); status != -1 && status != websocket.StatusNormalClosure && status != websocket.StatusGoingAway {
-				log.Info("websocket closed", "code", int(status))
-			}
-			return
-		}
-		if err := h.handleFrame(ctx, c, typ, data); err != nil {
-			log.Warn("websocket write failed", "error", err)
-			return
-		}
-	}
-}
+	// config_version and online_friends are placeholders until the config cache and friendships
+	// exist: 0 means "version not known yet", and nobody can have friends online yet.
+	h.enqueue(conn, serverFrame{Type: frameTypeHello, Data: helloData{PlayerID: sp.ID, OnlineFriends: []string{}}})
 
-// closeWhenDue closes the connection when the service stops (1001) or the player's token
-// expires (4001). Both are in the protocol, so the SDK knows what to do next.
-func (h *Handler) closeWhenDue(ctx context.Context, c *websocket.Conn, p auth.Player) {
-	expiry := time.NewTimer(time.Until(p.ExpiresAt))
-	defer expiry.Stop()
-	select {
-	case <-ctx.Done():
-	case <-h.wsOpts.Shutdown.Done():
-		_ = c.Close(websocket.StatusGoingAway, "server shutting down")
-	case <-expiry.C:
-		_ = c.Close(closeTokenExpired, "token expired")
-	}
-}
+	conn.Serve(r.Context(), h.handleFrame)
 
-// keepAlive pings the client and drops the connection when it does not answer in time.
-// Browsers answer pings by themselves.
-func (h *Handler) keepAlive(ctx context.Context, c *websocket.Conn) {
-	ticker := time.NewTicker(h.wsOpts.PingInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		pingCtx, cancel := context.WithTimeout(ctx, h.wsOpts.PongTimeout)
-		err := c.Ping(pingCtx)
-		cancel()
-		if err != nil {
-			if ctx.Err() == nil {
-				_ = c.CloseNow() // the peer is gone, a close frame would not arrive
-			}
-			return
-		}
-	}
+	code, reason := conn.CloseInfo()
+	log.Info("websocket disconnected", "code", int(code), "reason", reason)
 }
 
 // handleFrame answers one client frame. A frame the server cannot accept gets an error frame
-// and the connection stays open; only a failed write ends the connection.
-func (h *Handler) handleFrame(ctx context.Context, c *websocket.Conn, typ websocket.MessageType, data []byte) error {
+// and the connection stays open.
+func (h *Handler) handleFrame(c *hub.Conn, typ websocket.MessageType, data []byte) {
 	if typ != websocket.MessageText {
-		return h.sendError(ctx, c, codeBadFrame, "Frames must be text (JSON)", nil)
+		h.enqueueError(c, codeBadFrame, "Frames must be text (JSON)", nil)
+		return
 	}
 	f, ferr := parseFrame(data)
 	if ferr != nil {
-		return h.sendError(ctx, c, codeBadFrame, ferr.message, ferr.replyTo)
+		h.enqueueError(c, codeBadFrame, ferr.message, ferr.replyTo)
+		return
 	}
 
 	switch f.Type {
 	case frameTypePing:
-		return h.send(ctx, c, serverFrame{Type: frameTypePong, Data: pongData{ReplyTo: f.idPointer()}})
+		h.enqueue(c, serverFrame{Type: frameTypePong, Data: pongData{ReplyTo: f.idPointer()}})
 	case frameTypeMessageSend, frameTypeConversationRead:
-		return h.sendError(ctx, c, codeBadFrame, "This frame type is not available yet", f.idPointer())
+		h.enqueueError(c, codeBadFrame, "This frame type is not available yet", f.idPointer())
 	default:
-		return h.sendError(ctx, c, codeBadFrame, "Unknown frame type", f.idPointer())
+		h.enqueueError(c, codeBadFrame, "Unknown frame type", f.idPointer())
 	}
 }
 
-func (h *Handler) sendError(ctx context.Context, c *websocket.Conn, code, message string, replyTo *string) error {
-	return h.send(ctx, c, serverFrame{Type: frameTypeErr, Data: errorData{Code: code, Message: message, ReplyTo: replyTo}})
+func (h *Handler) enqueueError(c *hub.Conn, code, message string, replyTo *string) {
+	h.enqueue(c, serverFrame{Type: frameTypeErr, Data: errorData{Code: code, Message: message, ReplyTo: replyTo}})
 }
 
-// send writes one frame. Writes to one connection may come from several goroutines;
-// the websocket library serialises them.
-func (h *Handler) send(ctx context.Context, c *websocket.Conn, f serverFrame) error {
+// enqueue encodes one frame and queues it for the connection's writer. It never blocks.
+func (h *Handler) enqueue(c *hub.Conn, f serverFrame) {
 	b, err := json.Marshal(f)
 	if err != nil {
-		return fmt.Errorf("encode %s frame: %w", f.Type, err)
+		// Only possible with a frame type that cannot be encoded: a bug, not a client error.
+		h.log.Error("encode frame", "type", f.Type, "error", err)
+		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
-	defer cancel()
-	if err := c.Write(ctx, websocket.MessageText, b); err != nil {
-		return fmt.Errorf("write %s frame: %w", f.Type, err)
-	}
-	return nil
+	c.Enqueue(b)
 }
+
+// Hub returns the hub of open connections, for the parts of the service that push frames
+// (chat, presence, events).
+func (h *Handler) Hub() *hub.Hub { return h.hub }
 
 // trackConn registers a connection that is about to be set up. It reports false once Wait
 // has started, because from then on the service is stopping.

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
 )
 
 // Service is what the handlers need from the service layer.
@@ -25,16 +26,20 @@ type Handler struct {
 	mu      sync.Mutex     // guards closing
 	closing bool           // set by Wait: no new WebSocket connection is accepted any more
 	conns   sync.WaitGroup // open WebSocket connections
+	hub     *hub.Hub       // the open connections, by game and player
 }
 
 // New returns a Handler. name is the service name shown in /health.
-// ws configures the WebSocket endpoint; its Verifier is required.
+// ws configures the WebSocket endpoint; its Verifier and Players are required.
 // log receives the details of unexpected errors, which are never sent to the client.
 func New(name string, svc Service, ws WSOptions, log *slog.Logger) *Handler {
 	if ws.Verifier == nil {
 		panic("handler: WSOptions.Verifier is required")
 	}
-	return &Handler{name: name, svc: svc, wsOpts: ws.withDefaults(), log: log}
+	if ws.Players == nil {
+		panic("handler: WSOptions.Players is required")
+	}
+	return &Handler{name: name, svc: svc, wsOpts: ws.withDefaults(), log: log, hub: hub.New()}
 }
 
 // Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.

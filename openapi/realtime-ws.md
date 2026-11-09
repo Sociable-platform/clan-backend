@@ -3,11 +3,11 @@
 The live half of the realtime service: new messages, presence, notifications and live re-skin all arrive on one
 WebSocket. The two REST reads (conversation list and history) are in [`realtime.yaml`](realtime.yaml).
 
-- **Status:** contract for the SDK. Built so far: the endpoint with the token and origin checks, `ping`/`pong`, the 8 KB limit,
-  `bad_frame` errors, the server's own keepalive ping, and the close codes `1001`, `1009` and `4001`.
-  Not built yet: the `hello` frame, `message.send`, `conversation.read` (both answer `error bad_frame` "not available yet"),
-  presence, notifications, `conversation.*` and `config.updated` frames, the 5-connections-per-player limit, and `1008`/`4002`/`4003`.
-  Until the `hello` frame exists, do not wait for it before sending.
+- **Status:** contract for the SDK. Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
+  the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), and the close codes `1001`, `1009`, `4001` and `4002`.
+  In `hello`, `configVersion` is always `0` ("not known yet") and `onlineFriends` is always `[]` until the config cache and friendships exist.
+  Not built yet: `message.send`, `conversation.read` (both answer `error bad_frame` "not available yet"), presence, notifications,
+  `conversation.*` and `config.updated` frames, the 5-connections-per-player limit, and `1008`/`4003`.
 - **Endpoint:** `GET /api/v1/ws?token=<player token>` on the realtime service (`ws://localhost:8083/api/v1/ws` locally).
 - **Format:** every frame is one JSON object in a WebSocket **text** frame. Binary frames are a `bad_frame` error.
 - **Names:** frame types are lowercase with dots (`message.new`), JSON fields are camelCase, error codes are `snake_case`.
@@ -32,6 +32,7 @@ The server checks, in this order, and answers with a plain HTTP error **before**
 | token expired | 401 | `token_expired` |
 | token is not a player token | 401 | `wrong_token_type` |
 | `Origin` not in the allowed origins (see the note below) | 403 | `origin_not_allowed` |
+| social cannot be reached (the server asks it for the player's own ID) | 503 | `social_unavailable` (retry with backoff) |
 | the service is shutting down | 503 | `shutting_down` |
 | game config cannot be loaded (platform down) | 503 | `not_ready` (not built yet) |
 
@@ -134,7 +135,8 @@ The first frame after the upgrade.
 { "type": "hello", "data": { "playerId": "7f1e0c2a-...", "configVersion": 12, "onlineFriends": ["5a2b3c4d-..."] } }
 ```
 
-- `playerId`: the caller's own ID.
+- `playerId`: the caller's own ID, the social service's UUID for the player (not the game's own player ID from the token).
+  The server learns it by asking social while the connection is being set up, which is why `social_unavailable` exists.
 - `configVersion`: the version of the game's published config the server is using. If it differs from the
   version the SDK rendered with, fetch the public config again.
 - `onlineFriends`: IDs of friends who are online right now. Empty when the game hides online status.
@@ -258,7 +260,7 @@ Errors are for client frames only. Problems before the upgrade are plain HTTP er
 | `1008` | Policy: rate limit hit too often | Reconnect after 30 s |
 | `1009` | A frame was larger than 8 KB | A bug in the SDK; do not resend the frame. Reconnect with backoff |
 | `4001` | Token expired | Get a new token from the game (`getToken()`) and reconnect now |
-| `4002` | Slow client: the server could not send fast enough | Reconnect with backoff |
+| `4002` | Slow client: the server could not send fast enough (64 frames were waiting) | Reconnect with backoff |
 | `4003` | The game's config turned chat off | Do not reconnect. Fetch the public config again later (for example on the next page load) and connect only if chat is on |
 
 The close reason text is for humans only. Backoff starts at 1 s, doubles to at most 30 s, and adds random jitter; reset it

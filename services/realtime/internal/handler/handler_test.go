@@ -12,9 +12,17 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/auth"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/social"
 )
 
 type fakeService struct{ err error }
+
+// noPlayers resolves nobody; the tests in this file are not about the WebSocket.
+type noPlayers struct{}
+
+func (noPlayers) Player(context.Context, string, string) (social.Player, error) {
+	return social.Player{}, social.ErrUnavailable
+}
 
 // noVerifier rejects every token; the tests in this file are not about the WebSocket.
 type noVerifier struct{}
@@ -31,7 +39,7 @@ func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, ni
 func serve(t *testing.T, svc Service, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	mux := http.NewServeMux()
-	New("test", svc, WSOptions{Verifier: noVerifier{}}, testLog()).Register(mux)
+	New("test", svc, WSOptions{Verifier: noVerifier{}, Players: noPlayers{}}, testLog()).Register(mux)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
 	return rec
