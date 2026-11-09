@@ -6,7 +6,7 @@ Backend for the clan platform: three Go services in one repository (realtime is 
 |---|---|---|---|
 | `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
 | `services/social` | Players, clans, clan members | 8082 | `social` |
-| `services/realtime` | WebSocket connections, chat, presence (skeleton: only `/health` and `/ready` so far; its tables exist) | 8083 | `realtime` |
+| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub and `hello`; its tables exist) | 8083 | `realtime` |
 
 ## Layout
 
@@ -80,6 +80,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
 | `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
+| `REALTIME_SOCIAL_URL` | `http://localhost:8082` | Where realtime reaches the social service to learn each connecting player's own ID. Docker Compose sets it to `http://social:8082`. |
 
 ### Get a player token from platform
 
@@ -341,22 +342,26 @@ The WebSocket endpoint is built; the conversation list, history and chat frames 
 |---|---|---|
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
-| GET | `/api/v1/ws?token=<player token>` | WebSocket upgrade (101). Checked **before** the upgrade: 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type` for the token, 403 `origin_not_allowed` when the page's `Origin` is not in `REALTIME_CORS_ORIGINS` (requests without `Origin`, like Postman's, are allowed), 503 `shutting_down`. After the upgrade: a `ping` frame is answered with `pong`; a frame over 8 KB closes the connection (1009); a bad frame gets an `error` frame with `bad_frame` and the connection stays; the connection is closed with 4001 when the token expires and with 1001 when the service stops; a client that does not answer the server's pings for 60 s is dropped. Public URL through Traefik: `/realtime/v1/ws` |
+| GET | `/api/v1/ws?token=<player token>` | WebSocket upgrade (101). Checked **before** the upgrade: 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type` for the token, 403 `origin_not_allowed` when the page's `Origin` is not in `REALTIME_CORS_ORIGINS` (requests without `Origin`, like Postman's, are allowed), 503 `social_unavailable` when the social service cannot be reached (realtime asks social for the player's own ID with `GET /api/v1/players/me` and the player's token, so **social must be running**), 503 `shutting_down`. After the upgrade the server first sends a `hello` frame with the player's social ID; a `ping` frame is answered with `pong`; a frame over 8 KB closes the connection (1009); a bad frame gets an `error` frame with `bad_frame` and the connection stays; the connection is closed with 4001 when the token expires and with 1001 when the service stops; a client that does not answer the server's pings (every 25 s) for 60 s is dropped; a client that does not read its frames (64 waiting) is closed with 4002 without holding anyone else up. Public URL through Traefik: `/realtime/v1/ws` |
 | any | anything else | 404 `not_found` in the standard error format |
 
-**Try the WebSocket (Postman or any client).** Make a player token (it must be signed with the private key whose public key
-the realtime service has), then connect through the gateway and send a ping:
+**Try the WebSocket (Postman or any client).** Social and realtime must both be running (`docker compose up`). Make a player token
+(it must be signed with the private key whose public key the services have), then connect through the gateway and send a ping:
 
 ```bash
 go run ./tools/devtoken -player u_42 -name Ali        # prints a token
 # Postman: New > WebSocket, URL  ws://localhost/realtime/v1/ws?token=<token>   (or ws://localhost:8083/api/v1/ws?token=<token>)
-# Connect, then send:  {"type":"ping","id":"p-1","data":{}}
+# On connect you get: {"type":"hello","data":{"playerId":"<social uuid>","configVersion":0,"onlineFriends":[]}}
+# Then send:           {"type":"ping","id":"p-1","data":{}}
 # You get:             {"type":"pong","data":{"replyTo":"p-1"}}
 ```
 
+Two players: make a second token with `go run ./tools/devtoken -player u_43 -name Rashad`, open a second Postman WebSocket tab
+with it. Each tab gets its own `hello` with a different `playerId`; disconnecting one does not affect the other.
+
 A missing or wrong token makes Connect fail with HTTP 401 and a JSON error body. The token is in the URL, so the service
-and Traefik never log the query string. Not built yet: the `hello` frame, `message.send` and `conversation.read`
-(they answer `bad_frame`), presence and notifications.
+and Traefik never log the query string. In `hello`, `configVersion` is `0` (not known yet) and `onlineFriends` is `[]` until the config cache and friendships exist.
+Not built yet: `message.send` and `conversation.read` (they answer `bad_frame`), presence and notifications.
 
 Only the service-wide `REALTIME_CORS_ORIGINS` list is checked for the origin so far. A per-game `allowed_origins` list needs
 Platform to store and serve it, which does not exist yet.

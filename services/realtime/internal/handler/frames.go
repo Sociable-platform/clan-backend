@@ -8,9 +8,10 @@ import (
 
 // Frame types and error codes of the WebSocket protocol (see openapi/realtime-ws.md).
 const (
-	frameTypePing = "ping"
-	frameTypePong = "pong"
-	frameTypeErr  = "error"
+	frameTypePing  = "ping"
+	frameTypePong  = "pong"
+	frameTypeErr   = "error"
+	frameTypeHello = "hello"
 
 	// Types the protocol defines but this service does not handle yet.
 	frameTypeMessageSend      = "message.send"

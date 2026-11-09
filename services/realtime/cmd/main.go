@@ -22,6 +22,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/handler"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/social"
 )
 
 const serviceName = "realtime"
@@ -83,8 +84,17 @@ func run() error {
 	}
 	log.Info("cors", "allowed_origins", origins)
 
+	// Social tells us each player's own ID; the player's token is sent to it, and only to this address.
+	socialURL := config.String("REALTIME_SOCIAL_URL", "http://localhost:8082")
+	socialClient, err := social.NewClient(socialURL, 3*time.Second)
+	if err != nil {
+		return err
+	}
+	log.Info("social", "url", socialURL)
+
 	hdl := handler.New(serviceName, svc, handler.WSOptions{
 		Verifier: auth.NewVerifier(verifyKey, time.Now),
+		Players:  socialClient,
 		Origins:  origins,
 		Shutdown: ctx, // on SIGTERM every open socket is closed with 1001
 	}, log)

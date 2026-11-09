@@ -168,6 +168,7 @@ services:
       REALTIME_DATABASE_URL: postgres://realtime_user:${REALTIME_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
       REALTIME_CORS_ORIGINS: ${REALTIME_CORS_ORIGINS:-http://localhost:5174}
       REALTIME_JWT_PUBLIC_KEY_FILE: /run/secrets/platform_jwt_public.pem
+      REALTIME_SOCIAL_URL: http://social:8082
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       # Platform's public key only (never the private key). Created by you (see README "JWT signing key").
