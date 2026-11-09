@@ -15,7 +15,7 @@ clan-backend/
 ├── docker-compose.yml         # postgres + rabbitmq + platform + social
 ├── deploy/postgres/init/      # creates the schemas and database users on first start
 ├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
-├── openapi/                   # API contracts: platform.yaml, social.yaml
+├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
@@ -215,6 +215,7 @@ docker compose exec -T postgres psql -U platform_user -d clan -v ON_ERROR_STOP=1
 |---|---|
 | platform | `openapi/platform.yaml` |
 | social | `openapi/social.yaml` |
+| realtime (planned) | `openapi/realtime.yaml` (REST) and `openapi/realtime-ws.md` (WebSocket frames) |
 
 These files are the contract the dashboard, SDK and demo game build against.
 When you add or change a route, update `Routes()` in the service's `internal/handler/handler.go` **and** its OpenAPI file in the same commit.
