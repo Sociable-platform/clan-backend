@@ -3,6 +3,7 @@ module gitlab.com/clan-platform/clan-backend
 go 1.25.11
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/jackc/pgx/v5 v5.9.2
 	golang.org/x/crypto v0.37.0
 )

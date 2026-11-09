@@ -178,7 +178,7 @@ rewrites them to the service's own paths (`deploy/traefik/dynamic/realtime.yml`)
 |---|---|
 | `/realtime/v1/healthz` | `/health` |
 | `/realtime/v1/readyz` | `/ready` |
-| `/realtime/v1/<rest>` (conversations, messages, `ws`) | `/api/v1/<rest>` |
+| `/realtime/v1/<rest>` (conversations, messages, `ws`) | `/api/v1/<rest>` (for example `ws://localhost/realtime/v1/ws?token=...` reaches `/api/v1/ws`) |
 
 - Check it: `curl http://localhost/realtime/v1/healthz` returns 200 `{"service":"realtime","status":"ok"}`.
 - The entrypoint timeouts in `deploy/traefik/traefik.yml` are above 60 s so an idle WebSocket is not cut by the gateway.
@@ -334,11 +334,29 @@ always come from the token, never from the URL or the body.
 
 ### Realtime service (port 8083)
 
-Skeleton: only the standard endpoints exist so far. The conversation list, history and WebSocket are specified in
-`openapi/realtime.yaml` and `openapi/realtime-ws.md` and are built in later tasks.
+The WebSocket endpoint is built; the conversation list, history and chat frames are specified in
+`openapi/realtime.yaml` and `openapi/realtime-ws.md` and come in later tasks.
 
 | Method | Path | Answer |
 |---|---|---|
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
+| GET | `/api/v1/ws?token=<player token>` | WebSocket upgrade (101). Checked **before** the upgrade: 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type` for the token, 403 `origin_not_allowed` when the page's `Origin` is not in `REALTIME_CORS_ORIGINS` (requests without `Origin`, like Postman's, are allowed), 503 `shutting_down`. After the upgrade: a `ping` frame is answered with `pong`; a frame over 8 KB closes the connection (1009); a bad frame gets an `error` frame with `bad_frame` and the connection stays; the connection is closed with 4001 when the token expires and with 1001 when the service stops; a client that does not answer the server's pings for 60 s is dropped. Public URL through Traefik: `/realtime/v1/ws` |
 | any | anything else | 404 `not_found` in the standard error format |
+
+**Try the WebSocket (Postman or any client).** Make a player token (it must be signed with the private key whose public key
+the realtime service has), then connect through the gateway and send a ping:
+
+```bash
+go run ./tools/devtoken -player u_42 -name Ali        # prints a token
+# Postman: New > WebSocket, URL  ws://localhost/realtime/v1/ws?token=<token>   (or ws://localhost:8083/api/v1/ws?token=<token>)
+# Connect, then send:  {"type":"ping","id":"p-1","data":{}}
+# You get:             {"type":"pong","data":{"replyTo":"p-1"}}
+```
+
+A missing or wrong token makes Connect fail with HTTP 401 and a JSON error body. The token is in the URL, so the service
+and Traefik never log the query string. Not built yet: the `hello` frame, `message.send` and `conversation.read`
+(they answer `bad_frame`), presence and notifications.
+
+Only the service-wide `REALTIME_CORS_ORIGINS` list is checked for the origin so far. A per-game `allowed_origins` list needs
+Platform to store and serve it, which does not exist yet.

@@ -1,8 +1,10 @@
 package httpx
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -88,5 +90,31 @@ func TestRecoverMiddleware(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status %d", rec.Code)
+	}
+}
+
+// hijackableRecorder is a ResponseWriter that can be hijacked, like the real server's.
+type hijackableRecorder struct {
+	*httptest.ResponseRecorder
+	hijacked bool
+}
+
+func (h *hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijacked = true
+	return nil, nil, nil
+}
+
+// A handler behind RequestLog must still be able to take over the connection
+// (WebSocket upgrade), so the recorder has to expose the real ResponseWriter.
+func TestRequestLogKeepsResponseWriterHijackable(t *testing.T) {
+	rec := &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+	h := RequestLog(discardLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := http.NewResponseController(w).Hijack(); err != nil {
+			t.Errorf("hijack through RequestLog: %v", err)
+		}
+	}))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !rec.hijacked {
+		t.Fatal("the hijack did not reach the real ResponseWriter")
 	}
 }

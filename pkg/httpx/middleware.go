@@ -43,6 +43,11 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap returns the wrapped ResponseWriter. http.NewResponseController and WebSocket libraries
+// use it to reach the real connection (hijack, flush); without it a request that went through
+// RequestLog could not be upgraded to a WebSocket.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // RequestLog logs one line per request with method, path, status and duration.
 func RequestLog(log *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {

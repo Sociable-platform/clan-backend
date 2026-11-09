@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 )
@@ -17,15 +18,23 @@ type Service interface {
 
 // Handler holds the routes of the service.
 type Handler struct {
-	name string
-	svc  Service
-	log  *slog.Logger
+	name    string
+	svc     Service
+	wsOpts  WSOptions
+	log     *slog.Logger
+	mu      sync.Mutex     // guards closing
+	closing bool           // set by Wait: no new WebSocket connection is accepted any more
+	conns   sync.WaitGroup // open WebSocket connections
 }
 
 // New returns a Handler. name is the service name shown in /health.
+// ws configures the WebSocket endpoint; its Verifier is required.
 // log receives the details of unexpected errors, which are never sent to the client.
-func New(name string, svc Service, log *slog.Logger) *Handler {
-	return &Handler{name: name, svc: svc, log: log}
+func New(name string, svc Service, ws WSOptions, log *slog.Logger) *Handler {
+	if ws.Verifier == nil {
+		panic("handler: WSOptions.Verifier is required")
+	}
+	return &Handler{name: name, svc: svc, wsOpts: ws.withDefaults(), log: log}
 }
 
 // Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.
@@ -39,11 +48,12 @@ type Route struct {
 //
 //	{http.MethodGet, "/api/v1/conversations", h.listConversations},
 //
-// and document them in openapi/realtime.yaml in the same commit.
+// and document them in openapi/realtime.yaml (the WebSocket in openapi/realtime-ws.md) in the same commit.
 func (h *Handler) Routes() []Route {
 	return []Route{
 		{http.MethodGet, "/health", h.health},
 		{http.MethodGet, "/ready", h.ready},
+		{http.MethodGet, "/api/v1/ws", h.ws},
 	}
 }
 
