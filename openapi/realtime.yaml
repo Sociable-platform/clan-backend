@@ -14,16 +14,56 @@ info:
       403 `origin_not_allowed`. Calls without an `Origin` header are not affected.
     - JSON fields are camelCase, like the other services.
 
-    Status: this is the contract the SDK codes against. The realtime service is not built yet, so the
-    route test that keeps this file and `Routes()` in sync is added together with the service.
+    Status: this is the contract the SDK codes against. Only `/health` and `/ready` are built so far; the
+    route test that keeps this file and `Routes()` in sync is added together with the first REST endpoint.
+    Through the gateway (Traefik) the public paths are `/realtime/v1/...`, which it rewrites to the `/api/v1/...`
+    paths below, and `/realtime/v1/healthz` and `/realtime/v1/readyz` for `/health` and `/ready`.
     The WebSocket endpoint `GET /api/v1/ws` is not an OpenAPI operation; it is described in `realtime-ws.md`.
 servers:
   - url: http://localhost:8083
     description: Local (docker compose or go run)
 tags:
+  - name: system
+    description: Health checks
   - name: conversations
     description: The caller's direct-message and clan conversations
 paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: health
+      summary: The process is running
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+              example:
+                status: ok
+                service: realtime
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /ready:
+    get:
+      tags: [system]
+      operationId: ready
+      summary: The service can reach its database
+      responses:
+        "200":
+          description: The database answers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+              example:
+                status: ready
+                service: realtime
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "503":
+          $ref: "#/components/responses/NotReady"
   /api/v1/conversations:
     get:
       tags: [conversations]
@@ -182,6 +222,16 @@ components:
       bearerFormat: JWT
       description: Player token (typ "player") issued by the platform service. Sent by the SDK.
   schemas:
+    Status:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+        service:
+          type: string
+          example: realtime
     ConversationList:
       type: object
       required: [conversations]
@@ -309,6 +359,16 @@ components:
             error:
               code: origin_not_allowed
               message: This website is not allowed to call the API
+    NotReady:
+      description: The database is not reachable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: not_ready
+              message: Database is not reachable
     InternalError:
       description: Something failed on our side, for example the database is down. Safe to retry later.
       content:
