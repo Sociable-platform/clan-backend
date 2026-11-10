@@ -46,7 +46,13 @@ func (s *recordingService) JoinClan(context.Context, string, string, string, str
 
 func (f fakeService) LeaveClan(context.Context, string, string, string) error { return f.err }
 
+func (f fakeService) KickMember(context.Context, string, string, string, string) error { return f.err }
+
 func (s *recordingService) LeaveClan(context.Context, string, string, string) error { return s.err }
+
+func (s *recordingService) KickMember(context.Context, string, string, string, string) error {
+	return s.err
+}
 
 func (f fakeService) MyClan(context.Context, string, string) (service.PlayerClan, error) {
 	return service.PlayerClan{}, f.err

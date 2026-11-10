@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -349,6 +350,8 @@ type LeaveResult struct {
 	// did not change (a normal member left, or the clan was disbanded).
 	NewOwner  *ClanPlayer
 	Disbanded bool // the player was the last member, so the clan was deleted
+	// KickedBy is the owner who removed the player (KickMember); nil when the player left.
+	KickedBy *ClanPlayer
 }
 
 // LeaveClan removes the player (gameID, externalID) from clan clanID. Everything happens in
@@ -460,4 +463,87 @@ func leaveClanError(err error) error {
 		return ErrClanNotFound
 	}
 	return fmt.Errorf("leave clan: %w", err)
+}
+
+var (
+	// ErrNotClanOwner means the caller is not the owner of the clan (or not in it at all).
+	ErrNotClanOwner = errors.New("not the clan owner")
+	// ErrKickSelf means the owner tried to kick themselves; they leave instead.
+	ErrKickSelf = errors.New("cannot kick yourself")
+	// ErrMemberNotFound means the player to kick is not a member of this clan.
+	ErrMemberNotFound = errors.New("member not found")
+)
+
+// KickMember removes player playerID from clan clanID; only the clan's owner, the player
+// (gameID, ownerExternalID), may do it. Like LeaveClan it runs in one transaction and locks
+// the clan row first, so a kick and a leave or join at the same time cannot get member_count
+// or the owner out of step. The owner cannot kick themselves, so the owner never changes and
+// the clan is never disbanded by a kick.
+//
+// Errors, checked in this order: ErrClanNotFound (also another game's clan or an ID that is
+// not a UUID), ErrNotClanOwner, ErrKickSelf, ErrMemberNotFound (also an ID that is not a UUID).
+func (r *Repository) KickMember(ctx context.Context, gameID, clanID, ownerExternalID, playerID string) (LeaveResult, error) {
+	if r.pool == nil {
+		return LeaveResult{}, ErrNoDatabase
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1. Lock the clan, as LeaveClan and JoinClan do.
+	var res LeaveResult
+	err = tx.QueryRow(ctx,
+		`select id::text, name from clans where id = $1 and game_id = $2 for update`,
+		clanID, gameID).Scan(&res.ClanID, &res.ClanName)
+	if err != nil {
+		return LeaveResult{}, leaveClanError(err)
+	}
+
+	// 2. The caller must be this clan's owner.
+	var owner ClanPlayer
+	err = tx.QueryRow(ctx,
+		`select m.player_id::text, p.display_name
+		 from clan_members m
+		 join players p on p.id = m.player_id and p.game_id = m.game_id
+		 where m.clan_id = $1 and m.game_id = $2 and p.external_id = $3 and m.role = 'owner'`,
+		clanID, gameID, ownerExternalID).Scan(&owner.ID, &owner.DisplayName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return LeaveResult{}, ErrNotClanOwner
+	}
+	if err != nil {
+		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
+	}
+	if strings.EqualFold(playerID, owner.ID) {
+		return LeaveResult{}, ErrKickSelf
+	}
+
+	// 3. Delete the membership. No row means the player is not in this clan.
+	err = tx.QueryRow(ctx,
+		`delete from clan_members m
+		 using players p
+		 where m.clan_id = $1 and m.game_id = $2 and m.player_id = $3
+		   and p.id = m.player_id and p.game_id = m.game_id
+		 returning m.player_id::text, p.display_name`,
+		clanID, gameID, playerID).Scan(&res.Player.ID, &res.Player.DisplayName)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.Is(err, pgx.ErrNoRows) || (errors.As(err, &pgErr) && pgErr.Code == "22P02") {
+			return LeaveResult{}, ErrMemberNotFound
+		}
+		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
+	}
+
+	// 4. Count down. The owner is still a member, so the clan is never empty here.
+	if _, err := tx.Exec(ctx,
+		`update clans set member_count = member_count - 1 where id = $1`, clanID); err != nil {
+		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
+	}
+	res.KickedBy = &owner
+	return res, nil
 }

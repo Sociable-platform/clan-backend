@@ -503,6 +503,78 @@ paths:
                 error:
                   code: clan_not_found
                   message: Clan not found
+  /api/v1/clans/{clanID}/members/{playerID}:
+    delete:
+      tags: [clans]
+      operationId: kickClanMember
+      summary: Remove a member from the clan (owner only)
+      description: |
+        The clan's owner removes a member. The owner cannot remove themselves (they leave
+        instead), so the owner never changes and the clan is never deleted by this call.
+        The removed player is free at once: they can join this or another clan again (there
+        is no ban). The clan must belong to the caller's game; a clan of another game
+        answers 404 like a clan that does not exist.
+
+        Everything happens in one transaction with the clan row locked, like joining and
+        leaving, so a removal and a leave at the same time cannot get the counts out of step.
+        Social then publishes `clan.member_left` with `reason: "kicked"` and `kicked_by`
+        (docs/event-messages.md). No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The ID of the clan the caller owns.
+          schema:
+            type: string
+            format: uuid
+        - name: playerID
+          in: path
+          required: true
+          description: The member to remove (`playerId` from the clan's member list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: The member was removed. No body.
+        "400":
+          description: The owner named themselves (cannot_kick_self).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: cannot_kick_self
+                  message: You cannot remove yourself; leave the clan instead
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller is not this clan's owner (not_clan_owner), or the request came from a
+            website that is not in the allowed origins (origin_not_allowed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_clan_owner
+                  message: Only the clan owner can remove members
+        "404":
+          description: |
+            No such clan in the caller's game (clan_not_found), or the player is not a member
+            of this clan (member_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: member_not_found
+                  message: This player is not a member of the clan
   /api/v1/friends:
     get:
       tags: [friends]

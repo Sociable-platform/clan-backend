@@ -245,6 +245,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `clan.created` | social, `POST /api/v1/clans` (201) | `{ "clan": { "id", "name" }, "player": { "id", "name" } }`; `player` is the owner |
 | `clan.member_joined` | social, `POST /api/v1/clans/{clanID}/join` (200) | `{ "clan", "player" }` |
 | `clan.member_left` | social, `POST /api/v1/clans/{clanID}/leave` (204) while others remain | `{ "clan", "player", "reason": "left", "kicked_by": null, "new_owner" }`; `new_owner` is the member who took over when the owner left, otherwise `null` |
+| `clan.member_left` (kick) | social, `DELETE /api/v1/clans/{clanID}/members/{playerID}` (204) | the same fields with `"reason": "kicked"`, `kicked_by` = the owner `{ "id", "name" }`, `new_owner` always `null` |
 | `clan.disbanded` | social, the last member leaves (204) | `{ "clan" }`; only this event, no `clan.member_left` |
 | `clan.renamed` | social (**not published yet**, rename task) | `{ "clan", "previous_name" }` |
 | `player.blocked`, `player.unblocked` | social (block task) | `{ "blocker_id", "blocked_id" }` |
@@ -436,6 +437,7 @@ always come from the token, never from the URL or the body.
 | POST | `/api/v1/clans/{clanID}/join` | no body. 200 with the clan and its new `memberCount`, the caller joins as a member. 404 `clan_not_found` (also for another game's clan); 409 `already_in_clan` / `clan_full` (default 10 members) |
 | POST | `/api/v1/clans/{clanID}/leave` | no body. 204: the caller left the clan and can join another one. A normal member is just removed. If the **owner** leaves and others remain, the member who joined first becomes the owner; if the owner is the only member, the clan is deleted. 404 `clan_not_found` (also for another game's clan); 409 `not_in_clan` (the caller is not a member of this clan) |
 | GET | `/api/v1/clans/{clanID}/members` | 200 `{ members: [...] }` with `playerId`, `displayName`, `role`, `joinedAt`; owner first, then by join time. 404 `clan_not_found` (also for another game's clan) |
+| DELETE | `/api/v1/clans/{clanID}/members/{playerID}` | no body. 204: the **owner** removed that member (`playerId` from the member list); the player can join a clan again at once. 403 `not_clan_owner`; 400 `cannot_kick_self` (the owner leaves instead); 404 `clan_not_found` / `member_not_found`. Publishes `clan.member_left` with `reason` `kicked` |
 | GET | `/api/v1/friends` | 200 `{ friends: [...] }` with `id`, `displayName`, `since`, sorted by name |
 | GET | `/api/v1/friends/requests` | 200 `{ incoming: [...], outgoing: [...] }`, newest first; each has `id`, `player` (the other player: `id`, `displayName`) and `createdAt` |
 | POST | `/api/v1/friends/requests` | body `{ "playerId": "<social player ID>" }`. 201 with the new request. If that player had already asked the caller, it is accepted instead: 200 with the new friend. 400 `invalid_json` / `invalid_player_id` / `cannot_friend_yourself`; 404 `player_not_found` (also for another game's player); 409 `already_friends` / `friend_request_exists`. Publishes `friend.request_sent` or `friend.accepted` |
