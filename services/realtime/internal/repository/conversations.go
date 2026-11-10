@@ -113,6 +113,39 @@ func (r *Repository) RemoveDMMembers(ctx context.Context, gameID, dmKey string) 
 	return conversationID, true, nil
 }
 
+// FriendsOf returns the IDs of the players who share a DM conversation with the player in the game,
+// ordered by ID (a pair has one DM, so nobody is listed twice). Players who were removed as friends
+// are not members any more, so they are not listed.
+func (r *Repository) FriendsOf(ctx context.Context, gameID, playerID string) ([]string, error) {
+	if r.pool == nil {
+		return nil, ErrNoDatabase
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT other.player_id
+		FROM conversation_members me
+		JOIN conversations c ON c.id = me.conversation_id AND c.game_id = me.game_id AND c.kind = 'dm'
+		JOIN conversation_members other
+		  ON other.conversation_id = me.conversation_id AND other.game_id = me.game_id AND other.player_id <> me.player_id
+		WHERE me.game_id = $1 AND me.player_id = $2
+		ORDER BY other.player_id`, gameID, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("list friends: %w", err)
+	}
+	defer rows.Close()
+	friends := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan friend: %w", err)
+		}
+		friends = append(friends, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read friends: %w", err)
+	}
+	return friends, nil
+}
+
 // RenamePlayer sets the display name stored with the player's memberships in this game. Other
 // games' memberships of the same player ID are not touched. Running it again changes nothing.
 func (r *Repository) RenamePlayer(ctx context.Context, gameID, playerID, name string) error {

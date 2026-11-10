@@ -6,7 +6,7 @@ Backend for the clan platform: three Go services in one repository (realtime is 
 |---|---|---|---|
 | `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
 | `services/social` | Players, clans, clan members | 8082 | `social` |
-| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, friend events from RabbitMQ that create and remove DM conversations, and sending messages) | 8083 | `realtime` |
+| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, friend events from RabbitMQ that create and remove DM conversations, sending messages, and presence with a 10 s offline grace) | 8083 | `realtime` |
 
 ## Layout
 
@@ -457,7 +457,7 @@ while social is down.
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
 | GET | `/api/v1/ws?token=<player token>` | WebSocket upgrade (101). Checked **before** the upgrade: 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type` for the token, 403 `origin_not_allowed` when the page's `Origin` is not in `REALTIME_CORS_ORIGINS` (requests without `Origin`, like Postman's, are allowed), 503 `social_unavailable` when the social service cannot be reached (realtime asks social for the player's own ID with `GET /api/v1/players/me` and the player's token, so **social must be running**), 503 `shutting_down`. After the upgrade the server first sends a `hello` frame with the player's social ID; a `ping` frame is answered with `pong`; a frame over 8 KB closes the connection (1009); a bad frame gets an `error` frame with `bad_frame` and the connection stays; the connection is closed with 4001 when the token expires and with 1001 when the service stops; a client that does not answer the server's pings (every 25 s) for 60 s is dropped; a client that does not read its frames (64 waiting) is closed with 4002 without holding anyone else up. Public URL through Traefik: `/realtime/v1/ws` |
-| GET | `/api/v1/conversations` | 200 `{ "conversations": [...] }`: every conversation of the caller in the token's game, most recently active first, each with `members` (`online` = has an open WebSocket), `lastMessage` (or `null`) and `unread` (messages of other players after the caller's read position, at most 99). 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type`; 403 `origin_not_allowed`; 503 `social_unavailable` |
+| GET | `/api/v1/conversations` | 200 `{ "conversations": [...] }`: every conversation of the caller in the token's game, most recently active first, each with `members` (`online` = has an open WebSocket, or closed the last one less than 10 s ago), `lastMessage` (or `null`) and `unread` (messages of other players after the caller's read position, at most 99). 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type`; 403 `origin_not_allowed`; 503 `social_unavailable` |
 | GET | `/api/v1/conversations/{conversationId}/messages?before=<messageId>&limit=50` | 200 `{ "messages": [...], "hasMore": true }`: **newest first**; `before` returns only older messages, `limit` is 1 to 100 (default 50). 400 `invalid_limit` / `invalid_before`; 403 `not_member` (not in it, or an unknown id or another game's: one answer for all); plus the errors above |
 | any | anything else | 404 `not_found` in the standard error format |
 
@@ -478,7 +478,7 @@ Two players: make a second token with `go run ./tools/devtoken -player u_43 -nam
 with it. Each tab gets its own `hello` with a different `playerId`; disconnecting one does not affect the other.
 
 A missing or wrong token makes Connect fail with HTTP 401 and a JSON error body. The token is in the URL, so the service
-and Traefik never log the query string. In `hello`, `configVersion` is the version of the game's published config (`0` when there is none, or platform did not answer in a second) and `onlineFriends` is `[]` until presence exists. When the game publishes a config, realtime fetches it from platform and sends `config.updated { version }` to every open connection of that game.
+and Traefik never log the query string. In `hello`, `configVersion` is the version of the game's published config (`0` when there is none, or platform did not answer in a second) and `onlineFriends` lists the friends (people the player has a DM with) who are online now (a friend who closed their last tab less than 10 s ago still counts). When the game publishes a config, realtime fetches it from platform and sends `config.updated { version }` to every open connection of that game.
 
 **Chat between two friends (first full slice).** Two players only share a conversation after a `friend.accepted` event (Social does not
 publish it yet; publish it by hand, see "RabbitMQ events" and its "Check by hand" bullet, with the `playerId`s from the two `hello` frames and
@@ -494,7 +494,8 @@ The sender gets `message.ack` (`replyTo: "c-1"`, `messageId`, `createdAt`) and t
 Errors come back as `error` frames with `replyTo` and nothing is stored or sent: `not_member` (not in the conversation, or an unknown id),
 `empty`, `too_long` (over 1000 characters for now; the game's own limit comes with the message rules), `bad_frame` (missing or wrong-type field),
 `internal` (for example the database is down).
-Not built yet: presence and the per-game message rules (slow mode, profanity filter, rate limit, blocks, `max_message_length`).
+Presence: a player is online while one of their WebSockets is open. When the last one closes, realtime waits 10 s; if the player did not connect again, the friends who are connected get `presence.update { playerId, status: "offline" }`, so a page refresh never shows as offline. Connecting sends friends nothing (they read `hello.onlineFriends`), and a new friendship between two online players gives each a `presence.update` `online` for the other. The 10 s timers are in memory of the one process: if realtime restarts during them, nobody is told that player went offline.
+Not built yet: the per-game message rules (slow mode, profanity filter, rate limit, blocks, `max_message_length`).
 
 **Postman collection and flow diagrams.** `postman/realtime-chat.postman_collection.json` runs the whole flow against a local stack: it makes its own developer, game, three players and a friendship, then checks the conversation, the history, paging, unread and the error cases (103 checks). The two things that need a WebSocket (sending messages and `conversation.read`) are two manual steps that show the exact frames to send in the Visualize tab; the collection description says how to run it. How everything flows, as UML diagrams: [`docs/realtime-flow.md`](docs/realtime-flow.md).
 

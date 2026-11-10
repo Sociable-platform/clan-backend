@@ -17,6 +17,7 @@ Names come from the code. If you change a flow, change the diagram in the same m
 | 9 Frame and event envelope | the classes behind every message |
 | 10 Clan rooms (planned) | TEAM-147, **not built yet** |
 | 11 Live re-skin | a published config reaches every open connection of the game (TEAM-148) |
+| 12 Presence | who is online, the 10 second grace period, and what friends are told (TEAM-149) |
 
 Every frame the server sends has the event envelope: `event_id`, `type`, `occurred_at`, `game_id`, `data`
 (see [`event-messages.md`](event-messages.md) for every message and [`events.md`](events.md) for the details).
@@ -89,6 +90,7 @@ sequenceDiagram
     participant Social
     participant Cache as Config cache
     participant Hub
+    participant Presence
 
     Game->>Platform: POST /api/v1/players/auth, X-API-Key, externalPlayerId, displayName
     Platform-->>Game: token (EdDSA JWT, typ player, sub, gid, name, exp 1 h)
@@ -104,6 +106,8 @@ sequenceDiagram
         RT->>Cache: version of the game's config (loaded from Platform the first time, at most 1 s, else 0)
         Cache-->>RT: configVersion
         RT->>Hub: register the connection (game, social player ID)
+        RT->>Presence: Connected (a pending offline timer is cancelled)
+        Presence-->>RT: online friends (friends from the database, online from the hub or a running grace period)
         RT-->>SDK: frame hello (envelope, data: playerId, configVersion, onlineFriends)
     else Social cannot be reached
         RT-->>SDK: 503 social_unavailable (retry with backoff)
@@ -481,6 +485,47 @@ sequenceDiagram
 A player who connects later gets the version in `hello` (`configVersion`) and compares it with the one the SDK has. The cache is loaded
 lazily from Platform, once per game at a time, and kept in memory.
 
+## 12 Presence
+
+A player is online while one WebSocket of theirs is open. Closing the last one does not make them offline at once: Realtime waits 10 seconds,
+because a page refresh closes a socket and opens another a moment later. A player in those 10 seconds still counts as online everywhere
+(`hello`, the conversation list). Friends are the other members of the player's DM conversations. Connecting tells friends nothing; they read
+`hello.onlineFriends`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SDK as Browser tab of Ali
+    participant RT as WebSocket handler
+    participant Hub
+    participant Pres as Presence tracker
+    participant DB as Realtime database
+    participant F as Friends of Ali (SDK)
+
+    SDK->>RT: the last tab of Ali closes
+    RT->>Hub: unregister, it was the last connection
+    RT->>Pres: Disconnected(game, Ali)
+    Pres->>Pres: start a 10 s timer, Ali still counts as online
+
+    alt Ali connects again before the timer ends (page refresh)
+        SDK->>RT: new connection
+        RT->>Hub: register
+        RT->>Pres: Connected(game, Ali)
+        Pres->>Pres: cancel the timer, nobody is told anything
+    else 10 s pass
+        Pres->>DB: friends of Ali (other members of Ali's DM conversations, this game)
+        DB-->>Pres: friend IDs
+        Pres->>Hub: is Ali connected after all?
+        Hub-->>Pres: no
+        Pres->>Hub: presence.update { playerId: Ali, status: offline } to the friends
+        Hub-->>F: frame (only friends who are connected)
+    end
+```
+
+A new friendship between two online players (`friend.accepted`, diagram 3) also sends each of them `presence.update` `online` for the other, right
+after `conversation.added`. The timers are in the memory of the process: they are stopped when the service shuts down (nobody is told then), and lost
+with a restart.
+
 ## Which frame is sent when
 
 | Frame | Sent to | When | Source |
@@ -497,13 +542,15 @@ lazily from Platform, once per game at a time, and kept in memory.
 | `notification` `friend_accepted` | both players | `friend.accepted` | queue event |
 | `conversation.removed` | both players | `friend.removed` | queue event |
 | `config.updated` | every connection of the game | `config.published` | queue event, after the config is fetched |
+| `presence.update` `online` | each of two online players, about the other | `friend.accepted` | queue event, right after `conversation.added` |
+| `presence.update` `offline` | the connected friends of the player | 10 s after the player's last connection closed, if they did not come back | presence tracker (no event) |
 
 ## When something is down
 
 | What is down | What happens |
 |---|---|
 | RabbitMQ | Social still answers (a failed publish is only logged), but the events published while the broker is down are lost: there is no outbox yet. Realtime keeps serving WebSockets and REST and reconnects to the broker with 1, 2, 4 ... up to 30 s |
-| Realtime database | REST answers 500 `internal_error`, `message.send` answers an `error` frame `internal`, the consumer retries an event once and then drops it |
+| Realtime database | REST answers 500 `internal_error`, `message.send` answers an `error` frame `internal`, the consumer retries an event once and then drops it; `hello.onlineFriends` is `[]`, and when a player's 10 s end and the friends cannot be looked up, nobody is told and the player stops counting as online |
 | Platform | `hello` says `configVersion` 0 after a second (and for a few seconds after, without asking again); a `config.published` event is retried once and then dropped, so a missed `config.updated` is caught by `configVersion` in the next `hello`. Chat and friends are not affected |
 | Social | new WebSocket connections and REST calls to Realtime get 503 `social_unavailable`. Open sockets keep working |
 | Realtime itself | events wait in the queue and are handled when it is back. Frames sent meanwhile are not replayed: after a reconnect the SDK reloads the list and the history |

@@ -424,3 +424,52 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+func TestFriendAcceptedTellsEachOnlinePlayerTheOtherIsOnline(t *testing.T) {
+	store := &memStore{dm: repository.DM{ConversationID: "c-1"}}
+	pushes, err := New(store, WithPresence(onlineSet{ali: true, rashad: true})).FriendAccepted(
+		context.Background(), game, req1, Player{ali, "Ali"}, Player{rashad, "Rashad"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var types, targets []string
+	for _, p := range pushes {
+		types = append(types, p.Type)
+		targets = append(targets, p.PlayerIDs[0])
+	}
+	// Right after the two conversation.added, before the notifications.
+	if want := []string{"conversation.added", "conversation.added", "presence.update", "presence.update", "notification", "notification"}; !reflect.DeepEqual(types, want) {
+		t.Fatalf("frame types = %v, want %v", types, want)
+	}
+	if want := []string{ali, rashad, ali, rashad, ali, rashad}; !reflect.DeepEqual(targets, want) {
+		t.Fatalf("frame targets = %v, want %v", targets, want)
+	}
+	// Each is told about the OTHER one.
+	if s, want := mustJSON(t, pushes[2].Data), `{"playerId":"`+rashad+`","status":"online"}`; s != want {
+		t.Errorf("presence for Ali = %s, want %s", s, want)
+	}
+	if s, want := mustJSON(t, pushes[3].Data), `{"playerId":"`+ali+`","status":"online"}`; s != want {
+		t.Errorf("presence for Rashad = %s, want %s", s, want)
+	}
+}
+
+func TestFriendAcceptedSendsNoPresenceWhenOnlyOneIsOnlineOrNobodyIs(t *testing.T) {
+	for name, online := range map[string]onlineSet{"only Ali": {ali: true}, "only Rashad": {rashad: true}, "nobody": {}} {
+		t.Run(name, func(t *testing.T) {
+			store := &memStore{dm: repository.DM{ConversationID: "c-1"}}
+			pushes, err := New(store, WithPresence(online)).FriendAccepted(
+				context.Background(), game, req1, Player{ali, "Ali"}, Player{rashad, "Rashad"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range pushes {
+				if p.Type == "presence.update" {
+					t.Errorf("a presence.update was sent to %v although the two are not both online: %s", p.PlayerIDs, mustJSON(t, p.Data))
+				}
+			}
+			if len(pushes) != 4 {
+				t.Errorf("%d frames, want the 4 of the friendship", len(pushes))
+			}
+		})
+	}
+}

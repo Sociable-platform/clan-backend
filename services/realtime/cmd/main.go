@@ -23,6 +23,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/gameconfig"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/handler"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/presence"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/social"
@@ -79,7 +80,10 @@ func run() error {
 	// The hub of open connections is shared: the WebSocket handler fills it, the event consumer sends to it.
 	connections := hub.New()
 	repo := repository.New(pool)
-	svc := service.New(repo, service.WithPresence(connections))
+	// Presence adds the 10 s grace period to "has an open WebSocket", and tells friends about going offline.
+	tracker := presence.New(connections, repo, connections, presence.Options{Log: log})
+	defer tracker.Close()
+	svc := service.New(repo, service.WithPresence(tracker))
 
 	// Browser pages allowed to call this service and to open a WebSocket (the demo game, where the SDK runs).
 	origins := config.List("REALTIME_CORS_ORIGINS", []string{"http://localhost:5174"})
@@ -111,6 +115,7 @@ func run() error {
 		Verifier: auth.NewVerifier(verifyKey, time.Now),
 		Players:  socialClient,
 		Config:   configCache,
+		Presence: tracker,
 		Hub:      connections,
 		Origins:  origins,
 		Shutdown: ctx, // on SIGTERM every open socket is closed with 1001

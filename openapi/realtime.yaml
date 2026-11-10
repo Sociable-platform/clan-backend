@@ -17,8 +17,8 @@ info:
     Status: both endpoints are built (`TestOpenAPIMatchesRoutes` keeps this file and `Routes()` in sync). Two things
     the files that came before did not say: the caller is identified by asking the social service (with the
     caller's own token) for the player's social ID, so every endpoint can also answer 503 `social_unavailable`
-    when social cannot be reached; and `online` is, for now, "has an open WebSocket", not yet hidden by the
-    game's online-status setting (that comes with presence).
+    when social cannot be reached; and `online` is "has an open WebSocket, or closed the last one less than 10 seconds
+    ago" (the grace period of presence).
     Through the gateway (Traefik) the public paths are `/realtime/v1/...`, which it rewrites to the `/api/v1/...`
     paths below, and `/realtime/v1/healthz` and `/realtime/v1/readyz` for `/health` and `/ready`.
     The WebSocket endpoint `GET /api/v1/ws` is not an OpenAPI operation; it is described in `realtime-ws.md`.
@@ -78,8 +78,8 @@ paths:
         The list is not paged.
 
         Each conversation carries its last message (null while empty), the number of unread messages
-        and the members with their online status. `online` is always `false` when the game turned the
-        online status off in its published config.
+        and the members with their online status (`online` stays true for 10 seconds after
+        a member closed their last WebSocket).
 
         The SDK calls this once after the WebSocket `hello` frame and then keeps the list up to date from
         `conversation.added`, `conversation.removed`, `message.new` and `presence.update` frames.
@@ -290,7 +290,7 @@ components:
           description: Display name.
         online:
           type: boolean
-          description: Has at least one open WebSocket. Always false when the game hides online status.
+          description: Has at least one open WebSocket, or closed the last one less than 10 seconds ago (a page refresh does not flash offline).
     Message:
       type: object
       required: [id, senderId, senderName, body, createdAt]

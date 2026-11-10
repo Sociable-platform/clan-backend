@@ -6,12 +6,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -719,5 +721,123 @@ func TestWSOriginIsCheckedWithoutTheCORSMiddleware(t *testing.T) {
 		if err == nil || c != nil || resp == nil || resp.StatusCode != http.StatusForbidden {
 			t.Fatalf("origin %s: err=%v resp=%v, want 403", origin, err, resp)
 		}
+	}
+}
+
+// fakePresence records what the endpoint tells the presence tracker, and answers OnlineFriends from a list.
+type fakePresence struct {
+	mu           sync.Mutex
+	calls        []string // "connected game player" / "disconnected game player", in order
+	friends      map[string][]string
+	err          error
+	hub          *hub.Hub
+	connectedHub []bool // whether the hub already had the player when Connected ran
+}
+
+func (f *fakePresence) watch(h *hub.Hub) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hub = h
+}
+
+func (f *fakePresence) Connected(g, p string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "connected "+g+" "+p)
+	if f.hub != nil {
+		f.connectedHub = append(f.connectedHub, f.hub.Online(g, p))
+	}
+}
+
+func (f *fakePresence) Disconnected(g, p string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "disconnected "+g+" "+p)
+}
+
+func (f *fakePresence) OnlineFriends(_ context.Context, _, p string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.friends[p], f.err
+}
+
+func (f *fakePresence) log() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestHelloListsTheOnlineFriendsFromPresence(t *testing.T) {
+	pres := &fakePresence{friends: map[string][]string{socialIDFor(testGameID + "/alice"): {"5a2b3c4d-0000-4000-8000-000000000001"}}}
+	env := newWSEnv(t, func(o *WSOptions, _ *httptest.Server) { o.Presence = pres })
+	_, hello := env.connect(t, env.tokenFor(t, "alice"))
+	friends, _ := hello["onlineFriends"].([]any)
+	if len(friends) != 1 || friends[0] != "5a2b3c4d-0000-4000-8000-000000000001" {
+		t.Fatalf("onlineFriends = %#v, want the one friend presence named", hello["onlineFriends"])
+	}
+}
+
+func TestHelloHasNoFriendsWhenPresenceCannotLookThemUpOrReturnsNil(t *testing.T) {
+	for name, pres := range map[string]*fakePresence{
+		"lookup fails": {err: errors.New("database down")},
+		"nil list":     {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := newWSEnv(t, func(o *WSOptions, _ *httptest.Server) { o.Presence = pres })
+			_, hello := env.connect(t, env.tokenFor(t, "alice"))
+			friends, ok := hello["onlineFriends"].([]any)
+			if !ok || len(friends) != 0 {
+				t.Fatalf("onlineFriends = %#v, want an empty array, and the connection must still work", hello["onlineFriends"])
+			}
+		})
+	}
+}
+
+func TestPresenceIsToldWhenTheFirstTabOpensAndTheLastTabCloses(t *testing.T) {
+	pres := &fakePresence{}
+	env := newWSEnv(t, func(o *WSOptions, _ *httptest.Server) { o.Presence = pres })
+	pres.watch(env.h.Hub())
+	alice := socialIDFor(testGameID + "/alice")
+	tok := env.tokenFor(t, "alice")
+
+	tab1, _ := env.connect(t, tok)
+	tab2, _ := env.connect(t, tok)
+	waitFor(t, "two Connected calls", func() bool { return len(pres.log()) == 2 })
+
+	_ = tab1.Close(websocket.StatusNormalClosure, "")
+	time.Sleep(100 * time.Millisecond) // a first tab closing while another is open is not a disconnect
+	if got := pres.log(); len(got) != 2 {
+		t.Fatalf("calls = %v: closing one of two tabs must not start the grace period", got)
+	}
+
+	_ = tab2.Close(websocket.StatusNormalClosure, "")
+	want := []string{"connected " + testGameID + " " + alice, "connected " + testGameID + " " + alice, "disconnected " + testGameID + " " + alice}
+	waitFor(t, "the Disconnected call", func() bool { return len(pres.log()) == 3 })
+	if got := pres.log(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+	for _, online := range pres.connectedHub {
+		if !online {
+			t.Error("Connected ran before the connection was in the hub")
+		}
+	}
+}
+
+func TestAConnectionWithoutPresenceStillWorks(t *testing.T) {
+	env := newWSEnv(t, nil)
+	c, _ := env.connect(t, env.tokenFor(t, "alice"))
+	if err := c.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Log(err) // the close handshake may race the server; the point is that nothing panicked
 	}
 }

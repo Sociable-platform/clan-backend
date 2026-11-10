@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -362,5 +363,78 @@ func TestConversationsWithoutDatabase(t *testing.T) {
 	}
 	if err := r.RenamePlayer(context.Background(), "g", memberA.PlayerID, "x"); err == nil {
 		t.Error("RenamePlayer without a database succeeded")
+	}
+	if _, err := r.FriendsOf(context.Background(), "g", memberA.PlayerID); !errors.Is(err, ErrNoDatabase) {
+		t.Errorf("FriendsOf without a database: err = %v, want ErrNoDatabase", err)
+	}
+}
+
+func TestFriendsOfListsOnlyDMPartnersOfThatGame(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, otherGame := newUUID(t), newUUID(t)
+	defer cleanup(game, otherGame)
+	ctx := context.Background()
+	memberC := Member{PlayerID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Name: "Leyla"}
+	memberD := Member{PlayerID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Name: "Nigar"}
+
+	// A is a friend of B and C; D is only in a clan with A, and E is a friend of A in another game.
+	keyAC := memberA.PlayerID + ":" + memberC.PlayerID
+	for _, k := range []struct {
+		game, key string
+		a, b      Member
+	}{
+		{game, testKey, memberA, memberB},
+		{game, keyAC, memberA, memberC},
+		{otherGame, memberA.PlayerID + ":" + memberD.PlayerID, memberA, memberD},
+	} {
+		if _, err := r.UpsertDM(ctx, k.game, k.key, k.a, k.b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var clanConversation string
+	err := r.pool.QueryRow(ctx, "insert into conversations (game_id, kind, clan_id) values ($1, 'clan', $2) returning id",
+		game, newUUID(t)).Scan(&clanConversation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []Member{memberA, memberD} {
+		if _, err := r.pool.Exec(ctx, "insert into conversation_members (conversation_id, game_id, player_id, display_name) values ($1, $2, $3, $4)",
+			clanConversation, game, m.PlayerID, m.Name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := r.FriendsOf(ctx, game, memberA.PlayerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{memberB.PlayerID, memberC.PlayerID}; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("friends of A = %v, want %v (a clan mate and another game's friend do not count)", got, want)
+	}
+	back, err := r.FriendsOf(ctx, game, memberB.PlayerID)
+	if err != nil || len(back) != 1 || back[0] != memberA.PlayerID {
+		t.Errorf("friends of B = %v, %v, want just A", back, err)
+	}
+
+	// Removing the friendship removes the friend from the list, for both.
+	if _, _, err := r.RemoveDMMembers(ctx, game, testKey); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = r.FriendsOf(ctx, game, memberA.PlayerID)
+	if len(got) != 1 || got[0] != memberC.PlayerID {
+		t.Errorf("friends of A after removing B = %v, want just C", got)
+	}
+	if back, _ = r.FriendsOf(ctx, game, memberB.PlayerID); len(back) != 0 {
+		t.Errorf("friends of B after removing A = %v, want none", back)
+	}
+}
+
+func TestFriendsOfWithoutFriendsIsEmptyNotNil(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newUUID(t)
+	defer cleanup(game)
+	got, err := r.FriendsOf(context.Background(), game, memberA.PlayerID)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("got %#v, %v; want an empty, non-nil list", got, err)
 	}
 }
