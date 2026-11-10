@@ -66,7 +66,7 @@ What each hop guarantees:
 | Realtime wiring (`REALTIME_RABBITMQ_URL`, shared hub) | `services/realtime/cmd/main.go` |
 | What the player's browser receives | `openapi/realtime-ws.md` |
 | Every message, without explanation | `docs/event-messages.md` |
-| Tests that pin the field names | `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes today) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format), both in `services/realtime/internal/consumer/dispatch_test.go` |
+| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile` |
 
 Realtime decodes the same `events.Event` struct that Social encodes, so a renamed envelope field breaks both sides at
 compile time. The `data` fields are plain maps and are **not** checked by the compiler: that is what the two tests above are for.
@@ -170,7 +170,7 @@ Rules for `data`:
 
 ### `friend.request_cancelled`
 
-- **Published by Social** when the sender takes the request back (`DELETE /api/v1/friends/requests/{id}`). **Not published yet** (the endpoint exists but publishes nothing).
+- **Published by Social** when the sender takes the request back (`DELETE /api/v1/friends/requests/{id}`, 204). Published today.
 - **`data`:** the same as `friend.request_sent`, but `request_id` is **required** (an event without it is dropped).
 
 ```json
@@ -198,7 +198,7 @@ Rules for `data`:
 
 ### `friend.request_declined`
 
-- **Published by Social** when the receiver declines (`POST /api/v1/friends/requests/{id}/decline`). **Not published yet** (the endpoint exists but publishes nothing).
+- **Published by Social** when the receiver declines (`POST /api/v1/friends/requests/{id}/decline`, 204). Published today.
 - **`data`:** the same as `friend.request_cancelled`.
 
 ```json
@@ -230,7 +230,7 @@ Cancel and decline are two event types because they have different recipients; a
 
 - **Published by Social** when two players become friends, by either path:
   `POST /api/v1/friends/requests/{requestID}/accept` (200), or `POST /api/v1/friends/requests` when the other player had
-  already asked (200, accepted at once). Published today, **without `request_id`** (Social does not send it yet).
+  already asked (200, accepted at once). Published today, with `request_id`.
 
 | `data` field | Type | Meaning |
 |---|---|---|
@@ -467,8 +467,7 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 
 | Gap | Effect | Plan |
 |---|---|---|
-| Social does not send `request_id` in `friend.accepted` | The SDK cannot clear the `friend_request` of an accepted request on other tabs (`requestId: null` in `friend_accepted`) | Social adds `"request_id"`; Realtime already reads it. |
-| Social does not publish `friend.request_cancelled`, `friend.request_declined`, `player.renamed` (its cancel and decline endpoints exist but publish nothing) | A cancelled or declined request stays on the receiver's screen; names are never refreshed | Social publishes them with the shapes in section 5. Realtime already handles all three. |
+| Social does not publish `player.renamed` | Names stored in Realtime are never refreshed | Social publishes it (shape in section 5). Realtime already handles it. |
 | An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until restart/backfill | Transactional outbox in Social, dead-letter queue and startup backfill (TEAM-151). |
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
