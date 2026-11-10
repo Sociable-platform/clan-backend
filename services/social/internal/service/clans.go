@@ -231,8 +231,46 @@ func (s *Service) LeaveClan(ctx context.Context, gameID, externalID, clanID stri
 	return nil
 }
 
-// publishLeave tells what a leave did: clan.disbanded when the last member left (the clan
-// is gone, so there is no member_left), otherwise clan.member_left.
+// KickMember removes player playerID from clan clanID of the caller's game. Only the clan's
+// owner may do it, and not to themselves (they leave instead). The kicked player can join a
+// clan again at once; there is no ban.
+//
+// Errors the client can act on:
+//   - 404 clan_not_found: no such clan in the caller's game
+//   - 403 not_clan_owner: the caller is not this clan's owner
+//   - 400 cannot_kick_self: the owner named themselves
+//   - 404 member_not_found: the player is not a member of this clan
+func (s *Service) KickMember(ctx context.Context, gameID, externalID, clanID, playerID string) error {
+	if !uuidPattern.MatchString(clanID) {
+		return errClanNotFound()
+	}
+	if !uuidPattern.MatchString(playerID) {
+		return errMemberNotFound()
+	}
+	res, err := s.store.KickMember(ctx, gameID, strings.ToLower(clanID), externalID, strings.ToLower(playerID))
+	switch {
+	case errors.Is(err, repository.ErrClanNotFound):
+		return errClanNotFound()
+	case errors.Is(err, repository.ErrNotClanOwner):
+		return httpx.NewError(http.StatusForbidden, "not_clan_owner", "Only the clan owner can remove members")
+	case errors.Is(err, repository.ErrKickSelf):
+		return httpx.NewError(http.StatusBadRequest, "cannot_kick_self", "You cannot remove yourself; leave the clan instead")
+	case errors.Is(err, repository.ErrMemberNotFound):
+		return errMemberNotFound()
+	case err != nil:
+		return fmt.Errorf("kick member: %w", err)
+	}
+	s.publishLeave(ctx, gameID, res)
+	return nil
+}
+
+func errMemberNotFound() error {
+	return httpx.NewError(http.StatusNotFound, "member_not_found", "This player is not a member of the clan")
+}
+
+// publishLeave tells what a leave or a kick did: clan.disbanded when the last member left (the
+// clan is gone, so there is no member_left), otherwise clan.member_left with reason "left" or
+// "kicked".
 func (s *Service) publishLeave(ctx context.Context, gameID string, res repository.LeaveResult) {
 	clan := ref(res.ClanID, res.ClanName)
 	if res.Disbanded {
@@ -243,11 +281,15 @@ func (s *Service) publishLeave(ctx context.Context, gameID string, res repositor
 	if res.NewOwner != nil {
 		newOwner = ref(res.NewOwner.ID, res.NewOwner.DisplayName)
 	}
+	reason, kickedBy := "left", any(nil) // kicked_by is JSON null for a player who left
+	if res.KickedBy != nil {
+		reason, kickedBy = "kicked", ref(res.KickedBy.ID, res.KickedBy.DisplayName)
+	}
 	_ = s.events.Publish(ctx, events.New(EventClanMemberLeft, gameID, map[string]any{
 		"clan":      clan,
 		"player":    ref(res.Player.ID, res.Player.DisplayName),
-		"reason":    "left",
-		"kicked_by": nil, // set by the kick task; a player who leaves was not kicked
+		"reason":    reason,
+		"kicked_by": kickedBy,
 		"new_owner": newOwner,
 	}))
 }

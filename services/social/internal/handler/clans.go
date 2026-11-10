@@ -93,6 +93,22 @@ func (h *Handler) joinClan(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, toClanResponse(c))
 }
 
+// kickMember handles DELETE /api/v1/clans/{clanID}/members/{playerID}: the clan's owner
+// removes a member. 204 with no body.
+func (h *Handler) kickMember(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	err := h.svc.KickMember(r.Context(), caller.GameID, caller.ExternalID, r.PathValue("clanID"), r.PathValue("playerID"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // leaveClan handles POST /api/v1/clans/{clanID}/leave: the caller leaves that clan of their
 // game. No body is needed and nothing is returned (204). If the caller was the owner, the
 // member who joined first becomes the new owner; if they were the last member, the clan is
