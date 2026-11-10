@@ -8,10 +8,15 @@ import (
 	"net/http"
 	"time"
 
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/platform/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/platform/internal/widgetconfig"
 )
+
+// EventConfigPublished is published after a new widget version is saved, by a publish or a
+// rollback. Its data is {"version": <the new version number>} (docs/event-messages.md).
+const EventConfigPublished = "config.published"
 
 const (
 	// maxWidgetConfigBytes is the largest config a developer can save (the contract's 64 KB).
@@ -193,6 +198,9 @@ func (s *Service) addWidgetVersion(ctx context.Context, developerID, gameID stri
 	if err != nil {
 		return WidgetVersion{}, fmt.Errorf("publish widget of game %s: %w", gameID, err)
 	}
+	// The version is saved, so tell Realtime: it reloads the config and re-skins open widgets.
+	// The publisher is wrapped in events.Safe, so a broker problem never fails the publish.
+	_ = s.events.Publish(ctx, events.New(EventConfigPublished, gameID, map[string]any{"version": v.Version}))
 	return toWidgetVersion(v), nil
 }
 
