@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/events"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/gameconfig"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 )
 
@@ -342,5 +345,162 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 		if !seen[typ] {
 			t.Errorf("event type %q is expected but missing in docs/event-messages.md", typ)
 		}
+	}
+}
+
+// fakeConfig stands in for the config cache: it answers Published from fields and records the calls.
+type fakeConfig struct {
+	current int
+	send    bool
+	err     error
+	calls   []string
+}
+
+func (f *fakeConfig) Published(_ context.Context, gameID string, version int) (int, bool, error) {
+	f.calls = append(f.calls, fmt.Sprintf("%s %d", gameID, version))
+	return f.current, f.send, f.err
+}
+
+type toGame struct{ gameID, frame string }
+
+type fakeBroadcaster struct{ got []toGame }
+
+func (f *fakeBroadcaster) SendToGame(gameID string, frame []byte) {
+	f.got = append(f.got, toGame{gameID, string(frame)})
+}
+
+const gameUUID = "11111111-1111-4111-8111-111111111111"
+
+func configPublished(version any) []byte {
+	b, _ := json.Marshal(map[string]any{"event_id": "e9", "type": "config.published", "occurred_at": "2026-11-10T09:42:45.030Z", "game_id": gameUUID, "data": map[string]any{"version": version}})
+	return b
+}
+
+func TestConfigPublishedTellsEveryConnectionOfTheGame(t *testing.T) {
+	cache, to, send := &fakeConfig{current: 5, send: true}, &fakeBroadcaster{}, &fakeSender{}
+	d := NewDispatcher(&fakeEvents{}, send, slog.Default()).WithConfig(cache, to)
+	if err := d.Handle(context.Background(), configPublished(5)); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cache.calls, []string{gameUUID + " 5"}) {
+		t.Errorf("the cache was asked %v, want the game and version of the event", cache.calls)
+	}
+	if len(to.got) != 1 || to.got[0].gameID != gameUUID || len(send.got) != 0 {
+		t.Fatalf("broadcast = %+v, to players = %+v, want one frame to the whole game", to.got, send.got)
+	}
+	var f struct {
+		EventID    string         `json:"event_id"`
+		Type       string         `json:"type"`
+		OccurredAt string         `json:"occurred_at"`
+		GameID     string         `json:"game_id"`
+		Data       map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(to.got[0].frame), &f); err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != "config.updated" || f.GameID != gameUUID || f.OccurredAt != "2026-11-10T09:42:45.030Z" || len(f.EventID) != 36 ||
+		len(f.Data) != 1 || f.Data["version"] != float64(5) {
+		t.Errorf("frame = %+v, want config.updated {version: 5} with the envelope of the event", f)
+	}
+}
+
+// The frame names the version the cache holds, which can be newer than the one in the event.
+func TestConfigPublishedTellsTheVersionTheCacheHolds(t *testing.T) {
+	to := &fakeBroadcaster{}
+	d := NewDispatcher(&fakeEvents{}, &fakeSender{}, slog.Default()).WithConfig(&fakeConfig{current: 6, send: true}, to)
+	if err := d.Handle(context.Background(), configPublished(5)); err != nil {
+		t.Fatal(err)
+	}
+	if len(to.got) != 1 || !strings.Contains(to.got[0].frame, `"data":{"version":6}`) {
+		t.Errorf("broadcast = %+v, want version 6", to.got)
+	}
+}
+
+func TestConfigPublishedThatIsOutOfOrderSendsNothing(t *testing.T) {
+	to := &fakeBroadcaster{}
+	d := NewDispatcher(&fakeEvents{}, &fakeSender{}, slog.Default()).WithConfig(&fakeConfig{current: 6, send: false}, to)
+	if err := d.Handle(context.Background(), configPublished(5)); err != nil {
+		t.Fatalf("error %v, want the event acknowledged", err)
+	}
+	if len(to.got) != 0 {
+		t.Errorf("sent %+v for a version the players were told about already", to.got)
+	}
+}
+
+// When Platform cannot give the config the event is tried again (an error that is not ErrDrop), nobody is told
+// about a config that was not loaded.
+func TestConfigPublishedKeepsTheEventForARetryWhenTheFetchFails(t *testing.T) {
+	for _, cause := range []error{gameconfig.ErrUnavailable, gameconfig.ErrStale, gameconfig.ErrNotPublished, errors.New("boom")} {
+		to := &fakeBroadcaster{}
+		d := NewDispatcher(&fakeEvents{}, &fakeSender{}, slog.Default()).WithConfig(&fakeConfig{err: cause}, to)
+		err := d.Handle(context.Background(), configPublished(5))
+		if err == nil || errors.Is(err, ErrDrop) {
+			t.Errorf("cause %v: error = %v, want a retryable error", cause, err)
+		}
+		if len(to.got) != 0 {
+			t.Errorf("cause %v: told the players although the config was not loaded", cause)
+		}
+	}
+}
+
+func TestConfigPublishedDropsUnusableEvents(t *testing.T) {
+	bad := map[string][]byte{
+		"no version":      configPublished(nil),
+		"version 0":       configPublished(0),
+		"negative":        configPublished(-1),
+		"a string":        configPublished("5"),
+		"a decimal":       configPublished(1.5),
+		"not an event":    []byte(`{"type":"config.published"`),
+		"no data at all":  []byte(`{"event_id":"e","type":"config.published","game_id":"` + gameUUID + `"}`),
+		"empty data":      []byte(`{"event_id":"e","type":"config.published","game_id":"` + gameUUID + `","data":{}}`),
+		"invalid game id": nil,
+	}
+	for name, body := range bad {
+		t.Run(name, func(t *testing.T) {
+			cache, to := &fakeConfig{current: 1, send: true}, &fakeBroadcaster{}
+			if body == nil { // the cache refuses the game ID
+				cache.err = gameconfig.ErrInvalidGame
+				body = configPublished(5)
+			}
+			err := NewDispatcher(&fakeEvents{}, &fakeSender{}, slog.Default()).WithConfig(cache, to).Handle(context.Background(), body)
+			if !errors.Is(err, ErrDrop) {
+				t.Errorf("error = %v, want ErrDrop", err)
+			}
+			if len(to.got) != 0 {
+				t.Errorf("sent %+v for an unusable event", to.got)
+			}
+		})
+	}
+}
+
+func TestConfigPublishedIsIgnoredWithoutACache(t *testing.T) {
+	to := &fakeBroadcaster{}
+	if err := NewDispatcher(&fakeEvents{}, &fakeSender{}, slog.Default()).Handle(context.Background(), configPublished(5)); err != nil {
+		t.Errorf("error %v, want the event acknowledged", err)
+	}
+	if len(to.got) != 0 {
+		t.Error("sent a frame without a cache")
+	}
+}
+
+// The example in docs/event-messages.md is what Platform will publish; the dispatcher must take it as it is.
+func TestConfigPublishedReadsTheMessageOfTheEventMessagesFile(t *testing.T) {
+	doc, err := os.ReadFile("../../../../docs/event-messages.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = bytes.ReplaceAll(doc, []byte("\r\n"), []byte("\n"))
+	i := bytes.Index(doc, []byte("## config.published"))
+	m := regexp.MustCompile("(?s)```json\n(.*?)\n```").FindSubmatch(doc[i:])
+	if i < 0 || m == nil {
+		t.Fatal("no config.published message in the file")
+	}
+	cache, to := &fakeConfig{current: 5, send: true}, &fakeBroadcaster{}
+	d := NewDispatcher(&fakeEvents{}, &fakeSender{}, slog.Default()).WithConfig(cache, to)
+	if err := d.Handle(context.Background(), m[1]); err != nil {
+		t.Fatal(err)
+	}
+	if len(cache.calls) != 1 || !strings.HasSuffix(cache.calls[0], " 5") || len(to.got) != 1 {
+		t.Errorf("cache calls %v, frames %v, want one refresh of version 5 and one frame", cache.calls, to.got)
 	}
 }

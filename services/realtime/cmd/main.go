@@ -20,6 +20,7 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/auth"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/consumer"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/gameconfig"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/handler"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/repository"
@@ -96,9 +97,20 @@ func run() error {
 	}
 	log.Info("social", "url", socialURL)
 
+	// Platform owns each game's published config. Realtime keeps the newest version of each game in memory,
+	// loads it from Platform's public endpoint the first time it is needed, and fetches it again on config.published.
+	platformURL := config.String("REALTIME_PLATFORM_URL", "http://localhost:8081")
+	configSource, err := gameconfig.NewHTTPSource(platformURL, 3*time.Second)
+	if err != nil {
+		return err
+	}
+	configCache := gameconfig.NewCache(configSource, gameconfig.Options{})
+	log.Info("platform", "url", platformURL)
+
 	hdl := handler.New(serviceName, svc, handler.WSOptions{
 		Verifier: auth.NewVerifier(verifyKey, time.Now),
 		Players:  socialClient,
+		Config:   configCache,
 		Hub:      connections,
 		Origins:  origins,
 		Shutdown: ctx, // on SIGTERM every open socket is closed with 1001
@@ -119,7 +131,7 @@ func run() error {
 		log.Warn("not reading events: there is no database to store them in")
 		close(consumerDone)
 	default:
-		cons, err := consumer.New(consumer.Config{URL: brokerURL}, consumer.NewDispatcher(svc, connections, log), log)
+		cons, err := consumer.New(consumer.Config{URL: brokerURL}, consumer.NewDispatcher(svc, connections, log).WithConfig(configCache, connections), log)
 		if err != nil {
 			return fmt.Errorf("REALTIME_RABBITMQ_URL: %w", err)
 		}

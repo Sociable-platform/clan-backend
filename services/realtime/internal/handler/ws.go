@@ -37,6 +37,9 @@ type WSOptions struct {
 	// whose Origin header is not listed is refused with 403 before the upgrade. Requests
 	// without an Origin header (not from a browser) are not affected.
 	Origins []string
+	// Config tells the version of the game's published config for the hello frame. Optional: nil, or a
+	// game whose config is not known, gives configVersion 0.
+	Config ConfigVersions
 	// Hub holds the open connections. Pass the one the event consumer sends to; nil makes a new one.
 	Hub *hub.Hub
 	// Shutdown is cancelled when the service stops; every open socket is then closed with 1001.
@@ -58,6 +61,16 @@ func (o WSOptions) withDefaults() WSOptions {
 	}
 	return o
 }
+
+// ConfigVersions gives the version of a game's published config, 0 when it is not known.
+// gameconfig.Cache implements it. It must not fail: hello is sent either way.
+type ConfigVersions interface {
+	Version(ctx context.Context, gameID string) int
+}
+
+// configVersionTimeout limits how long a new connection waits for the config version (the first
+// connection of a game, when the cache is empty). After it hello says 0 and the connection goes on.
+const configVersionTimeout = time.Second
 
 // resolveTimeout limits the call to social that happens before the upgrade.
 const resolveTimeout = 3 * time.Second
@@ -125,13 +138,23 @@ func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 		Log:          log,
 	})
 
+	// config_version is the game's published config version, 0 when it is not known (nothing published yet,
+	// or Platform did not answer in time). It is read before the connection is registered, so a config.updated
+	// can never reach the connection ahead of its hello. One that is sent in between is not missed for good:
+	// hello then names the older version, and the SDK sees that it differs from the one it has.
+	configVersion := 0
+	if h.wsOpts.Config != nil {
+		cctx, cancel := context.WithTimeout(r.Context(), configVersionTimeout)
+		configVersion = h.wsOpts.Config.Version(cctx, player.GameID)
+		cancel()
+	}
+
 	h.hub.Register(conn)
 	defer h.hub.Unregister(conn)
 	log.Info("websocket connected")
 
-	// config_version and online_friends are placeholders until the config cache and friendships
-	// exist: 0 means "version not known yet", and nobody can have friends online yet.
-	h.enqueue(conn, serverFrame{Type: frameTypeHello, Data: helloData{PlayerID: sp.ID, OnlineFriends: []string{}}})
+	// online_friends is a placeholder until presence exists: nobody can be known to be online yet.
+	h.enqueue(conn, serverFrame{Type: frameTypeHello, Data: helloData{PlayerID: sp.ID, ConfigVersion: configVersion, OnlineFriends: []string{}}})
 
 	conn.Serve(r.Context(), h.handleFrame)
 

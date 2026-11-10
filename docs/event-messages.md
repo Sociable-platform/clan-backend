@@ -466,3 +466,17 @@
   }
 }
 ```
+
+## config.updated: server to every connection of the game (config.published)
+
+```json
+{
+  "event_id": "5e8c7a42-91b3-4d06-a7f5-3c2e1d0b9a84",
+  "type": "config.updated",
+  "occurred_at": "2026-11-10T09:42:45.030Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "version": 5
+  }
+}
+```

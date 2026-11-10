@@ -82,6 +82,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
 | `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
 | `REALTIME_SOCIAL_URL` | `http://localhost:8082` | Where realtime reaches the social service to learn each connecting player's own ID. Docker Compose sets it to `http://social:8082`. |
+| `REALTIME_PLATFORM_URL` | `http://localhost:8081` | Where realtime reaches the platform service to read a game's published config (`GET /api/v1/public/games/{gameID}/widget-config`). Docker Compose sets it to `http://platform:8081`. If platform is down, realtime still runs: `hello` says `configVersion` 0 and a `config.published` event is retried once. |
 | `REALTIME_RABBITMQ_URL` | none | RabbitMQ address (`amqp://user:password@host:5672/`) realtime reads events from, queue `realtime.events`. Empty means: do not read events (the service still runs). Use letters and digits only in the password. Docker Compose builds it from `RABBITMQ_USER` and `RABBITMQ_PASSWORD`. The password is never logged. |
 
 ### Get a player token from platform
@@ -243,7 +244,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `player.renamed` | social (**not published yet**) | `{ "player": { "id", "name" } }` |
 | `clan.created`, `clan.member_joined`, `clan.member_left`, `clan.renamed`, `clan.disbanded` | social (clan task) | see [`docs/event-messages.md`](docs/event-messages.md) |
 | `player.blocked`, `player.unblocked` | social (block task) | `{ "blocker_id", "blocked_id" }` |
-| `config.published` | platform (not wired yet) | `{ "version" }` |
+| `config.published` | platform (**not published yet**; realtime handles it: `config.updated` to the game's connections) | `{ "version" }` |
 
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
 `name` the display name at the time of the event.
@@ -462,7 +463,7 @@ while social is down.
 ```bash
 go run ./tools/devtoken -player u_42 -name Ali        # prints a token
 # Postman: New > WebSocket, URL  ws://localhost/realtime/v1/ws?token=<token>   (or ws://localhost:8083/api/v1/ws?token=<token>)
-# On connect you get: {"event_id":"...","type":"hello","occurred_at":"...","game_id":"<game>","data":{"playerId":"<social uuid>","configVersion":0,"onlineFriends":[]}}
+# On connect you get: {"event_id":"...","type":"hello","occurred_at":"...","game_id":"<game>","data":{"playerId":"<social uuid>","configVersion":<published config version or 0>,"onlineFriends":[]}}
 # Then send:           {"type":"ping","id":"p-1","data":{}}
 # You get:             {"event_id":"...","type":"pong","occurred_at":"...","game_id":"<game>","data":{"replyTo":"p-1"}}
 # Every frame the server sends has the envelope of a queue event: event_id, type, occurred_at, game_id, data.
@@ -473,7 +474,7 @@ Two players: make a second token with `go run ./tools/devtoken -player u_43 -nam
 with it. Each tab gets its own `hello` with a different `playerId`; disconnecting one does not affect the other.
 
 A missing or wrong token makes Connect fail with HTTP 401 and a JSON error body. The token is in the URL, so the service
-and Traefik never log the query string. In `hello`, `configVersion` is `0` (not known yet) and `onlineFriends` is `[]` until the config cache and friendships exist.
+and Traefik never log the query string. In `hello`, `configVersion` is the version of the game's published config (`0` when there is none, or platform did not answer in a second) and `onlineFriends` is `[]` until presence exists. When the game publishes a config, realtime fetches it from platform and sends `config.updated { version }` to every open connection of that game.
 
 **Chat between two friends (first full slice).** Two players only share a conversation after a `friend.accepted` event (Social does not
 publish it yet; publish it by hand, see "RabbitMQ events" and its "Check by hand" bullet, with the `playerId`s from the two `hello` frames and

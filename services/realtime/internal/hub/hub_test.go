@@ -220,3 +220,40 @@ func TestHubIsSafeForConcurrentUse(t *testing.T) {
 		t.Fatalf("connections left behind: len = %d, games = %d", h.Len(), len(h.conns))
 	}
 }
+
+func TestSendToGameReachesEveryConnectionOfThatGameOnly(t *testing.T) {
+	h := New()
+	alice1, alice2 := detached("g1", "alice", 4), detached("g1", "alice", 4)
+	bob := detached("g1", "bob", 4)
+	otherGame := detached("g2", "alice", 4) // same player ID, another game
+	for _, c := range []*Conn{alice1, alice2, bob, otherGame} {
+		h.Register(c)
+	}
+
+	h.SendToGame("g1", []byte("config"))
+
+	for name, tc := range map[string]struct {
+		c    *Conn
+		want int
+	}{"alice tab 1": {alice1, 1}, "alice tab 2": {alice2, 1}, "bob": {bob, 1}, "a player of another game": {otherGame, 0}} {
+		if got := drain(tc.c); len(got) != tc.want || (tc.want == 1 && got[0] != "config") {
+			t.Errorf("%s got %v, want %d frame(s)", name, got, tc.want)
+		}
+	}
+	// an unknown game, and a game whose last player left, are nobody: no panic
+	h.SendToGame("g-unknown", []byte("x"))
+	h.Unregister(otherGame)
+	h.SendToGame("g2", []byte("x"))
+}
+
+func TestSendToGameWithAFullQueueDoesNotStopTheOthers(t *testing.T) {
+	h := New()
+	slow, fast := detached("g1", "slow", 1), detached("g1", "fast", 4)
+	h.Register(slow)
+	h.Register(fast)
+	h.SendToGame("g1", []byte("1"))
+	h.SendToGame("g1", []byte("2")) // slow's queue (1) is full now: it is closed, fast still gets it
+	if got := drain(fast); len(got) != 2 {
+		t.Errorf("fast got %v, want both frames", got)
+	}
+}

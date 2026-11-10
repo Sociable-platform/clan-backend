@@ -82,6 +82,21 @@ func (h *Hub) SendToPlayers(gameID string, playerIDs []string, frame []byte) {
 	}
 }
 
+// SendToGame queues frame on every open connection of the game, whoever the player is. The frame is
+// encoded once by the caller and shared. It never blocks, like SendToPlayers. Other games get nothing.
+func (h *Hub) SendToGame(gameID string, frame []byte) {
+	var targets []*Conn
+	h.mu.RLock()
+	for _, tabs := range h.conns[gameID] {
+		targets = append(targets, tabs...)
+	}
+	h.mu.RUnlock()
+
+	for _, c := range targets {
+		c.Enqueue(frame)
+	}
+}
+
 // Online reports whether the player has at least one open connection in the game.
 func (h *Hub) Online(gameID, playerID string) bool {
 	h.mu.RLock()
