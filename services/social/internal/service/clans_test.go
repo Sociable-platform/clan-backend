@@ -33,6 +33,10 @@ func (m *memStore) KickMember(context.Context, string, string, string, string) (
 	return repository.LeaveResult{}, errors.New("memStore has no clans")
 }
 
+func (m *memStore) RenameClan(context.Context, string, string, string, string) (repository.RenameResult, error) {
+	return repository.RenameResult{}, errors.New("memStore has no clans")
+}
+
 func (m *memStore) MyClan(context.Context, string, string) (repository.PlayerClan, error) {
 	return repository.PlayerClan{}, repository.ErrNotInClan
 }
