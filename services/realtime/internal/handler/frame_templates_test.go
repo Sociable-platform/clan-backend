@@ -8,7 +8,9 @@ import (
 	"regexp"
 	"sort"
 	"testing"
+	"time"
 
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/frame"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 )
 
@@ -71,6 +73,8 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 		t.Fatal("no frames in the WebSocket frames part")
 	}
 
+	envelopeKeys := jsonKeys(t, frame.New("g", "x", time.Now(), nil)) // the same as events.Event, see frame_test.go
+	uuid := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	conversationKeys := jsonKeys(t, service.Conversation{})
 	memberKeys := jsonKeys(t, service.ConversationMember{})
 	messageKeys := jsonKeys(t, service.Message{})
@@ -85,9 +89,24 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 		data := object(t, f["data"], typ+" data")
 		seen[typ] = true
 
+		if typ == "message.send" {
+			wantKeys(t, f, []string{"type", "id", "data"}, typ+" (a client frame has no envelope)")
+		} else {
+			// Every frame the server sends has the envelope of an event.
+			wantKeys(t, f, append([]string(nil), envelopeKeys...), typ+" (a server frame has the event envelope)")
+			if id, _ := f["event_id"].(string); !uuid.MatchString(id) {
+				t.Errorf("%s event_id = %v, want a UUID", typ, f["event_id"])
+			}
+			if gid, _ := f["game_id"].(string); !uuid.MatchString(gid) {
+				t.Errorf("%s game_id = %v, want a UUID", typ, f["game_id"])
+			}
+			if at, _ := f["occurred_at"].(string); !timePattern.MatchString(at) {
+				t.Errorf("%s occurred_at = %v, want UTC with three decimals", typ, f["occurred_at"])
+			}
+		}
+
 		switch typ {
 		case "conversation.added":
-			wantKeys(t, f, []string{"type", "data"}, typ)
 			wantKeys(t, data, []string{"conversation"}, typ+" data")
 			conv := object(t, data["conversation"], "conversation")
 			wantKeys(t, conv, conversationKeys, "conversation")
@@ -120,7 +139,6 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 			}
 			seen["notification/"+data["kind"].(string)] = true
 		case "message.send":
-			wantKeys(t, f, []string{"type", "id", "data"}, typ)
 			wantKeys(t, data, jsonKeys(t, messageSendData{ConversationID: new(string), Body: new(string)}), typ+" data")
 		case "message.ack":
 			wantKeys(t, data, jsonKeys(t, messageAckData{}), typ+" data")

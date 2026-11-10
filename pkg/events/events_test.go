@@ -122,3 +122,14 @@ func TestNoopNeverFails(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNewIDIsARandomUUIDv4(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		id := NewID()
+		if !uuidV4.MatchString(id) || seen[id] {
+			t.Fatalf("NewID() = %q: not a UUID v4, or made twice", id)
+		}
+		seen[id] = true
+	}
+}

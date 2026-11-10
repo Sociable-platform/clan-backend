@@ -348,31 +348,34 @@ handler for (it logs them at debug level), so they never block the queue. The fu
 
 ## 7. What the player's browser receives
 
-Frames are `{ "type": "...", "data": { ... } }` over the WebSocket. Full contract: `openapi/realtime-ws.md`. The frames of the
+Frames the server sends have the **same envelope as an event on the queue** (`event_id`, `type`, `occurred_at`, `game_id`, `data`), built in
+`services/realtime/internal/frame`. `occurred_at` is the time of the queue event for the frames below, `game_id` is the game of the event, and
+`event_id` is new for each frame. The examples below show `type` and `data`, with the envelope fields shortened to `…`. Frames the client
+sends stay `{ "type", "id", "data" }`. Full contract: `openapi/realtime-ws.md`. The frames of the
 clan chat rooms (`conversation.added` for a clan, `clan_joined`, `clan_kicked`, `clan_disbanded`, and the chat frames in a clan room) are
 in the "WebSocket frames" part of [`event-messages.md`](event-messages.md); `TestFrameTemplatesInTheEventMessagesFile` checks their fields.
 
 **`notification` / `friend_request`** (to the receiver of the request):
 ```json
-{ "type": "notification", "data": { "kind": "friend_request",
+{ "event_id": "…", "type": "notification", "occurred_at": "…", "game_id": "…", "data": { "kind": "friend_request",
   "payload": { "requestId": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "from": { "id": "c1a2f3b4-…", "name": "Alice" } } } }
 ```
 
 **`notification` / `friend_request_cancelled`** and **`friend_request_declined`** (to the receiver, all tabs; same payload):
 ```json
-{ "type": "notification", "data": { "kind": "friend_request_cancelled",
+{ "event_id": "…", "type": "notification", "occurred_at": "…", "game_id": "…", "data": { "kind": "friend_request_cancelled",
   "payload": { "requestId": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d", "from": { "id": "c1a2f3b4-…", "name": "Alice" } } } }
 ```
 
 **`notification` / `friend_accepted`** (to each player; `player` is the other one, `requestId` the accepted request or `null`):
 ```json
-{ "type": "notification", "data": { "kind": "friend_accepted",
+{ "event_id": "…", "type": "notification", "occurred_at": "…", "game_id": "…", "data": { "kind": "friend_accepted",
   "payload": { "player": { "id": "7d2f9e10-…", "name": "Bob" }, "requestId": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d" } } }
 ```
 
 **`conversation.added`** (to each player; `unread` is theirs, `online` = has an open WebSocket right now):
 ```json
-{ "type": "conversation.added", "data": { "conversation": {
+{ "event_id": "…", "type": "conversation.added", "occurred_at": "…", "game_id": "…", "data": { "conversation": {
   "id": "128cd7f6-…", "kind": "dm", "clanId": null,
   "members": [ { "id": "9f4bc0d1-…", "name": "Oliver", "online": true }, { "id": "2c33a1b2-…", "name": "Emma", "online": true } ],
   "lastMessage": null, "unread": 0 } } }
@@ -380,7 +383,7 @@ in the "WebSocket frames" part of [`event-messages.md`](event-messages.md); `Tes
 
 **`conversation.removed`** (to both players):
 ```json
-{ "type": "conversation.removed", "data": { "conversationId": "128cd7f6-…" } }
+{ "event_id": "…", "type": "conversation.removed", "occurred_at": "…", "game_id": "…", "data": { "conversationId": "128cd7f6-…" } }
 ```
 
 Who gets what:

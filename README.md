@@ -462,9 +462,11 @@ while social is down.
 ```bash
 go run ./tools/devtoken -player u_42 -name Ali        # prints a token
 # Postman: New > WebSocket, URL  ws://localhost/realtime/v1/ws?token=<token>   (or ws://localhost:8083/api/v1/ws?token=<token>)
-# On connect you get: {"type":"hello","data":{"playerId":"<social uuid>","configVersion":0,"onlineFriends":[]}}
+# On connect you get: {"event_id":"...","type":"hello","occurred_at":"...","game_id":"<game>","data":{"playerId":"<social uuid>","configVersion":0,"onlineFriends":[]}}
 # Then send:           {"type":"ping","id":"p-1","data":{}}
-# You get:             {"type":"pong","data":{"replyTo":"p-1"}}
+# You get:             {"event_id":"...","type":"pong","occurred_at":"...","game_id":"<game>","data":{"replyTo":"p-1"}}
+# Every frame the server sends has the envelope of a queue event: event_id, type, occurred_at, game_id, data.
+# Frames you send stay {"type","id","data"}.
 ```
 
 Two players: make a second token with `go run ./tools/devtoken -player u_43 -name Rashad`, open a second Postman WebSocket tab

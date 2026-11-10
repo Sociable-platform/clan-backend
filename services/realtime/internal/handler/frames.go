@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 // Frame types and error codes of the WebSocket protocol (see openapi/realtime-ws.md).
@@ -30,10 +31,12 @@ type clientFrame struct {
 	Data json.RawMessage `json:"data"`
 }
 
-// serverFrame is the envelope of every frame the server sends.
+// serverFrame is a frame the server wants to send: its type and data, and optionally when it
+// happened (zero = now). enqueue adds the envelope (event_id, occurred_at, game_id), see package frame.
 type serverFrame struct {
-	Type string `json:"type"`
-	Data any    `json:"data"`
+	Type string
+	Data any
+	At   time.Time
 }
 
 type pongData struct {

@@ -3,7 +3,7 @@
 The live half of the realtime service: new messages, presence, notifications and live re-skin all arrive on one
 WebSocket. The two REST reads (conversation list and history) are in [`realtime.yaml`](realtime.yaml).
 
-- **Status:** contract for the SDK. Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
+- **Status:** contract for the SDK. Every frame the server sends has the envelope of a queue event (section 2). Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
   the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1009`, `4001` and `4002`,
   the friend frames (`conversation.added`, `conversation.removed`, the `friend_request`, `friend_request_cancelled`, `friend_request_declined` and `friend_accepted` notifications), and
   `message.send` with `message.ack` and `message.new`, and `conversation.read`.
@@ -60,16 +60,32 @@ Never log the full URL: the token is in it.
 
 ## 2. Frame envelope
 
+**Every frame the server sends has the same envelope as an event on the queue** (`events.Event` in `pkg/events`), so the SDK
+reads one message format:
+
 ```json
-{ "type": "message.send", "id": "c-17", "data": { "conversationId": "...", "body": "hi" } }
+{
+  "event_id": "3f1c0b7e-9a2d-4c51-8e0f-6b7a1d2c3e4f",
+  "type": "message.new",
+  "occurred_at": "2026-11-09T18:20:00.314Z",
+  "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
+  "data": { "conversationId": "0193a6b4-...", "message": { "...": "..." } }
+}
 ```
 
 | Field | Direction | Description |
 |---|---|---|
+| `event_id` | server → client | A random UUID for this one frame. The same frame sent to several players (for example `message.new` to every member) has one `event_id`. It is new for every frame: a queue event that is delivered twice makes two frames with two IDs, so it cannot be used to spot that case; match by the content (conversation ID, message ID) as before. |
 | `type` | both | The frame type, from the tables below. |
+| `occurred_at` | server → client | When it happened, RFC 3339 in UTC to the millisecond: when the message was stored (`message.ack`, `message.new`), the time of the queue event for frames that come from one (`conversation.added`, notifications, ...), the time of sending for `hello`, `pong` and `error`. |
+| `game_id` | server → client | The game of the connection. It is always the game of the player's token. |
 | `data` | both | An object, `{}` when the frame has no data. |
 | `id` | client → server | Optional string, up to 64 characters, chosen by the client. The server echoes it as `replyTo` in the `message.ack` or `error` that answers this frame. |
 
+**Frames the client sends have no envelope.** They are `{ "type": "...", "id": "...", "data": { ... } }`, because the game always comes
+from the verified token, never from a frame (a `game_id` in a client frame is ignored).
+
+The envelope fields come before `data`; `type` and `data` are where they always were, so a client that only reads those two keeps working.
 Server frames have no top-level `id`. Frames the server sends on its own (`message.new`, `presence.update`, ...)
 are not replies and carry no `replyTo`.
 
@@ -145,7 +161,13 @@ See `Message` and `Conversation` in [`realtime.yaml`](realtime.yaml).
 The first frame after the upgrade.
 
 ```json
-{ "type": "hello", "data": { "playerId": "7f1e0c2a-...", "configVersion": 12, "onlineFriends": ["5a2b3c4d-..."] } }
+{
+  "event_id": "6bfe80b7-7e37-4eba-80bf-85c0bcace6ee",
+  "type": "hello",
+  "occurred_at": "2026-11-09T18:19:00.120Z",
+  "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
+  "data": { "playerId": "7f1e0c2a-...", "configVersion": 12, "onlineFriends": ["5a2b3c4d-..."] }
+}
 ```
 
 - `playerId`: the caller's own ID, the social service's UUID for the player (not the game's own player ID from the token).
@@ -161,7 +183,13 @@ After `hello`, load `GET /api/v1/conversations` for the list.
 The answer to a successful `message.send`.
 
 ```json
-{ "type": "message.ack", "data": { "replyTo": "c-17", "messageId": "0193a6c0-...", "createdAt": "2026-11-09T18:20:00Z" } }
+{
+  "event_id": "24ea28ac-2875-4bb7-a1d2-2b24393065ef",
+  "type": "message.ack",
+  "occurred_at": "2026-11-09T18:20:00.314Z",
+  "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
+  "data": { "replyTo": "c-17", "messageId": "0193a6c0-...", "createdAt": "2026-11-09T18:20:00.314Z" }
+}
 ```
 
 ### `message.new`
@@ -173,10 +201,13 @@ Members who are offline get the message from history the next time they load it.
 
 ```json
 {
+  "event_id": "4a30586e-8521-44df-9817-b2204fa560fc",
   "type": "message.new",
+  "occurred_at": "2026-11-09T18:20:00.314Z",
+  "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
   "data": {
     "conversationId": "0193a6b4-...",
-    "message": { "id": "0193a6c0-...", "senderId": "5a2b3c4d-...", "senderName": "Rashad", "body": "gg", "createdAt": "2026-11-09T18:20:00Z" }
+    "message": { "id": "0193a6c0-...", "senderId": "5a2b3c4d-...", "senderName": "Rashad", "body": "gg", "createdAt": "2026-11-09T18:20:00.314Z" }
   }
 }
 ```
@@ -189,7 +220,13 @@ turned online status off. When a new friendship starts and both players are onli
 `online` for the other, right after `conversation.added`.
 
 ```json
-{ "type": "presence.update", "data": { "playerId": "5a2b3c4d-...", "status": "online" } }
+{
+  "event_id": "6847effe-a146-43cf-a37e-eff6f6fd7e9f",
+  "type": "presence.update",
+  "occurred_at": "2026-11-09T18:21:05.000Z",
+  "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
+  "data": { "playerId": "5a2b3c4d-...", "status": "online" }
+}
 ```
 
 ### `notification`
@@ -219,7 +256,13 @@ In `members`, `online` is true while the player has an open WebSocket right now 
 on the server, and a conversation returns with its history if the players become friends again.
 
 ```json
-{ "type": "conversation.removed", "data": { "conversationId": "0193a6b4-..." } }
+{
+  "event_id": "18d90869-5856-48b9-844a-ab2d3b5ab5f9",
+  "type": "conversation.removed",
+  "occurred_at": "2026-11-09T18:22:10.000Z",
+  "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
+  "data": { "conversationId": "0193a6b4-..." }
+}
 ```
 
 ### `config.updated`
@@ -229,19 +272,31 @@ The game published a new config. Sent to every open connection of the game. Fetc
 is the new version.
 
 ```json
-{ "type": "config.updated", "data": { "version": 13 } }
+{
+  "event_id": "dd8baa14-ed04-4ddb-9f45-d19bde912e9a",
+  "type": "config.updated",
+  "occurred_at": "2026-11-09T18:23:00.000Z",
+  "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
+  "data": { "version": 13 }
+}
 ```
 
 ### `pong`
 
-The answer to `ping`: `{ "type": "pong", "data": { "replyTo": "p-1" } }`.
+The answer to `ping`, with the envelope of every server frame: `{ "event_id": "...", "type": "pong", "occurred_at": "...", "game_id": "...", "data": { "replyTo": "p-1" } }`.
 
 ### `error`
 
 A client frame was rejected. The connection stays open unless a close code in section 6 says otherwise.
 
 ```json
-{ "type": "error", "data": { "code": "slow_mode", "message": "Wait a moment before sending again", "replyTo": "c-17", "retryAfterMs": 1400 } }
+{
+  "event_id": "9f98fcb4-27e8-4ad0-83d5-8ac7a51b4f77",
+  "type": "error",
+  "occurred_at": "2026-11-09T18:20:03.000Z",
+  "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
+  "data": { "code": "slow_mode", "message": "Wait a moment before sending again", "replyTo": "c-17", "retryAfterMs": 1400 }
+}
 ```
 
 | Field | Description |
@@ -289,13 +344,13 @@ list and the history of the open conversation (frames sent while disconnected ar
 
 ```
 client → GET /api/v1/ws?token=...           (HTTP upgrade)
-server → {"type":"hello","data":{"playerId":"7f1e...","configVersion":12,"onlineFriends":["5a2b..."]}}
+server → {"event_id":"6bfe...","type":"hello","occurred_at":"2026-11-09T18:19:00.120Z","game_id":"8d4e...","data":{"playerId":"7f1e...","configVersion":12,"onlineFriends":["5a2b..."]}}
 client → GET /api/v1/conversations           (REST)
 client → {"type":"message.send","id":"c-1","data":{"conversationId":"0193...","body":"hello"}}
-server → {"type":"message.ack","data":{"replyTo":"c-1","messageId":"0193a6c0...","createdAt":"2026-11-09T18:20:00Z"}}
-server → {"type":"message.new","data":{"conversationId":"0193...","message":{"id":"0193a6c0...","senderId":"7f1e...","senderName":"Ali","body":"hello","createdAt":"2026-11-09T18:20:00Z"}}}
+server → {"event_id":"24ea...","type":"message.ack","occurred_at":"2026-11-09T18:20:00.314Z","game_id":"8d4e...","data":{"replyTo":"c-1","messageId":"0193a6c0...","createdAt":"2026-11-09T18:20:00.314Z"}}
+server → {"event_id":"4a30...","type":"message.new","occurred_at":"2026-11-09T18:20:00.314Z","game_id":"8d4e...","data":{"conversationId":"0193...","message":{"id":"0193a6c0...","senderId":"7f1e...","senderName":"Ali","body":"hello","createdAt":"2026-11-09T18:20:00.314Z"}}}
 client → {"type":"message.send","id":"c-2","data":{"conversationId":"0193...","body":"again"}}
-server → {"type":"error","data":{"code":"slow_mode","message":"Wait a moment before sending again","replyTo":"c-2","retryAfterMs":1400}}
-server → {"type":"config.updated","data":{"version":13}}
+server → {"event_id":"9f98...","type":"error","occurred_at":"2026-11-09T18:20:02.000Z","game_id":"8d4e...","data":{"code":"slow_mode","message":"Wait a moment before sending again","replyTo":"c-2","retryAfterMs":1400}}
+server → {"event_id":"dd8b...","type":"config.updated","occurred_at":"2026-11-09T18:23:00.000Z","game_id":"8d4e...","data":{"version":13}}
 server ✕ close 4001                           (token expired: get a new token, reconnect)
 ```

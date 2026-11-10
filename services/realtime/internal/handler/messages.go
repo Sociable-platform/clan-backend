@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/frame"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 )
@@ -66,16 +67,18 @@ func (h *Handler) messageSend(c *hub.Conn, f clientFrame) {
 		return
 	}
 
-	h.enqueue(c, serverFrame{Type: frameTypeMessageAck, Data: messageAckData{
+	// Both frames happened when the message was stored.
+	h.enqueue(c, serverFrame{Type: frameTypeMessageAck, At: sent.Message.CreatedAt, Data: messageAckData{
 		ReplyTo: f.idPointer(), MessageID: sent.Message.ID, CreatedAt: sent.Message.CreatedAt,
 	}})
 
-	frame, err := json.Marshal(serverFrame{Type: frameTypeMessageNew, Data: messageNewData{
+	// One encoded frame goes to every member, so they all get the same event_id.
+	encoded, err := frame.Encode(who.GameID, frameTypeMessageNew, sent.Message.CreatedAt, messageNewData{
 		ConversationID: *data.ConversationID, Message: sent.Message,
-	}})
+	})
 	if err != nil {
 		h.log.Error("encode message.new", "error", err) // cannot happen with these types
 		return
 	}
-	h.hub.SendToPlayers(who.GameID, sent.Members, frame)
+	h.hub.SendToPlayers(who.GameID, sent.Members, encoded)
 }

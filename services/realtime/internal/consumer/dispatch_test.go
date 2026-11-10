@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp"
 	"testing"
+	"time"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
@@ -112,22 +113,70 @@ func TestDispatchRoutesEachEventToItsHandler(t *testing.T) {
 	}
 }
 
-func TestDispatchSendsEveryFrameEncodedAsAnEnvelope(t *testing.T) {
+// Frames sent to browsers have the envelope of an event: a new event_id, the type, the time of the queue
+// event as occurred_at, and the game. The part inside data is what the service said.
+func TestDispatchSendsEveryFrameWithTheEventEnvelope(t *testing.T) {
 	ev := &fakeEvents{pushes: []service.Push{
 		{GameID: "g-1", PlayerIDs: []string{"u-1"}, Type: "conversation.added", Data: map[string]any{"conversation": map[string]any{"id": "c-1"}}},
 		{GameID: "g-1", PlayerIDs: []string{"u-1", "u-2"}, Type: "conversation.removed", Data: map[string]any{"conversationId": "c-1"}},
 	}}
 	send := &fakeSender{}
-	body := `{"event_id":"e1","type":"friend.removed","game_id":"g-1","data":{"players":[{"id":"u-1","name":"Emma"},{"id":"u-2","name":"Oliver"}],"removed_by":"u-1"}}`
+	body := `{"event_id":"e1","type":"friend.removed","occurred_at":"2026-11-10T08:00:00.123Z","game_id":"g-1","data":{"players":[{"id":"u-1","name":"Emma"},{"id":"u-2","name":"Oliver"}],"removed_by":"u-1"}}`
 	if err := NewDispatcher(ev, send, slog.Default()).Handle(context.Background(), []byte(body)); err != nil {
 		t.Fatal(err)
 	}
-	want := []sent{
-		{"g-1", []string{"u-1"}, `{"type":"conversation.added","data":{"conversation":{"id":"c-1"}}}`},
-		{"g-1", []string{"u-1", "u-2"}, `{"type":"conversation.removed","data":{"conversationId":"c-1"}}`},
+	if len(send.got) != 2 {
+		t.Fatalf("sent %d frames, want 2: %+v", len(send.got), send.got)
 	}
-	if !reflect.DeepEqual(send.got, want) {
-		t.Errorf("sent = %+v\nwant %+v", send.got, want)
+	wantData := []string{`{"conversation":{"id":"c-1"}}`, `{"conversationId":"c-1"}`}
+	wantType := []string{"conversation.added", "conversation.removed"}
+	wantTo := [][]string{{"u-1"}, {"u-1", "u-2"}}
+	ids := map[string]bool{}
+	for i, s := range send.got {
+		var f struct {
+			EventID    string          `json:"event_id"`
+			Type       string          `json:"type"`
+			OccurredAt string          `json:"occurred_at"`
+			GameID     string          `json:"game_id"`
+			Data       json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(s.frame), &f); err != nil {
+			t.Fatalf("frame %d is not JSON: %v", i, err)
+		}
+		if s.gameID != "g-1" || !reflect.DeepEqual(s.ids, wantTo[i]) {
+			t.Errorf("frame %d sent to %s %v, want g-1 %v", i, s.gameID, s.ids, wantTo[i])
+		}
+		if f.Type != wantType[i] || f.GameID != "g-1" || string(f.Data) != wantData[i] {
+			t.Errorf("frame %d = %+v, want type %s, game g-1, data %s", i, f, wantType[i], wantData[i])
+		}
+		if f.OccurredAt != "2026-11-10T08:00:00.123Z" {
+			t.Errorf("frame %d occurred_at = %q, want the time of the event", i, f.OccurredAt)
+		}
+		if len(f.EventID) != 36 || f.EventID == "e1" || ids[f.EventID] {
+			t.Errorf("frame %d event_id = %q, want a new unique UUID (not the queue event's)", i, f.EventID)
+		}
+		ids[f.EventID] = true
+	}
+}
+
+// An event without a time (older publishers) still makes frames with a valid occurred_at: now.
+func TestDispatchFrameOfAnEventWithoutATimeGetsNow(t *testing.T) {
+	ev := &fakeEvents{pushes: []service.Push{{GameID: "g-1", PlayerIDs: []string{"u-1"}, Type: "conversation.removed", Data: map[string]any{}}}}
+	send := &fakeSender{}
+	body := `{"event_id":"e1","type":"friend.removed","game_id":"g-1","data":{"players":[{"id":"u-1","name":"E"},{"id":"u-2","name":"O"}],"removed_by":"u-1"}}`
+	before := time.Now().Add(-time.Second)
+	if err := NewDispatcher(ev, send, slog.Default()).Handle(context.Background(), []byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		OccurredAt string `json:"occurred_at"`
+	}
+	if err := json.Unmarshal([]byte(send.got[0].frame), &f); err != nil {
+		t.Fatal(err)
+	}
+	at, err := time.Parse(time.RFC3339Nano, f.OccurredAt)
+	if err != nil || at.Before(before) || at.After(time.Now().Add(time.Second)) {
+		t.Errorf("occurred_at = %q (%v), want about now", f.OccurredAt, err)
 	}
 }
 

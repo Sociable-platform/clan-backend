@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -11,6 +10,7 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/auth"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/frame"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/social"
 )
@@ -168,9 +168,10 @@ func (h *Handler) enqueueError(c *hub.Conn, code, message string, replyTo *strin
 	h.enqueue(c, serverFrame{Type: frameTypeErr, Data: errorData{Code: code, Message: message, ReplyTo: replyTo}})
 }
 
-// enqueue encodes one frame and queues it for the connection's writer. It never blocks.
+// enqueue puts the event envelope around one frame, for the connection's game, and queues it for
+// the connection's writer. It never blocks.
 func (h *Handler) enqueue(c *hub.Conn, f serverFrame) {
-	b, err := json.Marshal(f)
+	b, err := frame.Encode(c.Identity().GameID, f.Type, f.At, f.Data)
 	if err != nil {
 		// Only possible with a frame type that cannot be encoded: a bug, not a client error.
 		h.log.Error("encode frame", "type", f.Type, "error", err)
