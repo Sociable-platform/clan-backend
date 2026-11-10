@@ -341,6 +341,95 @@ paths:
                 error:
                   code: already_in_clan
                   message: You are already in a clan; leave it first
+  /api/v1/clans/{clanID}:
+    patch:
+      tags: [clans]
+      operationId: renameClan
+      summary: Rename a clan (owner only)
+      description: |
+        The clan's owner gives the clan a new name. The name is cleaned and checked like on
+        create (trimmed, runs of spaces become one space, 3 to 20 visible characters) and must
+        not be taken by another clan of the game, ignoring upper/lower case.
+
+        Sending the name the clan already has changes nothing: 200 with the clan, and no event.
+        Changing only upper/lower case ("wolves" to "Wolves") is a rename. After a rename Social
+        publishes `clan.renamed` with the new name and `previous_name` (docs/event-messages.md).
+        The clan row is locked like for join, leave and kick, so the owner cannot change
+        while the name does.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The ID of the clan the caller owns.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClanRequest"
+            example:
+              name: Grey Wolves
+      responses:
+        "200":
+          description: The clan with its name now.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Clan"
+              example:
+                id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                name: Grey Wolves
+                memberCount: 4
+                maxMembers: 10
+        "400":
+          description: The body is not valid JSON (invalid_json), or the name is not 3 to 20 visible characters (invalid_clan_name).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_clan_name
+                  message: Clan name must be 3 to 20 characters
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller is not this clan's owner (not_clan_owner), or the request came from a
+            website that is not in the allowed origins (origin_not_allowed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_clan_owner
+                  message: Only the clan owner can rename the clan
+        "404":
+          description: No such clan in the caller's game (clan_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_not_found
+                  message: Clan not found
+        "409":
+          description: Another clan of the game has this name (clan_name_taken).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_name_taken
+                  message: A clan with this name already exists
   /api/v1/clans/{clanID}/join:
     post:
       tags: [clans]
