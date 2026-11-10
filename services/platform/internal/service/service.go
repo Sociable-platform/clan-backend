@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/services/platform/internal/repository"
 )
 
@@ -47,6 +48,8 @@ type Service struct {
 	// "no such developer" and "wrong password" take about the same time.
 	dummyHash []byte
 	now       func() time.Time
+	// events tells the other services what changed (config.published); see pkg/events.
+	events events.Publisher
 }
 
 // New returns a Service. key signs developer tokens (and its public half verifies them);
@@ -70,8 +73,15 @@ func newService(store Store, key ed25519.PrivateKey, tokenTTL time.Duration, cos
 	}
 	return &Service{
 		store: store, key: key, pub: pub, tokenTTL: tokenTTL,
-		bcryptCost: cost, dummyHash: dummy, now: time.Now,
+		bcryptCost: cost, dummyHash: dummy, now: time.Now, events: events.Noop{},
 	}, nil
+}
+
+// WithPublisher sets where the service sends events for the other services (see pkg/events).
+// Until it is called, events are dropped. It returns s, so it can follow New.
+func (s *Service) WithPublisher(p events.Publisher) *Service {
+	s.events = p
+	return s
 }
 
 // Ready reports whether the service can do its work (for now: the database answers).
