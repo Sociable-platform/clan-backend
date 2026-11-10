@@ -354,3 +354,197 @@ func TestAcceptWhileSendingBackAtTheSameTime(t *testing.T) {
 		}
 	}
 }
+
+// makeFriends makes a and b friends through a request and its accept.
+func makeFriends(t *testing.T, r *Repository, gameID, a, b string) {
+	t.Helper()
+	req := sendRequest(t, r, gameID, a, b)
+	if _, err := r.AcceptFriendRequest(context.Background(), gameID, req.ID, b); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeclineFriendRequest(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	ali, aysel := newPlayer(t, r, game, "ali"), newPlayer(t, r, game, "aysel")
+	req := sendRequest(t, r, game, ali, aysel)
+
+	if err := r.DeclineFriendRequest(ctx, game, req.ID, aysel); err != nil {
+		t.Fatal(err)
+	}
+	if reqs, friends := pairState(t, r, game, ali, aysel); reqs != 0 || friends != 0 {
+		t.Errorf("rows: %d requests, %d friendships; want 0, 0", reqs, friends)
+	}
+	if err := r.DeclineFriendRequest(ctx, game, req.ID, aysel); !errors.Is(err, ErrFriendRequestNotFound) {
+		t.Errorf("decline twice: err = %v, want ErrFriendRequestNotFound", err)
+	}
+	// strangers again: Ali may ask once more
+	sendRequest(t, r, game, ali, aysel)
+}
+
+func TestCancelFriendRequest(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	ali, aysel := newPlayer(t, r, game, "ali"), newPlayer(t, r, game, "aysel")
+	req := sendRequest(t, r, game, ali, aysel)
+
+	if err := r.CancelFriendRequest(ctx, game, req.ID, ali); err != nil {
+		t.Fatal(err)
+	}
+	if reqs, _ := pairState(t, r, game, ali, aysel); reqs != 0 {
+		t.Errorf("%d requests after cancel, want 0", reqs)
+	}
+	sendRequest(t, r, game, aysel, ali) // either of them may ask again
+}
+
+func TestDeclineAndCancelErrors(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, otherGame := newGameID(t), newGameID(t)
+	defer cleanup(game, otherGame)
+	ctx := context.Background()
+	ali, aysel, third := newPlayer(t, r, game, "ali"), newPlayer(t, r, game, "aysel"), newPlayer(t, r, game, "third")
+	req := sendRequest(t, r, game, ali, aysel)
+
+	cases := []struct {
+		name string
+		fn   func(ctx context.Context, gameID, requestID, playerID string) error
+		game string
+		id   string
+		who  string
+		want error
+	}{
+		{"sender declines", r.DeclineFriendRequest, game, req.ID, ali, ErrNotFriendRequestReceiver},
+		{"receiver cancels", r.CancelFriendRequest, game, req.ID, aysel, ErrNotFriendRequestSender},
+		{"third player declines", r.DeclineFriendRequest, game, req.ID, third, ErrFriendRequestNotFound},
+		{"third player cancels", r.CancelFriendRequest, game, req.ID, third, ErrFriendRequestNotFound},
+		{"decline from another game", r.DeclineFriendRequest, otherGame, req.ID, aysel, ErrFriendRequestNotFound},
+		{"cancel from another game", r.CancelFriendRequest, otherGame, req.ID, ali, ErrFriendRequestNotFound},
+		{"unknown request", r.DeclineFriendRequest, game, "00000000-0000-4000-8000-000000000000", aysel, ErrFriendRequestNotFound},
+		{"not a UUID", r.CancelFriendRequest, game, "nope", ali, ErrFriendRequestNotFound},
+	}
+	for _, c := range cases {
+		if err := c.fn(ctx, c.game, c.id, c.who); !errors.Is(err, c.want) {
+			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)
+		}
+	}
+	if reqs, _ := pairState(t, r, game, ali, aysel); reqs != 1 {
+		t.Errorf("%d requests after failed attempts, want 1", reqs)
+	}
+}
+
+func TestRemoveFriend(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	ali, aysel := newPlayer(t, r, game, "ali"), newPlayer(t, r, game, "aysel")
+	makeFriends(t, r, game, ali, aysel)
+
+	f, err := r.RemoveFriend(ctx, game, aysel, ali) // either friend may remove
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []FriendPlayer{{ali, "ali"}, {aysel, "aysel"}}
+	if aysel < ali {
+		want[0], want[1] = want[1], want[0]
+	}
+	if f.PlayerA != want[0] || f.PlayerB != want[1] || f.CreatedAt.IsZero() {
+		t.Errorf("removed friendship = %+v, want players %+v (smaller ID first)", f, want)
+	}
+	if got := friendsOf(t, r, game, ali); len(got) != 0 {
+		t.Errorf("ali still has friends %v", got)
+	}
+	if got := friendsOf(t, r, game, aysel); len(got) != 0 {
+		t.Errorf("aysel still has friends %v", got)
+	}
+	if _, err := r.RemoveFriend(ctx, game, ali, aysel); !errors.Is(err, ErrNotFriends) {
+		t.Errorf("remove twice: err = %v, want ErrNotFriends", err)
+	}
+	sendRequest(t, r, game, ali, aysel) // strangers again
+}
+
+func TestRemoveFriendErrors(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, otherGame := newGameID(t), newGameID(t)
+	defer cleanup(game, otherGame)
+	ctx := context.Background()
+	ali, aysel := newPlayer(t, r, game, "ali"), newPlayer(t, r, game, "aysel")
+	pending := newPlayer(t, r, game, "pending")
+	sendRequest(t, r, game, ali, pending)
+	makeFriends(t, r, game, ali, aysel)
+	o1, o2 := newPlayer(t, r, otherGame, "o1"), newPlayer(t, r, otherGame, "o2")
+	makeFriends(t, r, otherGame, o1, o2)
+
+	cases := []struct {
+		name, game, who, friend string
+	}{
+		{"only a pending request", game, ali, pending},
+		{"yourself", game, ali, ali},
+		{"unknown player", game, ali, "00000000-0000-4000-8000-000000000000"},
+		{"not a UUID", game, ali, "nope"},
+		{"friends of another game", game, o1, o2},
+	}
+	for _, c := range cases {
+		if _, err := r.RemoveFriend(ctx, c.game, c.who, c.friend); !errors.Is(err, ErrNotFriends) {
+			t.Errorf("%s: err = %v, want ErrNotFriends", c.name, err)
+		}
+	}
+	if reqs, friends := pairState(t, r, game, ali, aysel); reqs != 0 || friends != 1 {
+		t.Errorf("ali and aysel: %d requests, %d friendships; want 0, 1", reqs, friends)
+	}
+	if _, friends := pairState(t, r, otherGame, o1, o2); friends != 1 {
+		t.Error("the other game's friendship was touched")
+	}
+}
+
+// Accept and cancel of the same request at the same moment: exactly one of them wins.
+func TestAcceptAndCancelAtTheSameTime(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	for i := 0; i < 20; i++ {
+		a, b := newPlayer(t, r, game, "a"+string(rune('a'+i))), newPlayer(t, r, game, "b"+string(rune('a'+i)))
+		req := sendRequest(t, r, game, a, b)
+		ok, lost := race(t, 2, func(n int) error {
+			if n == 0 {
+				_, err := r.AcceptFriendRequest(ctx, game, req.ID, b)
+				return err
+			}
+			return r.CancelFriendRequest(ctx, game, req.ID, a)
+		}, ErrFriendRequestNotFound)
+		if ok != 1 || lost != 1 {
+			t.Errorf("pair %d: %d succeeded, %d found nothing; want 1 and 1", i, ok, lost)
+		}
+		reqs, friends := pairState(t, r, game, a, b)
+		if reqs != 0 || friends > 1 {
+			t.Errorf("pair %d: %d requests, %d friendships; want no request and at most one friendship", i, reqs, friends)
+		}
+	}
+}
+
+func TestRemoveFriendTwiceAtTheSameTime(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ali, aysel := newPlayer(t, r, game, "ali"), newPlayer(t, r, game, "aysel")
+	makeFriends(t, r, game, ali, aysel)
+
+	ok, notFriends := race(t, 2, func(n int) error {
+		who, other := ali, aysel
+		if n == 1 {
+			who, other = aysel, ali
+		}
+		_, err := r.RemoveFriend(context.Background(), game, who, other)
+		return err
+	}, ErrNotFriends)
+	if ok != 1 || notFriends != 1 {
+		t.Errorf("ok = %d, not friends = %d; want 1 and 1", ok, notFriends)
+	}
+}

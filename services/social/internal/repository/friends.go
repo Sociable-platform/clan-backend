@@ -23,8 +23,13 @@ var (
 	// ErrFriendRequestNotFound means there is no pending request with this ID that the player
 	// may see: it does not exist, belongs to another game, or is between two other players.
 	ErrFriendRequestNotFound = errors.New("friend request not found")
-	// ErrNotFriendRequestReceiver means the player sent the request, so they cannot accept it.
-	ErrNotFriendRequestReceiver = errors.New("only the receiver can accept a friend request")
+	// ErrNotFriendRequestReceiver means the player sent the request, so they cannot accept
+	// (or decline) it.
+	ErrNotFriendRequestReceiver = errors.New("only the receiver can accept or decline a friend request")
+	// ErrNotFriendRequestSender means the player received the request, so they cannot cancel it.
+	ErrNotFriendRequestSender = errors.New("only the sender can cancel a friend request")
+	// ErrNotFriends means the two players are not friends (or the other one does not exist in the game).
+	ErrNotFriends = errors.New("not friends")
 )
 
 // FriendPlayer is a player as the friends feature shows them.
@@ -346,4 +351,121 @@ func (r *Repository) ListFriends(ctx context.Context, gameID, playerID string) (
 		return nil, fmt.Errorf("list friends: %w", err)
 	}
 	return friends, nil
+}
+
+// DeclineFriendRequest deletes request requestID, which must have been sent to playerID.
+//
+// Errors: ErrFriendRequestNotFound (missing, another game, not a UUID, between two other
+// players, or already accepted or cancelled), ErrNotFriendRequestReceiver (playerID sent it).
+func (r *Repository) DeclineFriendRequest(ctx context.Context, gameID, requestID, playerID string) error {
+	return r.deleteFriendRequest(ctx, gameID, requestID, playerID, true)
+}
+
+// CancelFriendRequest deletes request requestID, which playerID must have sent.
+//
+// Errors: ErrFriendRequestNotFound (as for DeclineFriendRequest), ErrNotFriendRequestSender
+// (playerID received it).
+func (r *Repository) CancelFriendRequest(ctx context.Context, gameID, requestID, playerID string) error {
+	return r.deleteFriendRequest(ctx, gameID, requestID, playerID, false)
+}
+
+// deleteFriendRequest deletes a pending request for its receiver (asReceiver) or its sender.
+// Like every change to a pair, it locks the pair first, so a decline or cancel and an accept of
+// the same request never both succeed.
+func (r *Repository) deleteFriendRequest(ctx context.Context, gameID, requestID, playerID string, asReceiver bool) error {
+	if r.pool == nil {
+		return ErrNoDatabase
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("delete friend request: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1. Find the pair and lock it.
+	var senderID, receiverID string
+	err = tx.QueryRow(ctx,
+		`select sender_id::text, receiver_id::text from friend_requests where id = $1 and game_id = $2`,
+		requestID, gameID).Scan(&senderID, &receiverID)
+	if err != nil {
+		return acceptFriendRequestError(err)
+	}
+	if _, err := tx.Exec(ctx, lockPairSQL, gameID, senderID, receiverID); err != nil {
+		return acceptFriendRequestError(err)
+	}
+
+	// 2. Under the lock: is it still there, and is the player allowed to delete it?
+	err = tx.QueryRow(ctx,
+		`select sender_id::text, receiver_id::text from friend_requests where id = $1 and game_id = $2`,
+		requestID, gameID).Scan(&senderID, &receiverID)
+	if err != nil {
+		return acceptFriendRequestError(err)
+	}
+	switch {
+	case asReceiver && playerID == receiverID, !asReceiver && playerID == senderID:
+	case asReceiver && playerID == senderID:
+		return ErrNotFriendRequestReceiver
+	case !asReceiver && playerID == receiverID:
+		return ErrNotFriendRequestSender
+	default:
+		return ErrFriendRequestNotFound
+	}
+
+	if _, err := tx.Exec(ctx, `delete from friend_requests where id = $1`, requestID); err != nil {
+		return acceptFriendRequestError(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return acceptFriendRequestError(err)
+	}
+	return nil
+}
+
+// RemoveFriend ends the friendship of playerID and friendID in gameID, for both of them, and
+// returns it (with both names, for the event). Afterwards the two are strangers again and either
+// may send a new request. The pair is locked first, like every other change to it.
+//
+// Errors: ErrNotFriends (not friends, friendID missing, in another game, or not a UUID).
+func (r *Repository) RemoveFriend(ctx context.Context, gameID, playerID, friendID string) (Friendship, error) {
+	if r.pool == nil {
+		return Friendship{}, ErrNoDatabase
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return Friendship{}, fmt.Errorf("remove friend: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, lockPairSQL, gameID, playerID, friendID); err != nil {
+		return Friendship{}, removeFriendError(err)
+	}
+
+	f := Friendship{}
+	err = tx.QueryRow(ctx,
+		`delete from friendships f
+		 using players a, players b
+		 where f.game_id = $1
+		   and f.player_a_id = least($2::uuid, $3::uuid) and f.player_b_id = greatest($2::uuid, $3::uuid)
+		   and a.id = f.player_a_id and b.id = f.player_b_id
+		 returning a.id::text, a.display_name, b.id::text, b.display_name, f.created_at`,
+		gameID, playerID, friendID).Scan(&f.PlayerA.ID, &f.PlayerA.DisplayName,
+		&f.PlayerB.ID, &f.PlayerB.DisplayName, &f.CreatedAt)
+	if err != nil {
+		return Friendship{}, removeFriendError(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Friendship{}, removeFriendError(err)
+	}
+	return f, nil
+}
+
+// removeFriendError turns database errors into our own errors where it can.
+func removeFriendError(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFriends
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "22P02" { // the friend's ID is not a UUID
+		return ErrNotFriends
+	}
+	return fmt.Errorf("remove friend: %w", err)
 }
