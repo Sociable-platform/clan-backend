@@ -10,11 +10,20 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 )
 
 // Service is what the handlers need from the service layer.
 type Service interface {
 	Ready(ctx context.Context) error
+	// SendMessage stores a message from a conversation member and says who must get it.
+	SendMessage(ctx context.Context, from service.Sender, conversationID, body string) (service.Sent, error)
+	// Conversations lists the reader's conversations.
+	Conversations(ctx context.Context, who service.Reader) ([]service.Conversation, error)
+	// Messages returns one page of a conversation's history (before and limit are the raw query values).
+	Messages(ctx context.Context, who service.Reader, conversationID, before, limit string) (service.MessagePage, error)
+	// MarkRead moves the reader's read position forward to a message.
+	MarkRead(ctx context.Context, who service.Reader, conversationID, lastMessageID string) error
 }
 
 // Handler holds the routes of the service.
@@ -53,16 +62,16 @@ type Route struct {
 	Handle http.HandlerFunc
 }
 
-// Routes lists every endpoint of the service. Add new endpoints here, for example:
-//
-//	{http.MethodGet, "/api/v1/conversations", h.listConversations},
-//
-// and document them in openapi/realtime.yaml (the WebSocket in openapi/realtime-ws.md) in the same commit.
+// Routes lists every endpoint of the service. Add new endpoints here and document them in
+// openapi/realtime.yaml (the WebSocket in openapi/realtime-ws.md) in the same commit.
+// TestOpenAPIMatchesRoutes fails when the two disagree.
 func (h *Handler) Routes() []Route {
 	return []Route{
 		{http.MethodGet, "/health", h.health},
 		{http.MethodGet, "/ready", h.ready},
 		{http.MethodGet, "/api/v1/ws", h.ws},
+		{http.MethodGet, "/api/v1/conversations", h.listConversations},
+		{http.MethodGet, "/api/v1/conversations/{conversationId}/messages", h.listMessages},
 	}
 }
 

@@ -14,8 +14,11 @@ info:
       403 `origin_not_allowed`. Calls without an `Origin` header are not affected.
     - JSON fields are camelCase, like the other services.
 
-    Status: this is the contract the SDK codes against. Only `/health` and `/ready` are built so far; the
-    route test that keeps this file and `Routes()` in sync is added together with the first REST endpoint.
+    Status: both endpoints are built (`TestOpenAPIMatchesRoutes` keeps this file and `Routes()` in sync). Two things
+    the files that came before did not say: the caller is identified by asking the social service (with the
+    caller's own token) for the player's social ID, so every endpoint can also answer 503 `social_unavailable`
+    when social cannot be reached; and `online` is, for now, "has an open WebSocket", not yet hidden by the
+    game's online-status setting (that comes with presence).
     Through the gateway (Traefik) the public paths are `/realtime/v1/...`, which it rewrites to the `/api/v1/...`
     paths below, and `/realtime/v1/healthz` and `/realtime/v1/readyz` for `/health` and `/ready`.
     The WebSocket endpoint `GET /api/v1/ws` is not an OpenAPI operation; it is described in `realtime-ws.md`.
@@ -123,6 +126,8 @@ paths:
           $ref: "#/components/responses/OriginNotAllowed"
         "500":
           $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/SocialUnavailable"
   /api/v1/conversations/{conversationId}/messages:
     get:
       tags: [conversations]
@@ -214,6 +219,8 @@ paths:
                   message: You are not a member of this conversation
         "500":
           $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/SocialUnavailable"
 components:
   securitySchemes:
     playerToken:
@@ -369,6 +376,18 @@ components:
             error:
               code: not_ready
               message: Database is not reachable
+    SocialUnavailable:
+      description: |
+        The social service, which tells realtime who the caller is, did not answer. Nothing was read.
+        Try again shortly (with backoff).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: social_unavailable
+              message: Cannot reach the social service; try again shortly
     InternalError:
       description: Something failed on our side, for example the database is down. Safe to retry later.
       content:

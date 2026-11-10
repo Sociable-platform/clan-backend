@@ -67,6 +67,7 @@ type wsEnv struct {
 	priv     ed25519.PrivateKey
 	logs     *syncBuffer
 	shutdown context.CancelFunc
+	chat     *chatService // the fake service behind message.send
 
 	socialDown   atomic.Bool  // when set, the fake social service is unreachable
 	resolveCalls atomic.Int32 // how often the handler asked social
@@ -97,8 +98,8 @@ func newWSEnv(t *testing.T, tweak func(*WSOptions, *httptest.Server)) *wsEnv {
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	shutdownCtx, shutdown := context.WithCancel(context.Background())
-	env := &wsEnv{pub: pub, priv: priv, logs: logs, shutdown: shutdown}
-	env.h = New("test", fakeService{}, WSOptions{
+	env := &wsEnv{pub: pub, priv: priv, logs: logs, shutdown: shutdown, chat: &chatService{}}
+	env.h = New("test", env.chat, WSOptions{
 		Verifier: auth.NewVerifier(pub, time.Now),
 		Players:  env,
 		Origins:  []string{allowedOrigin},
@@ -485,7 +486,7 @@ func TestWSBadFramesKeepTheConnectionOpen(t *testing.T) {
 		{"id too long", `{"type":"ping","id":"` + strings.Repeat("a", 65) + `"}`, false, nil},
 		{"data is not an object", `{"type":"ping","id":"x-2","data":"hi"}`, false, "x-2"},
 		{"unknown type", `{"type":"nope","id":"x-3"}`, false, "x-3"},
-		{"type not built yet", `{"type":"message.send","id":"x-4","data":{"conversationId":"c","body":"hi"}}`, false, "x-4"},
+		{"a server frame sent by the client", `{"type":"message.new","id":"x-4","data":{}}`, false, "x-4"},
 		{"binary frame", `{"type":"ping"}`, true, nil},
 	}
 	for _, tt := range tests {
