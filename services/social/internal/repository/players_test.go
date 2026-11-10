@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -110,5 +111,128 @@ func TestUpsertPlayerConcurrentFirstCalls(t *testing.T) {
 	}
 	if len(distinct) != 1 {
 		t.Fatalf("20 parallel first calls produced %d different players, want 1", len(distinct))
+	}
+}
+
+// search runs SearchPlayers with a large limit and fails the test on an error.
+func search(t *testing.T, r *Repository, gameID, playerID, query string) []PlayerSearchResult {
+	t.Helper()
+	got, err := r.SearchPlayers(context.Background(), gameID, playerID, query, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func searchNames(results []PlayerSearchResult) []string {
+	names := make([]string, 0, len(results))
+	for _, p := range results {
+		names = append(names, p.DisplayName)
+	}
+	return names
+}
+
+func TestSearchPlayersByNameIgnoringCase(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, otherGame := newGameID(t), newGameID(t)
+	defer cleanup(game, otherGame)
+	ctx := context.Background()
+	me, err := r.UpsertPlayer(ctx, game, "me", "Alina") // matches "ali" too, but is the caller
+	if err != nil {
+		t.Fatal(err)
+	}
+	for ext, name := range map[string]string{"1": "Ali", "2": "VALIDATOR", "3": "Rashad", "4": "ali_2", "5": "Dalia"} {
+		if _, err := r.UpsertPlayer(ctx, game, ext, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.UpsertPlayer(ctx, otherGame, "x", "Alibaba"); err != nil { // another game
+		t.Fatal(err)
+	}
+
+	got := searchNames(search(t, r, game, me.ID, "ALI"))
+	want := []string{"Ali", "ali_2", "Dalia", "VALIDATOR"} // by name ignoring case; never the caller or other games
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("search ALI = %v, want %v", got, want)
+	}
+}
+
+func TestSearchPlayersSpecialCharactersAreText(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	me := newPlayer(t, r, game, "me")
+	for _, name := range []string{"100%", "a_b", "ab", "axb"} {
+		newPlayer(t, r, game, name)
+	}
+	if got := searchNames(search(t, r, game, me, "%")); strings.Join(got, ",") != "100%" {
+		t.Errorf(`search "%%" = %v, want [100%%]`, got)
+	}
+	if got := searchNames(search(t, r, game, me, "_")); strings.Join(got, ",") != "a_b" {
+		t.Errorf(`search "_" = %v, want [a_b]`, got)
+	}
+}
+
+func TestSearchPlayersLimitAndOrder(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	me := newPlayer(t, r, game, "me")
+	for i := 0; i < 5; i++ {
+		if _, err := r.UpsertPlayer(ctx, game, "same"+string(rune('a'+i)), "Same"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := r.SearchPlayers(ctx, game, me, "same", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("limit 3 gave %d players", len(got))
+	}
+	if !(got[0].ID < got[1].ID && got[1].ID < got[2].ID) {
+		t.Errorf("equal names are not ordered by ID: %v", got)
+	}
+}
+
+func TestSearchPlayersRelations(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	me := newPlayer(t, r, game, "me")
+	friend, sentTo, from, stranger := newPlayer(t, r, game, "p-friend"), newPlayer(t, r, game, "p-sent"),
+		newPlayer(t, r, game, "p-from"), newPlayer(t, r, game, "p-stranger")
+	makeFriends(t, r, game, me, friend)
+	sent := sendRequest(t, r, game, me, sentTo)
+	received := sendRequest(t, r, game, from, me)
+	sendRequest(t, r, game, stranger, friend) // between two others: does not concern me
+
+	want := map[string]PlayerSearchResult{
+		friend:   {ID: friend, DisplayName: "p-friend", Relation: RelationFriend},
+		sentTo:   {ID: sentTo, DisplayName: "p-sent", Relation: RelationRequestSent, RequestID: sent.ID},
+		from:     {ID: from, DisplayName: "p-from", Relation: RelationRequestReceived, RequestID: received.ID},
+		stranger: {ID: stranger, DisplayName: "p-stranger", Relation: RelationNone},
+	}
+	got := search(t, r, game, me, "p-")
+	if len(got) != len(want) {
+		t.Fatalf("got %d players, want %d: %+v", len(got), len(want), got)
+	}
+	for _, p := range got {
+		if p != want[p.ID] {
+			t.Errorf("%s: got %+v, want %+v", p.DisplayName, p, want[p.ID])
+		}
+	}
+}
+
+func TestSearchPlayersNothingFound(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	me := newPlayer(t, r, game, "me")
+	newPlayer(t, r, game, "someone")
+	got := search(t, r, game, me, "nobody")
+	if got == nil || len(got) != 0 {
+		t.Errorf("got %v, want an empty list (not nil)", got)
 	}
 }

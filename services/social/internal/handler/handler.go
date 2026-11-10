@@ -30,6 +30,7 @@ type Service interface {
 	DeclineFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) error
 	CancelFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) error
 	RemoveFriend(ctx context.Context, gameID, externalID, displayName, playerID string) error
+	SearchPlayers(ctx context.Context, gameID, externalID, displayName string, in service.SearchPlayersInput) ([]service.PlayerSearchResult, error)
 }
 
 // Handler holds the routes of the service.
@@ -69,6 +70,7 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/ready", h.ready},
 		{http.MethodGet, "/api/v1/players/me", h.getMe},
 		{http.MethodGet, "/api/v1/players/me/clan", h.getMyClan},
+		{http.MethodGet, "/api/v1/players", h.searchPlayers},
 		{http.MethodGet, "/api/v1/clans", h.listClans},
 		{http.MethodPost, "/api/v1/clans", h.createClan},
 		{http.MethodPost, "/api/v1/clans/{clanID}/join", h.joinClan},

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/auth"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/service"
@@ -100,5 +101,67 @@ func TestGetMeNeedsAToken(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/players/me", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+// The other fakes must satisfy the Service interface too.
+func (f fakeService) SearchPlayers(context.Context, string, string, string, service.SearchPlayersInput) ([]service.PlayerSearchResult, error) {
+	return []service.PlayerSearchResult{}, f.err
+}
+
+func (s *recordingService) SearchPlayers(context.Context, string, string, string, service.SearchPlayersInput) ([]service.PlayerSearchResult, error) {
+	return []service.PlayerSearchResult{}, s.err
+}
+
+// searchingService remembers what searchPlayers passed on and answers with what the test gave it.
+type searchingService struct {
+	fakeService
+	results                  []service.PlayerSearchResult
+	err                      error
+	gameID, externalID, name string
+	in                       service.SearchPlayersInput
+}
+
+func (s *searchingService) SearchPlayers(_ context.Context, gameID, externalID, name string, in service.SearchPlayersInput) ([]service.PlayerSearchResult, error) {
+	s.gameID, s.externalID, s.name, s.in = gameID, externalID, name, in
+	return s.results, s.err
+}
+
+func TestSearchPlayersHandler(t *testing.T) {
+	svc := &searchingService{results: []service.PlayerSearchResult{
+		{ID: "p-1", DisplayName: "Aysel", Relation: "request_received", RequestID: "req-1"},
+		{ID: "p-2", DisplayName: "Ayten", Relation: "none"},
+	}}
+	// a game in the URL must be ignored: only the token decides the game
+	rec := callFriends(t, svc, http.MethodGet, "/api/v1/players?q=ay&limit=5&gameId=99999999-9999-4999-8999-999999999999", "", false)
+	checkBody(t, rec, http.StatusOK, `{"players":[`+
+		`{"id":"p-1","displayName":"Aysel","relation":"request_received","requestId":"req-1"},`+
+		`{"id":"p-2","displayName":"Ayten","relation":"none"}]}`)
+	if svc.gameID != tokenGame || svc.externalID != "u_42" || svc.name != "Ali" {
+		t.Errorf("service got game=%q player=%q name=%q, want the token's", svc.gameID, svc.externalID, svc.name)
+	}
+	if svc.in != (service.SearchPlayersInput{Query: "ay", Limit: "5"}) {
+		t.Errorf("service got %+v", svc.in)
+	}
+}
+
+func TestSearchPlayersHandlerEmptyIsEmptyArray(t *testing.T) {
+	rec := callFriends(t, &searchingService{results: []service.PlayerSearchResult{}}, http.MethodGet, "/api/v1/players?q=zz", "", false)
+	checkBody(t, rec, http.StatusOK, `{"players":[]}`)
+}
+
+func TestSearchPlayersHandlerPassesErrorsOn(t *testing.T) {
+	svc := &searchingService{err: httpx.NewError(http.StatusBadRequest, "invalid_query", "Search text (q) is required")}
+	rec := callFriends(t, svc, http.MethodGet, "/api/v1/players", "", false)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"invalid_query"`) {
+		t.Fatalf("status %d, body %s; want 400 invalid_query", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSearchPlayersNeedsAToken(t *testing.T) {
+	svc := &searchingService{}
+	rec := callFriends(t, svc, http.MethodGet, "/api/v1/players?q=ay", "", true)
+	if rec.Code != http.StatusUnauthorized || svc.gameID != "" {
+		t.Fatalf("status %d, service reached = %v; want 401 and not reached", rec.Code, svc.gameID != "")
 	}
 }
