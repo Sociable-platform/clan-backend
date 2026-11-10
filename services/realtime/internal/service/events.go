@@ -35,8 +35,10 @@ const (
 	frameConversationAdded   = "conversation.added"
 	frameConversationRemoved = "conversation.removed"
 
-	kindFriendRequest  = "friend_request"
-	kindFriendAccepted = "friend_accepted"
+	kindFriendRequest          = "friend_request"
+	kindFriendRequestCancelled = "friend_request_cancelled"
+	kindFriendRequestDeclined  = "friend_request_declined"
+	kindFriendAccepted         = "friend_accepted"
 )
 
 // Presence says who is connected right now.
@@ -90,32 +92,51 @@ type playerRef struct {
 
 // FriendRequestSent handles friend.request_sent: the receiver gets a friend_request notification.
 // Nothing is stored; a request that arrives twice shows twice (the SDK matches it by requestId).
-func (s *Service) FriendRequestSent(_ context.Context, gameID, requestID string, from Player, toID string) ([]Push, error) {
+// requestID may be empty (an older event had none); the notification then has requestId null.
+func (s *Service) FriendRequestSent(_ context.Context, gameID, requestID string, sender Player, receiverID string) ([]Push, error) {
+	return requestNotice(gameID, kindFriendRequest, requestID, false, sender, receiverID)
+}
+
+// FriendRequestCancelled handles friend.request_cancelled: the sender took the request back, so
+// the receiver's friend_request notification must go. The receiver gets a friend_request_cancelled
+// notification (on every open tab); the SDK removes the friend_request with the same requestId.
+func (s *Service) FriendRequestCancelled(_ context.Context, gameID, requestID string, sender Player, receiverID string) ([]Push, error) {
+	return requestNotice(gameID, kindFriendRequestCancelled, requestID, true, sender, receiverID)
+}
+
+// FriendRequestDeclined handles friend.request_declined: the receiver said no. Only the receiver
+// is told (so their other tabs drop the friend_request); the sender is not.
+func (s *Service) FriendRequestDeclined(_ context.Context, gameID, requestID string, sender Player, receiverID string) ([]Push, error) {
+	return requestNotice(gameID, kindFriendRequestDeclined, requestID, true, sender, receiverID)
+}
+
+// requestNotice builds the one notification about a friend request that goes to its receiver.
+// The payload is the same for all three kinds: the request and the player who sent it.
+func requestNotice(gameID, kind, requestID string, idRequired bool, sender Player, receiverID string) ([]Push, error) {
 	gameID, err := cleanID("game_id", gameID)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(requestID) == "" {
-		return nil, invalid("request_id is missing")
-	}
-	from, err = cleanPlayer("from", from)
+	reqID, err := cleanRequestID(requestID, idRequired)
 	if err != nil {
 		return nil, err
 	}
-	toID, err = cleanID("to_id", toID)
-	if err != nil {
+	if sender, err = cleanPlayer("sender", sender); err != nil {
 		return nil, err
 	}
-	if toID == from.ID {
+	if receiverID, err = cleanID("receiver.id", receiverID); err != nil {
+		return nil, err
+	}
+	if receiverID == sender.ID {
 		return nil, invalid("a player cannot send a friend request to themselves")
 	}
 	return []Push{{
 		GameID:    gameID,
-		PlayerIDs: []string{toID},
+		PlayerIDs: []string{receiverID},
 		Type:      frameNotification,
 		Data: notificationData{
-			Kind:    kindFriendRequest,
-			Payload: map[string]any{"requestId": requestID, "from": playerRef(from)},
+			Kind:    kind,
+			Payload: map[string]any{"requestId": reqID, "from": playerRef(sender)},
 		},
 	}}, nil
 }
@@ -124,8 +145,14 @@ func (s *Service) FriendRequestSent(_ context.Context, gameID, requestID string,
 // it exists), both get conversation.added and a friend_accepted notification naming the other.
 // Running it again for the same pair stores nothing new; the frames are sent again, which the
 // SDK ignores (it knows the conversation ID already).
-func (s *Service) FriendAccepted(ctx context.Context, gameID string, a, b Player) ([]Push, error) {
+// requestID is the request that was accepted; it may be empty (Social does not send it yet). When
+// it is there, the notification carries it so the SDK can drop the matching friend_request.
+func (s *Service) FriendAccepted(ctx context.Context, gameID, requestID string, a, b Player) ([]Push, error) {
 	gameID, err := cleanID("game_id", gameID)
+	if err != nil {
+		return nil, err
+	}
+	reqID, err := cleanRequestID(requestID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +185,7 @@ func (s *Service) FriendAccepted(ctx context.Context, gameID string, a, b Player
 			GameID: gameID, PlayerIDs: []string{pair[0].ID}, Type: frameNotification,
 			Data: notificationData{
 				Kind:    kindFriendAccepted,
-				Payload: map[string]any{"player": playerRef(pair[1])}, // the other player
+				Payload: map[string]any{"player": playerRef(pair[1]), "requestId": reqID}, // the other player
 			},
 		})
 	}
@@ -168,19 +195,27 @@ func (s *Service) FriendAccepted(ctx context.Context, gameID string, a, b Player
 // FriendRemoved handles friend.removed: both players stop being members of their DM
 // conversation and get conversation.removed. The messages stay. When the game has no DM for the
 // pair (the accept was never seen) there is nothing to do.
-func (s *Service) FriendRemoved(ctx context.Context, gameID, aID, bID string) ([]Push, error) {
+// removedBy is the player who removed the other; it must be one of the two. Nobody is told who it
+// was: the conversation just disappears from both lists.
+func (s *Service) FriendRemoved(ctx context.Context, gameID, aID, bID, removedBy string) ([]Push, error) {
 	gameID, err := cleanID("game_id", gameID)
 	if err != nil {
 		return nil, err
 	}
-	if aID, err = cleanID("a_id", aID); err != nil {
+	if aID, err = cleanID("players[0].id", aID); err != nil {
 		return nil, err
 	}
-	if bID, err = cleanID("b_id", bID); err != nil {
+	if bID, err = cleanID("players[1].id", bID); err != nil {
 		return nil, err
 	}
 	if aID == bID {
 		return nil, invalid("a player cannot be a friend of themselves")
+	}
+	if removedBy, err = cleanID("removed_by", removedBy); err != nil {
+		return nil, err
+	}
+	if removedBy != aID && removedBy != bID {
+		return nil, invalid("removed_by is not one of the two players")
 	}
 
 	id, found, err := s.store.RemoveDMMembers(ctx, gameID, dmKey(aID, bID))
@@ -194,6 +229,23 @@ func (s *Service) FriendRemoved(ctx context.Context, gameID, aID, bID string) ([
 		GameID: gameID, PlayerIDs: []string{aID, bID}, Type: frameConversationRemoved,
 		Data: map[string]any{"conversationId": id},
 	}}, nil
+}
+
+// PlayerRenamed handles player.renamed: the new name replaces the one stored with the player's
+// memberships in this game. No frame is sent; the SDK sees the name the next time it loads the
+// conversations. Messages keep the name their sender had when they wrote them.
+func (s *Service) PlayerRenamed(ctx context.Context, gameID string, p Player) ([]Push, error) {
+	gameID, err := cleanID("game_id", gameID)
+	if err != nil {
+		return nil, err
+	}
+	if p, err = cleanPlayer("player", p); err != nil {
+		return nil, err
+	}
+	if err := s.store.RenamePlayer(ctx, gameID, p.ID, p.Name); err != nil {
+		return nil, fmt.Errorf("player renamed: %w", err)
+	}
+	return nil, nil
 }
 
 // dmConversation builds the conversation object for a freshly upserted DM.
@@ -240,6 +292,23 @@ func cleanPlayer(field string, p Player) (Player, error) {
 		return Player{}, invalid("%s.name is missing", field)
 	}
 	return Player{ID: id, Name: name}, nil
+}
+
+// cleanRequestID returns a friend request ID in lower case, or nil when there is none. An ID that
+// is there must be a UUID; a missing one is an error only when required.
+func cleanRequestID(s string, required bool) (*string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		if required {
+			return nil, invalid("request_id is missing")
+		}
+		return nil, nil
+	}
+	id, err := cleanID("request_id", s)
+	if err != nil {
+		return nil, err
+	}
+	return &id, nil
 }
 
 // cleanID checks that s is a UUID and returns it in lower case, the form the database and dmKey use.

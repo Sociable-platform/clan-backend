@@ -113,6 +113,21 @@ func (r *Repository) RemoveDMMembers(ctx context.Context, gameID, dmKey string) 
 	return conversationID, true, nil
 }
 
+// RenamePlayer sets the display name stored with the player's memberships in this game. Other
+// games' memberships of the same player ID are not touched. Running it again changes nothing.
+func (r *Repository) RenamePlayer(ctx context.Context, gameID, playerID, name string) error {
+	if r.pool == nil {
+		return ErrNoDatabase
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE conversation_members SET display_name = $3
+		WHERE game_id = $1 AND player_id = $2 AND display_name <> $3`, gameID, playerID, name)
+	if err != nil {
+		return fmt.Errorf("rename player: %w", err)
+	}
+	return nil
+}
+
 // queryer is what pgx.Tx and the pool have in common for the read helpers.
 type queryer interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
