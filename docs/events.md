@@ -403,7 +403,7 @@ in the "WebSocket frames" part of [`event-messages.md`](event-messages.md); `Tes
   "payload": { "player": { "id": "7d2f9e10-…", "name": "Bob" }, "requestId": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d" } } }
 ```
 
-**`conversation.added`** (to each player; `unread` is theirs, `online` = has an open WebSocket right now):
+**`conversation.added`** (to each player; `unread` is theirs, `online` = has an open WebSocket, or closed the last one less than 10 s ago):
 ```json
 { "event_id": "…", "type": "conversation.added", "occurred_at": "…", "game_id": "…", "data": { "conversation": {
   "id": "128cd7f6-…", "kind": "dm", "clanId": null,
@@ -414,6 +414,13 @@ in the "WebSocket frames" part of [`event-messages.md`](event-messages.md); `Tes
 **`conversation.removed`** (to both players):
 ```json
 { "event_id": "…", "type": "conversation.removed", "occurred_at": "…", "game_id": "…", "data": { "conversationId": "128cd7f6-…" } }
+```
+
+**`presence.update`** (not made by an event: Realtime sends it itself; `occurred_at` is when it was decided). To the connected friends of a player,
+`offline` ten seconds after their last connection closed and only if they did not connect again; and, for `friend.accepted` between two players who
+are both online, `online` to each one about the other, right after `conversation.added`:
+```json
+{ "event_id": "…", "type": "presence.update", "occurred_at": "…", "game_id": "…", "data": { "playerId": "2c33a1b2-…", "status": "offline" } }
 ```
 
 **`config.updated`** (to every open connection of the game; `version` is the version of the config in the cache now). The SDK waits a
@@ -515,7 +522,9 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
-| `online` in `conversation.added` is "has an open WebSocket now" | No grace period, ignores the game's "hide online status" | Presence task (TEAM-149). |
+| Presence ignores the game's "hide online status" | The config v1 schema has no such field, so every game shows online status | Add the field to the schema (Platform and the dashboard), then Realtime reads it from its config cache (TEAM-149 did not build it). |
+| Connecting sends friends no "online" frame | A friend who comes online after you loaded `hello` shows as offline until you reconnect | Send `presence.update` `online` to friends on the first connection (not a pending grace period); the tracker already knows when that is. |
+| Presence grace timers are in the memory of the one Realtime process | A restart during the 10 seconds means the friends are never told the player went offline | Fine while Realtime is one process. |
 | `data` field names are not compiler-checked | A rename on one side drops events silently (only a log line) | The two contract tests in section 2; keep `event-messages.md` and this file in step. |
 
 ## 12. Adding a new event: checklist

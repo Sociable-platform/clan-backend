@@ -34,6 +34,7 @@ const (
 	frameNotification        = "notification"
 	frameConversationAdded   = "conversation.added"
 	frameConversationRemoved = "conversation.removed"
+	framePresenceUpdate      = "presence.update"
 
 	kindFriendRequest          = "friend_request"
 	kindFriendRequestCancelled = "friend_request_cancelled"
@@ -143,6 +144,8 @@ func requestNotice(gameID, kind, requestID string, idRequired bool, sender Playe
 
 // FriendAccepted handles friend.accepted: the pair gets a DM conversation (made once, reused if
 // it exists), both get conversation.added and a friend_accepted notification naming the other.
+// Each one who is online also gets presence.update "online" for the other one, right after
+// conversation.added, so the new friend's dot is right from the start.
 // Running it again for the same pair stores nothing new; the frames are sent again, which the
 // SDK ignores (it knows the conversation ID already).
 // requestID is the request that was accepted; it may be empty (an older event had none). When
@@ -173,12 +176,22 @@ func (s *Service) FriendAccepted(ctx context.Context, gameID, requestID string, 
 	}
 
 	// Each player gets their own conversation object: the unread count differs.
-	pushes := make([]Push, 0, 4)
+	pushes := make([]Push, 0, 6)
 	for _, p := range []Player{a, b} {
 		pushes = append(pushes, Push{
 			GameID: gameID, PlayerIDs: []string{p.ID}, Type: frameConversationAdded,
 			Data: map[string]any{"conversation": s.dmConversation(gameID, dm, a, b, dm.Unread[p.ID])},
 		})
+	}
+	// Whoever is online is told the other one's status, but only if the other one is online: offline
+	// is what the SDK assumes, and the offline frame comes later, from the presence tracker.
+	for _, pair := range [][2]Player{{a, b}, {b, a}} {
+		if s.online(gameID, pair[0].ID) && s.online(gameID, pair[1].ID) {
+			pushes = append(pushes, Push{
+				GameID: gameID, PlayerIDs: []string{pair[0].ID}, Type: framePresenceUpdate,
+				Data: map[string]string{"playerId": pair[1].ID, "status": "online"},
+			})
+		}
 	}
 	for _, pair := range [][2]Player{{a, b}, {b, a}} {
 		pushes = append(pushes, Push{

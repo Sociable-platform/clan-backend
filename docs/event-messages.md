@@ -480,3 +480,24 @@
   }
 }
 ```
+
+## presence.update: a friend went offline (friend left, after the 10 s grace), or became a friend while online (friend.accepted)
+
+Not made by an event from the queue: Realtime sends it itself. It has no event of its own, so `occurred_at` is the moment it was decided.
+Sent to the player's friends who are connected (the people they share a DM with), in the player's game. Sent with `"status": "offline"` ten seconds
+after the player's last connection closed, unless they connected again in that time (a page refresh sends nothing). A player connecting sends nothing:
+friends learn who is online from `hello.onlineFriends`. With `friend.accepted`, when both players are online, each one gets `"status": "online"`
+for the other, right after `conversation.added`.
+
+```json
+{
+  "event_id": "9b1d6c3e-2f40-4a8b-8c57-6e0a3d1f7b92",
+  "type": "presence.update",
+  "occurred_at": "2026-11-10T09:43:10.512Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "playerId": "2c33a1b2-6b1d-4e0f-9a52-0d8c7b6a5f41",
+    "status": "offline"
+  }
+}
+```

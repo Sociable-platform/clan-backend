@@ -55,7 +55,7 @@ func wantKeys(t *testing.T, got map[string]any, want []string, what string) {
 }
 
 // The second part of docs/event-messages.md ("# WebSocket frames") holds the frames of the clan
-// chat rooms and of the live re-skin (config.updated). Each must be well formed and have the fields the frames have in the code (the same
+// chat rooms, of the live re-skin (config.updated) and of presence (presence.update). Each must be well formed and have the fields the frames have in the code (the same
 // Go types the chat and conversation frames are made from), and the clan notifications the fields
 // of the table in openapi/realtime-ws.md. Change the file and this test together.
 func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
@@ -143,6 +143,14 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 			if v, _ := data["version"].(float64); v < 1 || v != float64(int(v)) {
 				t.Errorf("config.updated version = %v, want a whole number from 1", data["version"])
 			}
+		case "presence.update":
+			wantKeys(t, data, []string{"playerId", "status"}, typ+" data")
+			if id, _ := data["playerId"].(string); !uuid.MatchString(id) {
+				t.Errorf("presence.update playerId = %v, want a UUID", data["playerId"])
+			}
+			if data["status"] != "online" && data["status"] != "offline" {
+				t.Errorf("presence.update status = %v, want online or offline", data["status"])
+			}
 		case "message.send":
 			wantKeys(t, data, jsonKeys(t, messageSendData{ConversationID: new(string), Body: new(string)}), typ+" data")
 		case "message.ack":
@@ -155,7 +163,7 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"conversation.added", "conversation.removed", "notification/clan_joined", "notification/clan_kicked",
-		"notification/clan_disbanded", "config.updated", "message.send", "message.ack", "message.new"} {
+		"notification/clan_disbanded", "config.updated", "presence.update", "message.send", "message.ack", "message.new"} {
 		if !seen[want] {
 			t.Errorf("the frame %q is missing from the WebSocket frames part", want)
 		}

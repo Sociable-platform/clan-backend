@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -40,6 +41,9 @@ type WSOptions struct {
 	// Config tells the version of the game's published config for the hello frame. Optional: nil, or a
 	// game whose config is not known, gives configVersion 0.
 	Config ConfigVersions
+	// Presence follows who is online (the grace period, friends). Optional: nil means nobody is told
+	// anything, and hello lists no online friends.
+	Presence Presence
 	// Hub holds the open connections. Pass the one the event consumer sends to; nil makes a new one.
 	Hub *hub.Hub
 	// Shutdown is cancelled when the service stops; every open socket is then closed with 1001.
@@ -67,6 +71,20 @@ func (o WSOptions) withDefaults() WSOptions {
 type ConfigVersions interface {
 	Version(ctx context.Context, gameID string) int
 }
+
+// Presence is what the WebSocket endpoint needs from the presence tracker. presence.Tracker implements it.
+type Presence interface {
+	// Connected is called after the player's connection was added to the hub.
+	Connected(gameID, playerID string)
+	// Disconnected is called after the player's last connection was removed from the hub.
+	Disconnected(gameID, playerID string)
+	// OnlineFriends returns the IDs of the player's friends who are online now.
+	OnlineFriends(ctx context.Context, gameID, playerID string) ([]string, error)
+}
+
+// onlineFriendsTimeout limits how long a new connection waits for its friends to be looked up. After
+// it hello lists nobody and the connection goes on.
+const onlineFriendsTimeout = 2 * time.Second
 
 // configVersionTimeout limits how long a new connection waits for the config version (the first
 // connection of a game, when the cache is empty). After it hello says 0 and the connection goes on.
@@ -150,16 +168,43 @@ func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.hub.Register(conn)
-	defer h.hub.Unregister(conn)
+	defer func() {
+		// The last tab closing starts the grace period; friends hear "offline" only if nobody comes back.
+		if h.hub.Unregister(conn) && h.wsOpts.Presence != nil {
+			h.wsOpts.Presence.Disconnected(player.GameID, sp.ID)
+		}
+	}()
+	if h.wsOpts.Presence != nil {
+		// A player who comes back within the grace period was never offline: nobody is told.
+		h.wsOpts.Presence.Connected(player.GameID, sp.ID)
+	}
 	log.Info("websocket connected")
 
-	// online_friends is a placeholder until presence exists: nobody can be known to be online yet.
-	h.enqueue(conn, serverFrame{Type: frameTypeHello, Data: helloData{PlayerID: sp.ID, ConfigVersion: configVersion, OnlineFriends: []string{}}})
+	h.enqueue(conn, serverFrame{Type: frameTypeHello, Data: helloData{PlayerID: sp.ID, ConfigVersion: configVersion, OnlineFriends: h.onlineFriends(r.Context(), log, player.GameID, sp.ID)}})
 
 	conn.Serve(r.Context(), h.handleFrame)
 
 	code, reason := conn.CloseInfo()
 	log.Info("websocket disconnected", "code", int(code), "reason", reason)
+}
+
+// onlineFriends lists the friends of the player who are online, for hello. It never fails: when the
+// friends cannot be looked up the list is empty (and the SDK learns about them from later frames).
+func (h *Handler) onlineFriends(ctx context.Context, log *slog.Logger, gameID, playerID string) []string {
+	if h.wsOpts.Presence == nil {
+		return []string{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, onlineFriendsTimeout)
+	defer cancel()
+	friends, err := h.wsOpts.Presence.OnlineFriends(ctx, gameID, playerID)
+	if err != nil {
+		log.Warn("cannot list the online friends for hello", "error", err)
+		return []string{}
+	}
+	if friends == nil {
+		return []string{}
+	}
+	return friends
 }
 
 // handleFrame answers one client frame. A frame the server cannot accept gets an error frame
