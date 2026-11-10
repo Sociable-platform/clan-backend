@@ -25,8 +25,8 @@ func (m *memStore) JoinClan(context.Context, string, string, string) (repository
 	return repository.Clan{}, errors.New("memStore has no clans")
 }
 
-func (m *memStore) LeaveClan(context.Context, string, string, string) error {
-	return errors.New("memStore has no clans")
+func (m *memStore) LeaveClan(context.Context, string, string, string) (repository.LeaveResult, error) {
+	return repository.LeaveResult{}, errors.New("memStore has no clans")
 }
 
 func (m *memStore) MyClan(context.Context, string, string) (repository.PlayerClan, error) {
@@ -246,16 +246,20 @@ func newJoiningStore() *joiningStore { return &joiningStore{memStore: newMemStor
 type leavingStore struct {
 	*memStore
 	leaveErr error
+	result   repository.LeaveResult // what a successful leave reports
 	leaves   int
 	game     string
 	clan     string
 	external string
 }
 
-func (l *leavingStore) LeaveClan(_ context.Context, gameID, clanID, externalID string) error {
+func (l *leavingStore) LeaveClan(_ context.Context, gameID, clanID, externalID string) (repository.LeaveResult, error) {
 	l.leaves++
 	l.game, l.clan, l.external = gameID, clanID, externalID
-	return l.leaveErr
+	if l.leaveErr != nil {
+		return repository.LeaveResult{}, l.leaveErr
+	}
+	return l.result, nil
 }
 
 func newLeavingStore() *leavingStore { return &leavingStore{memStore: newMemStore()} }
