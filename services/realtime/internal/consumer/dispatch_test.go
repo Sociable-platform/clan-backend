@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -238,6 +239,8 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// On Windows git may check the file out with CRLF line endings.
+	doc = bytes.ReplaceAll(doc, []byte("\r\n"), []byte("\n"))
 	const (
 		alice  = "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607"
 		bob    = "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6"

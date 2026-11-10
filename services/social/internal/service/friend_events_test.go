@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -45,6 +46,8 @@ func docShapes(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// On Windows git may check the file out with CRLF line endings.
+	doc = bytes.ReplaceAll(doc, []byte("\r\n"), []byte("\n"))
 	out := map[string]string{}
 	for _, b := range regexp.MustCompile("(?s)```json\\n(.*?)\\n```").FindAllSubmatch(doc, -1) {
 		var msg struct {
