@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,18 @@ func (m *memStore) ListFriends(context.Context, string, string) ([]repository.Fr
 	return []repository.Friend{}, nil
 }
 
+func (m *memStore) DeclineFriendRequest(context.Context, string, string, string) error {
+	return errors.New("memStore has no friends")
+}
+
+func (m *memStore) CancelFriendRequest(context.Context, string, string, string) error {
+	return errors.New("memStore has no friends")
+}
+
+func (m *memStore) RemoveFriend(context.Context, string, string, string) (repository.Friendship, error) {
+	return repository.Friendship{}, errors.New("memStore has no friends")
+}
+
 // friendStore remembers what it was asked and answers with what the test gave it.
 // The calling player is always "player-1" (the first player memStore creates).
 type friendStore struct {
@@ -42,6 +55,7 @@ type friendStore struct {
 	accept   repository.Friendship
 	requests []repository.FriendRequest
 	friends  []repository.Friend
+	removed  repository.Friendship
 	err      error
 }
 
@@ -69,6 +83,24 @@ func (f *friendStore) ListFriends(_ context.Context, gameID, playerID string) ([
 	f.called++
 	f.game, f.player = gameID, playerID
 	return f.friends, f.err
+}
+
+func (f *friendStore) DeclineFriendRequest(_ context.Context, gameID, requestID, playerID string) error {
+	f.called++
+	f.game, f.other, f.player = gameID, requestID, playerID
+	return f.err
+}
+
+func (f *friendStore) CancelFriendRequest(_ context.Context, gameID, requestID, playerID string) error {
+	f.called++
+	f.game, f.other, f.player = gameID, requestID, playerID
+	return f.err
+}
+
+func (f *friendStore) RemoveFriend(_ context.Context, gameID, playerID, friendID string) (repository.Friendship, error) {
+	f.called++
+	f.game, f.player, f.other = gameID, playerID, friendID
+	return f.removed, f.err
 }
 
 const (
@@ -119,6 +151,9 @@ func TestSendFriendRequestCreatesARequestAndPublishesIt(t *testing.T) {
 	evs := rec.Events()
 	if len(evs) != 1 || evs[0].Type != EventFriendRequestSent || evs[0].GameID != gameA {
 		t.Fatalf("events = %+v, want one %s", evs, EventFriendRequestSent)
+	}
+	if evs[0].Data["request_id"] != "req-1" {
+		t.Errorf("event request_id = %v, want req-1", evs[0].Data["request_id"])
 	}
 	sender, _ := evs[0].Data["sender"].(map[string]any)
 	receiver, _ := evs[0].Data["receiver"].(map[string]any)
@@ -312,5 +347,124 @@ func TestListFriends(t *testing.T) {
 	}
 	if store.player != me || len(got) != 1 || got[0] != (Friend{FriendPlayer{otherID, "Aysel"}, when}) {
 		t.Errorf("friends = %+v (store player %q)", got, store.player)
+	}
+}
+
+func TestDeclineAndCancelFriendRequest(t *testing.T) {
+	type call func(*Service) error
+	const reqID = "AAAAAAAA-0000-4000-8000-000000000001"
+	cases := []struct {
+		name string
+		fn   call
+	}{
+		{"decline", func(s *Service) error {
+			return s.DeclineFriendRequest(context.Background(), gameA, "u_1", "Ali", reqID)
+		}},
+		{"cancel", func(s *Service) error {
+			return s.CancelFriendRequest(context.Background(), gameA, "u_1", "Ali", reqID)
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFriendStore()
+			svc, rec := friendService(store)
+			if err := c.fn(svc); err != nil {
+				t.Fatal(err)
+			}
+			if store.game != gameA || store.player != me || store.other != "aaaaaaaa-0000-4000-8000-000000000001" {
+				t.Errorf("store got game=%q player=%q request=%q", store.game, store.player, store.other)
+			}
+			if len(rec.Events()) != 0 {
+				t.Errorf("published %+v, want nothing", rec.Events())
+			}
+		})
+	}
+}
+
+func TestDeclineAndCancelErrors(t *testing.T) {
+	decline := func(s *Service, id string) error {
+		return s.DeclineFriendRequest(context.Background(), gameA, "u_1", "Ali", id)
+	}
+	cancel := func(s *Service, id string) error {
+		return s.CancelFriendRequest(context.Background(), gameA, "u_1", "Ali", id)
+	}
+	cases := []struct {
+		name     string
+		fn       func(*Service, string) error
+		id       string
+		storeErr error
+		status   int
+		code     string
+	}{
+		{"decline: not a UUID", decline, "req-1", nil, http.StatusNotFound, "friend_request_not_found"},
+		{"decline: unknown", decline, otherID, repository.ErrFriendRequestNotFound, http.StatusNotFound, "friend_request_not_found"},
+		{"decline: the sender", decline, otherID, repository.ErrNotFriendRequestReceiver, http.StatusForbidden, "not_request_receiver"},
+		{"cancel: not a UUID", cancel, "req-1", nil, http.StatusNotFound, "friend_request_not_found"},
+		{"cancel: unknown", cancel, otherID, repository.ErrFriendRequestNotFound, http.StatusNotFound, "friend_request_not_found"},
+		{"cancel: the receiver", cancel, otherID, repository.ErrNotFriendRequestSender, http.StatusForbidden, "not_request_sender"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFriendStore()
+			store.err = c.storeErr
+			svc, _ := friendService(store)
+			wantHTTPError(t, c.fn(svc, c.id), c.status, c.code)
+		})
+	}
+}
+
+func TestRemoveFriendPublishesRemoved(t *testing.T) {
+	store := newFriendStore()
+	store.removed = repository.Friendship{
+		CreatedAt: when,
+		PlayerA:   repository.FriendPlayer{ID: otherID, DisplayName: "Aysel"},
+		PlayerB:   repository.FriendPlayer{ID: me, DisplayName: "Ali"},
+	}
+	svc, rec := friendService(store)
+
+	if err := svc.RemoveFriend(context.Background(), gameA, "u_1", "Ali", strings.ToUpper(otherID)); err != nil {
+		t.Fatal(err)
+	}
+	if store.game != gameA || store.player != me || store.other != otherID {
+		t.Errorf("store got game=%q player=%q friend=%q", store.game, store.player, store.other)
+	}
+	evs := rec.Events()
+	if len(evs) != 1 || evs[0].Type != EventFriendRemoved || evs[0].GameID != gameA {
+		t.Fatalf("events = %+v, want one %s", evs, EventFriendRemoved)
+	}
+	players, _ := evs[0].Data["players"].([]map[string]any)
+	if len(players) != 2 || players[0]["id"] != otherID || players[0]["name"] != "Aysel" ||
+		players[1]["id"] != me || players[1]["name"] != "Ali" {
+		t.Errorf("event players = %+v", evs[0].Data["players"])
+	}
+	if evs[0].Data["removed_by"] != me {
+		t.Errorf("removed_by = %v, want %s", evs[0].Data["removed_by"], me)
+	}
+}
+
+func TestRemoveFriendErrors(t *testing.T) {
+	cases := []struct {
+		name     string
+		playerID string
+		storeErr error
+		reaches  bool
+	}{
+		{"not a UUID", "u_42", nil, false},
+		{"not friends", otherID, repository.ErrNotFriends, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFriendStore()
+			store.err = c.storeErr
+			svc, rec := friendService(store)
+			err := svc.RemoveFriend(context.Background(), gameA, "u_1", "Ali", c.playerID)
+			wantHTTPError(t, err, http.StatusNotFound, "not_friends")
+			if (store.called > 0) != c.reaches {
+				t.Errorf("store called %d times, reaches = %v", store.called, c.reaches)
+			}
+			if len(rec.Events()) != 0 {
+				t.Errorf("published %+v after a failure, want nothing", rec.Events())
+			}
+		})
 	}
 }

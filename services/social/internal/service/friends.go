@@ -17,6 +17,7 @@ import (
 const (
 	EventFriendRequestSent = "friend.request_sent"
 	EventFriendAccepted    = "friend.accepted"
+	EventFriendRemoved     = "friend.removed"
 )
 
 // FriendPlayer is another player as the friends feature shows them.
@@ -102,8 +103,9 @@ func (s *Service) SendFriendRequest(ctx context.Context, gameID, externalID, dis
 	}
 	req := row.Request
 	_ = s.events.Publish(ctx, events.New(EventFriendRequestSent, gameID, map[string]any{
-		"sender":   playerData(req.Sender),
-		"receiver": playerData(req.Receiver),
+		"request_id": req.ID, // lets the notification accept this very request
+		"sender":     playerData(req.Sender),
+		"receiver":   playerData(req.Receiver),
 	}))
 	out := FriendRequest{ID: req.ID, Player: FriendPlayer(req.Receiver), CreatedAt: req.CreatedAt}
 	return SendFriendRequestResult{Request: &out}, nil
@@ -206,4 +208,91 @@ func errPlayerNotFound() error {
 
 func errFriendRequestNotFound() error {
 	return httpx.NewError(http.StatusNotFound, "friend_request_not_found", "Friend request not found")
+}
+
+// DeclineFriendRequest deletes request requestID, which must have been sent to the calling
+// player. Nothing is published: the sender is not told.
+//
+// Errors the client can act on:
+//   - 404 friend_request_not_found: no such pending request for this player
+//   - 403 not_request_receiver: the caller sent this request (they can cancel it instead)
+func (s *Service) DeclineFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) error {
+	if !uuidPattern.MatchString(requestID) {
+		return errFriendRequestNotFound()
+	}
+	me, err := s.EnsurePlayer(ctx, gameID, externalID, displayName)
+	if err != nil {
+		return fmt.Errorf("decline friend request: %w", err)
+	}
+	err = s.store.DeclineFriendRequest(ctx, gameID, strings.ToLower(requestID), me.ID)
+	switch {
+	case errors.Is(err, repository.ErrFriendRequestNotFound):
+		return errFriendRequestNotFound()
+	case errors.Is(err, repository.ErrNotFriendRequestReceiver):
+		return httpx.NewError(http.StatusForbidden, "not_request_receiver",
+			"Only the player who received this request can decline it")
+	case err != nil:
+		return fmt.Errorf("decline friend request: %w", err)
+	}
+	return nil
+}
+
+// CancelFriendRequest deletes request requestID, which the calling player must have sent.
+// Nothing is published.
+//
+// Errors the client can act on:
+//   - 404 friend_request_not_found: no such pending request for this player
+//   - 403 not_request_sender: the caller received this request (they can decline it instead)
+func (s *Service) CancelFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) error {
+	if !uuidPattern.MatchString(requestID) {
+		return errFriendRequestNotFound()
+	}
+	me, err := s.EnsurePlayer(ctx, gameID, externalID, displayName)
+	if err != nil {
+		return fmt.Errorf("cancel friend request: %w", err)
+	}
+	err = s.store.CancelFriendRequest(ctx, gameID, strings.ToLower(requestID), me.ID)
+	switch {
+	case errors.Is(err, repository.ErrFriendRequestNotFound):
+		return errFriendRequestNotFound()
+	case errors.Is(err, repository.ErrNotFriendRequestSender):
+		return httpx.NewError(http.StatusForbidden, "not_request_sender",
+			"Only the player who sent this request can cancel it")
+	case err != nil:
+		return fmt.Errorf("cancel friend request: %w", err)
+	}
+	return nil
+}
+
+// RemoveFriend ends the calling player's friendship with playerID, for both of them. Afterwards
+// either may send a new request. It publishes friend.removed after the change is saved.
+//
+// Errors the client can act on:
+//   - 404 not_friends: the two are not friends (also for an unknown player, a player of another
+//     game, or an ID that is not a UUID)
+func (s *Service) RemoveFriend(ctx context.Context, gameID, externalID, displayName, playerID string) error {
+	if !uuidPattern.MatchString(playerID) {
+		return errNotFriends()
+	}
+	me, err := s.EnsurePlayer(ctx, gameID, externalID, displayName)
+	if err != nil {
+		return fmt.Errorf("remove friend: %w", err)
+	}
+	f, err := s.store.RemoveFriend(ctx, gameID, me.ID, strings.ToLower(playerID))
+	switch {
+	case errors.Is(err, repository.ErrNotFriends):
+		return errNotFriends()
+	case err != nil:
+		return fmt.Errorf("remove friend: %w", err)
+	}
+
+	_ = s.events.Publish(ctx, events.New(EventFriendRemoved, gameID, map[string]any{
+		"players":    []map[string]any{playerData(f.PlayerA), playerData(f.PlayerB)},
+		"removed_by": me.ID,
+	}))
+	return nil
+}
+
+func errNotFriends() error {
+	return httpx.NewError(http.StatusNotFound, "not_friends", "You are not friends with this player")
 }
