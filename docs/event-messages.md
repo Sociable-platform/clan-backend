@@ -1,0 +1,277 @@
+# Event messages
+
+## friend.request_sent
+
+```json
+{
+  "event_id": "6bfe80b7-7e37-4eba-80bf-85c0bcace6ee",
+  "type": "friend.request_sent",
+  "occurred_at": "2026-11-10T09:41:07.512Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "request_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d",
+    "sender": {
+      "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+      "name": "Alice"
+    },
+    "receiver": {
+      "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "name": "Bob"
+    }
+  }
+}
+```
+
+## friend.request_cancelled
+
+```json
+{
+  "event_id": "24ea28ac-2875-4bb7-a1d2-2b24393065ef",
+  "type": "friend.request_cancelled",
+  "occurred_at": "2026-11-10T09:41:14.549Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "request_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d",
+    "sender": {
+      "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+      "name": "Alice"
+    },
+    "receiver": {
+      "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "name": "Bob"
+    }
+  }
+}
+```
+
+## friend.request_declined
+
+```json
+{
+  "event_id": "4a30586e-8521-44df-9817-b2204fa560fc",
+  "type": "friend.request_declined",
+  "occurred_at": "2026-11-10T09:41:21.586Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "request_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d",
+    "sender": {
+      "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+      "name": "Alice"
+    },
+    "receiver": {
+      "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "name": "Bob"
+    }
+  }
+}
+```
+
+## friend.accepted
+
+```json
+{
+  "event_id": "6847effe-a146-43cf-a37e-eff6f6fd7e9f",
+  "type": "friend.accepted",
+  "occurred_at": "2026-11-10T09:41:28.623Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "request_id": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d",
+    "players": [
+      {
+        "id": "2c33a1b2-c3d4-4e5f-8061-728394a5b6c7",
+        "name": "Emma"
+      },
+      {
+        "id": "9f4bc0d1-e2f3-4a45-8b56-67788990aabb",
+        "name": "Oliver"
+      }
+    ]
+  }
+}
+```
+
+## friend.removed
+
+```json
+{
+  "event_id": "18d90869-5856-48b9-844a-ab2d3b5ab5f9",
+  "type": "friend.removed",
+  "occurred_at": "2026-11-10T09:41:35.660Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "players": [
+      {
+        "id": "2c33a1b2-c3d4-4e5f-8061-728394a5b6c7",
+        "name": "Emma"
+      },
+      {
+        "id": "9f4bc0d1-e2f3-4a45-8b56-67788990aabb",
+        "name": "Oliver"
+      }
+    ],
+    "removed_by": "2c33a1b2-c3d4-4e5f-8061-728394a5b6c7"
+  }
+}
+```
+
+## player.renamed
+
+```json
+{
+  "event_id": "dd8baa14-ed04-4ddb-9f45-d19bde912e9a",
+  "type": "player.renamed",
+  "occurred_at": "2026-11-10T09:41:42.697Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "player": {
+      "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+      "name": "Alice Brown"
+    }
+  }
+}
+```
+
+## clan.created
+
+```json
+{
+  "event_id": "9f98fcb4-27e8-4ad0-83d5-8ac7a51b4f77",
+  "type": "clan.created",
+  "occurred_at": "2026-11-10T09:41:49.734Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "clan": {
+      "id": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "name": "Wolves"
+    },
+    "player": {
+      "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+      "name": "Alice"
+    }
+  }
+}
+```
+
+## clan.member_joined
+
+```json
+{
+  "event_id": "24f535d8-c95d-47a9-8c56-7a8b1d8dd48a",
+  "type": "clan.member_joined",
+  "occurred_at": "2026-11-10T09:41:56.771Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "clan": {
+      "id": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "name": "Wolves"
+    },
+    "player": {
+      "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "name": "Bob"
+    }
+  }
+}
+```
+
+## clan.member_left
+
+```json
+{
+  "event_id": "0aae941d-22d5-44f1-917d-d34af2dc3358",
+  "type": "clan.member_left",
+  "occurred_at": "2026-11-10T09:42:03.808Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "clan": {
+      "id": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "name": "Wolves"
+    },
+    "player": {
+      "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "name": "Bob"
+    },
+    "reason": "left",
+    "kicked_by": null,
+    "new_owner": null
+  }
+}
+```
+
+## clan.renamed
+
+```json
+{
+  "event_id": "f0b1f182-3473-44f7-8371-95d61a34faee",
+  "type": "clan.renamed",
+  "occurred_at": "2026-11-10T09:42:17.882Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "clan": {
+      "id": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "name": "Grey Wolves"
+    },
+    "previous_name": "Wolves"
+  }
+}
+```
+
+## clan.disbanded
+
+```json
+{
+  "event_id": "ba5244eb-80e7-402a-96f1-5f4e7ca21d4e",
+  "type": "clan.disbanded",
+  "occurred_at": "2026-11-10T09:42:24.919Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "clan": {
+      "id": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "name": "Wolves"
+    }
+  }
+}
+```
+
+## player.blocked
+
+```json
+{
+  "event_id": "2a1bf632-ba58-45a8-a64e-1bf225471176",
+  "type": "player.blocked",
+  "occurred_at": "2026-11-10T09:42:31.956Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "blocker_id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+    "blocked_id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6"
+  }
+}
+```
+
+## player.unblocked
+
+```json
+{
+  "event_id": "e966fb0e-3d5d-430c-9072-b404c1fdf6ba",
+  "type": "player.unblocked",
+  "occurred_at": "2026-11-10T09:42:38.993Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "blocker_id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+    "blocked_id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6"
+  }
+}
+```
+
+## config.published
+
+```json
+{
+  "event_id": "32b58d15-703e-46aa-a5ef-1d84a31b6a48",
+  "type": "config.published",
+  "occurred_at": "2026-11-10T09:42:45.030Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "version": 5
+  }
+}
+```

@@ -18,7 +18,7 @@ clan-backend/
 ├── deploy/traefik/            # gateway: static config and the /realtime route
 ├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
-├── docs/                      # events.md: how services publish and consume events
+├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
@@ -231,26 +231,38 @@ key is its `type`. Realtime decodes the same struct, so a renamed field breaks b
 
 Messages are persistent (`delivery_mode` 2) with `content_type` `application/json`.
 
+Every event with its `data` (the full messages, as they travel on the queue, are in [`docs/event-messages.md`](docs/event-messages.md)):
+
 | Event (routing key) | Published by | `data` |
 |---|---|---|
 | `friend.request_sent` | social, `POST /api/v1/friends/requests` (201) | `{ "request_id", "sender": { "id", "name" }, "receiver": { "id", "name" } }`; `request_id` is the request's own ID, so a notification can accept it |
-| `friend.accepted` | social, accept, or a request sent back (200) | `{ "players": [ { "id", "name" }, { "id", "name" } ] }`, the smaller ID first |
+| `friend.request_cancelled` | social, the sender takes the request back (**not published yet**) | `{ "request_id", "sender": { "id", "name" }, "receiver": { "id", "name" } }` |
+| `friend.request_declined` | social, the receiver declines (**not published yet**) | the same as `friend.request_cancelled` |
+| `friend.accepted` | social, accept, or a request sent back (200) | `{ "request_id", "players": [ { "id", "name" }, { "id", "name" } ] }`, the smaller ID first (Social does not send `request_id` yet) |
 | `friend.removed` | social, `DELETE /api/v1/friends/{playerID}` (204) | `{ "players": [ { "id", "name" }, { "id", "name" } ], "removed_by" }`, the smaller ID first; `removed_by` is the ID of the player who removed the other |
+| `player.renamed` | social (**not published yet**) | `{ "player": { "id", "name" } }` |
+| `clan.created`, `clan.member_joined`, `clan.member_left`, `clan.renamed`, `clan.disbanded` | social (clan task) | see [`docs/event-messages.md`](docs/event-messages.md) |
+| `player.blocked`, `player.unblocked` | social (block task) | `{ "blocker_id", "blocked_id" }` |
+| `config.published` | platform (not wired yet) | `{ "version" }` |
 
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
-`name` the display name at the time of the event. Clan events are added by the task that publishes them.
+`name` the display name at the time of the event.
 
-**Realtime reads three of them** (the others that reach `realtime.events` are acknowledged and ignored until their tasks exist):
+**Realtime reads six of them** (the others that reach `realtime.events` are acknowledged and ignored until their tasks exist):
 
 | Event | Realtime does |
 |---|---|
-| `friend.request_sent` | sends a `friend_request` notification to the `receiver` (nothing is stored). `request_id` is optional in the event, because Social does not send it yet; without it the notification has `requestId: null`, and the SDK cannot tell which request to accept from the notification alone. Social should add `"request_id"` to this event. |
-| `friend.accepted` | creates the DM conversation of the two `players` and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both. Exactly two players are required. |
-| `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both |
+| `friend.request_sent` | sends a `friend_request` notification to the `receiver` (nothing is stored). `request_id` goes into the notification as `requestId`, so the SDK can accept that very request. It is optional here only so that an older event without it is still shown (`requestId: null`). |
+| `friend.request_cancelled` | sends a `friend_request_cancelled` notification to the `receiver` (all open tabs) so the SDK removes the `friend_request` with the same `requestId`. `request_id` is required. The sender is not told. |
+| `friend.request_declined` | sends a `friend_request_declined` notification to the `receiver` only (their other tabs drop the `friend_request`). `request_id` is required. The sender is **not** told. |
+| `friend.accepted` | creates the DM conversation of the two `players` and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both. Exactly two players are required. The notification carries `requestId` (`null` while Social does not send `request_id`). |
+| `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both, with no notification. Exactly two `players` are required and `removed_by` must be one of them. |
+| `player.renamed` | stores the new name with the player's memberships in that game. No frame is sent; messages keep the name their sender had when writing them. |
 
 A field Realtime needs that is missing or malformed makes it drop that event (logged as `dropping unusable event`).
 So **Social and Realtime must keep these field names in step**; `TestDispatchReadsEventsAsSocialPublishesThem` in
-`services/realtime/internal/consumer` checks the shape Social publishes today.
+`services/realtime/internal/consumer` checks the shape Social publishes today, and
+`TestDispatchReadsEveryMessageInTheEventMessagesFile` feeds every message of `docs/event-messages.md` to the dispatcher.
 
 **How realtime reads the queue**
 

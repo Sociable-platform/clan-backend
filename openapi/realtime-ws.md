@@ -5,7 +5,7 @@ WebSocket. The two REST reads (conversation list and history) are in [`realtime.
 
 - **Status:** contract for the SDK. Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
   the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1009`, `4001` and `4002`,
-  and the friend frames: `conversation.added`, `conversation.removed` and the `friend_request` and `friend_accepted` notifications.
+  and the friend frames: `conversation.added`, `conversation.removed` and the `friend_request`, `friend_request_cancelled`, `friend_request_declined` and `friend_accepted` notifications.
   In `hello`, `configVersion` is always `0` ("not known yet") and `onlineFriends` is always `[]` until the config cache and friendships exist.
   Not built yet: `message.send`, `conversation.read` (both answer `error bad_frame` "not available yet"), presence, the clan notifications,
   clan conversations, the `config.updated` frame, the 5-connections-per-player limit, and `1008`/`4003`.
@@ -187,7 +187,9 @@ Something happened that the SDK should show as a notice. `kind` says what; `payl
 | `kind` | Sent to | `payload` |
 |---|---|---|
 | `friend_request` | the player who received the request | `{ "requestId": "...", "from": { "id": "...", "name": "..." } }` (`requestId` is `null` until Social puts the request ID in its event) |
-| `friend_accepted` | both players | `{ "player": { "id": "...", "name": "..." } }` (the other player) |
+| `friend_request_cancelled` | the player who received the request, on every open tab | `{ "requestId": "...", "from": { "id": "...", "name": "..." } }`: the sender took the request back. Remove the `friend_request` with this `requestId`. |
+| `friend_request_declined` | the player who received the request, on every open tab | `{ "requestId": "...", "from": { "id": "...", "name": "..." } }`: this player declined (maybe in another tab). Remove the `friend_request` with this `requestId`. The sender is **not** told. |
+| `friend_accepted` | both players | `{ "player": { "id": "...", "name": "..." }, "requestId": "..." }` (`player` is the other player; `requestId` is the request that was accepted, `null` until Social puts it in its event; remove the matching `friend_request`) |
 | `clan_joined` | the clan's members | `{ "clanId": "...", "player": { "id": "...", "name": "..." } }` |
 | `clan_kicked` | the player who was removed | `{ "clanId": "..." }` |
 | `clan_disbanded` | the clan's members | `{ "clanId": "..." }` |

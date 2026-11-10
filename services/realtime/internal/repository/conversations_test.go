@@ -286,6 +286,72 @@ func TestUnreadStopsAt99(t *testing.T) {
 	}
 }
 
+func (r *Repository) memberName(t *testing.T, gameID, conversationID, playerID string) string {
+	t.Helper()
+	var name string
+	err := r.pool.QueryRow(context.Background(),
+		"select display_name from conversation_members where game_id = $1 and conversation_id = $2 and player_id = $3",
+		gameID, conversationID, playerID).Scan(&name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name
+}
+
+func TestRenamePlayerChangesOnlyThatPlayerInThatGame(t *testing.T) {
+	r, cleanup := testRepo(t)
+	gameA, gameB := newUUID(t), newUUID(t)
+	defer cleanup(gameA, gameB)
+	ctx := context.Background()
+
+	// A has two conversations in game A (with B and with C); the same A is also in game B.
+	memberC := Member{PlayerID: newUUID(t), Name: "Carol"}
+	keyC := memberA.PlayerID + ":" + memberC.PlayerID
+	withB, err := r.UpsertDM(ctx, gameA, testKey, memberA, memberB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withC, err := r.UpsertDM(ctx, gameA, keyC, memberA, memberC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherGame, err := r.UpsertDM(ctx, gameB, testKey, memberA, memberB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.addMessage(t, gameA, withB.ConversationID, "00000000-0000-7000-8000-000000000001", memberA.PlayerID, "Ali", "hi")
+
+	for i := 0; i < 2; i++ { // the second run is a redelivered player.renamed
+		if err := r.RenamePlayer(ctx, gameA, memberA.PlayerID, "Alice Brown"); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+
+	for _, c := range []string{withB.ConversationID, withC.ConversationID} {
+		if got := r.memberName(t, gameA, c, memberA.PlayerID); got != "Alice Brown" {
+			t.Errorf("name in game A conversation %s = %q, want the new name", c, got)
+		}
+	}
+	if got := r.memberName(t, gameA, withB.ConversationID, memberB.PlayerID); got != "Rashad" {
+		t.Errorf("the other member's name = %q, want it unchanged", got)
+	}
+	if got := r.memberName(t, gameB, otherGame.ConversationID, memberA.PlayerID); got != "Ali" {
+		t.Errorf("name in game B = %q, want it unchanged: a rename in game A reached game B", got)
+	}
+	var sender string
+	if err := r.pool.QueryRow(ctx, "select sender_name from messages where conversation_id = $1", withB.ConversationID).Scan(&sender); err != nil || sender != "Ali" {
+		t.Errorf("sender_name = %q, %v, want the name the sender had when writing", sender, err)
+	}
+
+	// An unknown player or game is not an error: there is just nothing to change.
+	if err := r.RenamePlayer(ctx, newUUID(t), memberA.PlayerID, "x"); err != nil {
+		t.Errorf("unknown game: %v", err)
+	}
+	if err := r.RenamePlayer(ctx, gameA, newUUID(t), "x"); err != nil {
+		t.Errorf("unknown player: %v", err)
+	}
+}
+
 func TestConversationsWithoutDatabase(t *testing.T) {
 	r := New(nil)
 	if _, err := r.UpsertDM(context.Background(), "g", testKey, memberA, memberB); err == nil {
@@ -293,5 +359,8 @@ func TestConversationsWithoutDatabase(t *testing.T) {
 	}
 	if _, _, err := r.RemoveDMMembers(context.Background(), "g", testKey); err == nil {
 		t.Error("RemoveDMMembers without a database succeeded")
+	}
+	if err := r.RenamePlayer(context.Background(), "g", memberA.PlayerID, "x"); err == nil {
+		t.Error("RenamePlayer without a database succeeded")
 	}
 }

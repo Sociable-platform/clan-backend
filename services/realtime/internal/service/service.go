@@ -17,6 +17,8 @@ type Store interface {
 	UpsertDM(ctx context.Context, gameID, dmKey string, a, b repository.Member) (repository.DM, error)
 	// RemoveDMMembers deletes both memberships; safe to repeat. found is false without such a conversation.
 	RemoveDMMembers(ctx context.Context, gameID, dmKey string) (conversationID string, found bool, err error)
+	// RenamePlayer stores a new display name for the player's memberships in the game; safe to repeat.
+	RenamePlayer(ctx context.Context, gameID, playerID, name string) error
 }
 
 // Service is the realtime service's logic.

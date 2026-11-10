@@ -11,19 +11,25 @@ import (
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 )
 
-// Event types this service handles. Every other type that reaches the queue (clan.*, player.*,
-// config.published are added by later tasks) is acknowledged and ignored.
+// Event types this service handles (docs/events.md). Every other type that reaches the queue
+// (clan.*, player.blocked, config.published are added by later tasks) is acknowledged and ignored.
 const (
-	typeFriendRequestSent = "friend.request_sent"
-	typeFriendAccepted    = "friend.accepted"
-	typeFriendRemoved     = "friend.removed"
+	typeFriendRequestSent      = "friend.request_sent"
+	typeFriendRequestCancelled = "friend.request_cancelled"
+	typeFriendRequestDeclined  = "friend.request_declined"
+	typeFriendAccepted         = "friend.accepted"
+	typeFriendRemoved          = "friend.removed"
+	typePlayerRenamed          = "player.renamed"
 )
 
 // Events is what the dispatcher needs from the service layer.
 type Events interface {
-	FriendRequestSent(ctx context.Context, gameID, requestID string, from service.Player, toID string) ([]service.Push, error)
-	FriendAccepted(ctx context.Context, gameID string, a, b service.Player) ([]service.Push, error)
-	FriendRemoved(ctx context.Context, gameID, aID, bID string) ([]service.Push, error)
+	FriendRequestSent(ctx context.Context, gameID, requestID string, sender service.Player, receiverID string) ([]service.Push, error)
+	FriendRequestCancelled(ctx context.Context, gameID, requestID string, sender service.Player, receiverID string) ([]service.Push, error)
+	FriendRequestDeclined(ctx context.Context, gameID, requestID string, sender service.Player, receiverID string) ([]service.Push, error)
+	FriendAccepted(ctx context.Context, gameID, requestID string, a, b service.Player) ([]service.Push, error)
+	FriendRemoved(ctx context.Context, gameID, aID, bID, removedBy string) ([]service.Push, error)
+	PlayerRenamed(ctx context.Context, gameID string, p service.Player) ([]service.Push, error)
 }
 
 // Sender writes an encoded frame to the open WebSockets of some players of a game.
@@ -51,25 +57,31 @@ type playerData struct {
 	Name string `json:"name"`
 }
 
-// friendRequestSentData is the data of friend.request_sent as Social publishes it. request_id is
-// optional: Social does not send it yet, and without it the notification just has no requestId.
-type friendRequestSentData struct {
+// friendRequestData is the data of friend.request_sent, friend.request_cancelled and
+// friend.request_declined. request_id is optional in friend.request_sent only, so that an older
+// event without it still works (the notification then has no requestId).
+type friendRequestData struct {
 	RequestID string     `json:"request_id"`
 	Sender    playerData `json:"sender"`
 	Receiver  playerData `json:"receiver"`
 }
 
-// friendAcceptedData is the data of friend.accepted as Social publishes it: the two new friends.
+// friendAcceptedData is the data of friend.accepted: the two new friends, and the request that was
+// accepted. Social does not send request_id here yet.
 type friendAcceptedData struct {
-	Players []playerData `json:"players"`
+	RequestID string       `json:"request_id"`
+	Players   []playerData `json:"players"`
 }
 
-// friendRemovedData is the data of friend.removed. Social does not publish this event yet; the
-// field names here are the ones realtime expects when it does (see README "Event format").
-
+// friendRemovedData is the data of friend.removed: the two former friends and who ended it.
 type friendRemovedData struct {
-	AID string `json:"a_id"`
-	BID string `json:"b_id"`
+	Players   []playerData `json:"players"`
+	RemovedBy string       `json:"removed_by"`
+}
+
+// playerRenamedData is the data of player.renamed.
+type playerRenamedData struct {
+	Player playerData `json:"player"`
 }
 
 // Handle handles one message body. It returns an error wrapping ErrDrop when the event is unusable,
@@ -84,10 +96,10 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 	var pushes []service.Push
 	var err error
 	switch env.Type {
-	case typeFriendRequestSent:
-		var data friendRequestSentData
+	case typeFriendRequestSent, typeFriendRequestCancelled, typeFriendRequestDeclined:
+		var data friendRequestData
 		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.FriendRequestSent(ctx, env.GameID, data.RequestID, player(data.Sender), data.Receiver.ID)
+			pushes, err = d.friendRequest(ctx, env.Type, env.GameID, data)
 		}
 	case typeFriendAccepted:
 		var data friendAcceptedData
@@ -95,12 +107,20 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 			err = fmt.Errorf("%w: friend.accepted needs exactly two players, got %d", ErrDrop, len(data.Players))
 		}
 		if err == nil {
-			pushes, err = d.events.FriendAccepted(ctx, env.GameID, player(data.Players[0]), player(data.Players[1]))
+			pushes, err = d.events.FriendAccepted(ctx, env.GameID, data.RequestID, player(data.Players[0]), player(data.Players[1]))
 		}
 	case typeFriendRemoved:
 		var data friendRemovedData
+		if err = decode(env.Data, &data); err == nil && len(data.Players) != 2 {
+			err = fmt.Errorf("%w: friend.removed needs exactly two players, got %d", ErrDrop, len(data.Players))
+		}
+		if err == nil {
+			pushes, err = d.events.FriendRemoved(ctx, env.GameID, data.Players[0].ID, data.Players[1].ID, data.RemovedBy)
+		}
+	case typePlayerRenamed:
+		var data playerRenamedData
 		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.FriendRemoved(ctx, env.GameID, data.AID, data.BID)
+			pushes, err = d.events.PlayerRenamed(ctx, env.GameID, player(data.Player))
 		}
 	default:
 		d.log.Debug("ignoring event nobody handles yet", "event_id", env.ID, "type", env.Type)
@@ -128,6 +148,19 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 	}
 	d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "frames", len(pushes))
 	return nil
+}
+
+// friendRequest calls the service for the three events that have the data of a friend request.
+func (d *Dispatcher) friendRequest(ctx context.Context, typ, gameID string, data friendRequestData) ([]service.Push, error) {
+	sender := player(data.Sender)
+	switch typ {
+	case typeFriendRequestCancelled:
+		return d.events.FriendRequestCancelled(ctx, gameID, data.RequestID, sender, data.Receiver.ID)
+	case typeFriendRequestDeclined:
+		return d.events.FriendRequestDeclined(ctx, gameID, data.RequestID, sender, data.Receiver.ID)
+	default:
+		return d.events.FriendRequestSent(ctx, gameID, data.RequestID, sender, data.Receiver.ID)
+	}
 }
 
 // decode copies an event's data into the struct of its type. Missing data, or data of the
