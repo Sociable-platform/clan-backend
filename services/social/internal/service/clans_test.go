@@ -246,6 +246,7 @@ func newJoiningStore() *joiningStore { return &joiningStore{memStore: newMemStor
 type leavingStore struct {
 	*memStore
 	leaveErr error
+	result   repository.LeaveResult // what a successful leave reports
 	leaves   int
 	game     string
 	clan     string
@@ -255,7 +256,10 @@ type leavingStore struct {
 func (l *leavingStore) LeaveClan(_ context.Context, gameID, clanID, externalID string) (repository.LeaveResult, error) {
 	l.leaves++
 	l.game, l.clan, l.external = gameID, clanID, externalID
-	return repository.LeaveResult{}, l.leaveErr
+	if l.leaveErr != nil {
+		return repository.LeaveResult{}, l.leaveErr
+	}
+	return l.result, nil
 }
 
 func newLeavingStore() *leavingStore { return &leavingStore{memStore: newMemStore()} }

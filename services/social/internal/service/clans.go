@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 )
@@ -124,7 +125,25 @@ func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayNam
 	case err != nil:
 		return Clan{}, fmt.Errorf("create clan: %w", err)
 	}
+	_ = s.events.Publish(ctx, events.New(EventClanCreated, gameID, map[string]any{
+		"clan":   ref(row.ID, row.Name),
+		"player": ref(owner.ID, owner.DisplayName),
+	}))
 	return Clan{ID: row.ID, Name: row.Name, MemberCount: row.MemberCount, MaxMembers: row.MaxMembers}, nil
+}
+
+// Clan events for the other services (docs/event-messages.md). Each is published after the
+// change is committed; a clan and a player are always {id, name}.
+const (
+	EventClanCreated      = "clan.created"       // {clan, player}: player is the owner
+	EventClanMemberJoined = "clan.member_joined" // {clan, player}
+	EventClanMemberLeft   = "clan.member_left"   // {clan, player, reason, kicked_by, new_owner}
+	EventClanDisbanded    = "clan.disbanded"     // {clan}: the last member left
+)
+
+// ref is how events name a clan or a player.
+func ref(id, name string) map[string]any {
+	return map[string]any{"id": id, "name": name}
 }
 
 // cleanClanName trims the name and turns any run of spaces inside it into one space,
@@ -179,6 +198,10 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 	case err != nil:
 		return Clan{}, fmt.Errorf("join clan: %w", err)
 	}
+	_ = s.events.Publish(ctx, events.New(EventClanMemberJoined, gameID, map[string]any{
+		"clan":   ref(row.ID, row.Name),
+		"player": ref(player.ID, player.DisplayName),
+	}))
 	return Clan{ID: row.ID, Name: row.Name, MemberCount: row.MemberCount, MaxMembers: row.MaxMembers}, nil
 }
 
@@ -195,7 +218,7 @@ func (s *Service) LeaveClan(ctx context.Context, gameID, externalID, clanID stri
 	if !uuidPattern.MatchString(clanID) {
 		return errClanNotFound()
 	}
-	_, err := s.store.LeaveClan(ctx, gameID, strings.ToLower(clanID), externalID)
+	res, err := s.store.LeaveClan(ctx, gameID, strings.ToLower(clanID), externalID)
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return errClanNotFound()
@@ -204,7 +227,29 @@ func (s *Service) LeaveClan(ctx context.Context, gameID, externalID, clanID stri
 	case err != nil:
 		return fmt.Errorf("leave clan: %w", err)
 	}
+	s.publishLeave(ctx, gameID, res)
 	return nil
+}
+
+// publishLeave tells what a leave did: clan.disbanded when the last member left (the clan
+// is gone, so there is no member_left), otherwise clan.member_left.
+func (s *Service) publishLeave(ctx context.Context, gameID string, res repository.LeaveResult) {
+	clan := ref(res.ClanID, res.ClanName)
+	if res.Disbanded {
+		_ = s.events.Publish(ctx, events.New(EventClanDisbanded, gameID, map[string]any{"clan": clan}))
+		return
+	}
+	var newOwner any // JSON null when the owner did not change
+	if res.NewOwner != nil {
+		newOwner = ref(res.NewOwner.ID, res.NewOwner.DisplayName)
+	}
+	_ = s.events.Publish(ctx, events.New(EventClanMemberLeft, gameID, map[string]any{
+		"clan":      clan,
+		"player":    ref(res.Player.ID, res.Player.DisplayName),
+		"reason":    "left",
+		"kicked_by": nil, // set by the kick task; a player who leaves was not kicked
+		"new_owner": newOwner,
+	}))
 }
 
 func errClanNotFound() error {
