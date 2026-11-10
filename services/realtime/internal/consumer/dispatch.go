@@ -67,7 +67,7 @@ type friendRequestData struct {
 }
 
 // friendAcceptedData is the data of friend.accepted: the two new friends, and the request that was
-// accepted. Social does not send request_id here yet.
+// accepted: required by the agreed format, but optional here so that an older event still works.
 type friendAcceptedData struct {
 	RequestID string       `json:"request_id"`
 	Players   []playerData `json:"players"`

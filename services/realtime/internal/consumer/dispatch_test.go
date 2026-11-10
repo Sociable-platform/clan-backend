@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -192,7 +193,7 @@ func TestDispatchTellsInvalidFromTransientServiceErrors(t *testing.T) {
 }
 
 // These are the events exactly as Social publishes them today (services/social/internal/service/friends.go),
-// built with the same pkg/events code and the same data maps. friend.accepted has no request_id yet.
+// built with the same pkg/events code and the same data maps.
 // If Social changes a field name, this test is where Realtime finds out.
 func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 	alice := map[string]any{"id": "u-1", "name": "Alice"}
@@ -204,8 +205,12 @@ func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 	}{
 		{"friend.request_sent", events.New("friend.request_sent", "g-1", map[string]any{"request_id": "r-1", "sender": alice, "receiver": bob}),
 			"request_sent r-1 u-1/Alice -> u-2"},
-		{"friend.accepted", events.New("friend.accepted", "g-1", map[string]any{"players": []map[string]any{alice, bob}}),
-			"accepted  u-1/Alice u-2/Bob"},
+		{"friend.request_cancelled", events.New("friend.request_cancelled", "g-1", map[string]any{"request_id": "r-1", "sender": alice, "receiver": bob}),
+			"request_cancelled r-1 u-1/Alice -> u-2"},
+		{"friend.request_declined", events.New("friend.request_declined", "g-1", map[string]any{"request_id": "r-1", "sender": alice, "receiver": bob}),
+			"request_declined r-1 u-1/Alice -> u-2"},
+		{"friend.accepted", events.New("friend.accepted", "g-1", map[string]any{"request_id": "r-1", "players": []map[string]any{alice, bob}}),
+			"accepted r-1 u-1/Alice u-2/Bob"},
 		{"friend.removed", events.New("friend.removed", "g-1", map[string]any{"players": []map[string]any{alice, bob}, "removed_by": "u-1"}),
 			"removed u-1 u-2 by u-1"},
 	}
@@ -234,6 +239,8 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// On Windows git may check the file out with CRLF line endings.
+	doc = bytes.ReplaceAll(doc, []byte("\r\n"), []byte("\n"))
 	const (
 		alice  = "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607"
 		bob    = "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6"
