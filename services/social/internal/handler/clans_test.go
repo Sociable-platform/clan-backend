@@ -48,10 +48,18 @@ func (f fakeService) LeaveClan(context.Context, string, string, string) error { 
 
 func (f fakeService) KickMember(context.Context, string, string, string, string) error { return f.err }
 
+func (f fakeService) RenameClan(context.Context, string, string, string, string) (service.Clan, error) {
+	return service.Clan{}, f.err
+}
+
 func (s *recordingService) LeaveClan(context.Context, string, string, string) error { return s.err }
 
 func (s *recordingService) KickMember(context.Context, string, string, string, string) error {
 	return s.err
+}
+
+func (s *recordingService) RenameClan(context.Context, string, string, string, string) (service.Clan, error) {
+	return service.Clan{}, s.err
 }
 
 func (f fakeService) MyClan(context.Context, string, string) (service.PlayerClan, error) {

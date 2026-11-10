@@ -139,6 +139,7 @@ const (
 	EventClanMemberJoined = "clan.member_joined" // {clan, player}
 	EventClanMemberLeft   = "clan.member_left"   // {clan, player, reason, kicked_by, new_owner}
 	EventClanDisbanded    = "clan.disbanded"     // {clan}: the last member left
+	EventClanRenamed      = "clan.renamed"       // {clan, previous_name}: clan has the new name
 )
 
 // ref is how events name a clan or a player.
@@ -262,6 +263,45 @@ func (s *Service) KickMember(ctx context.Context, gameID, externalID, clanID, pl
 	}
 	s.publishLeave(ctx, gameID, res)
 	return nil
+}
+
+// RenameClan gives clan clanID of the caller's game a new name and returns the clan. Only the
+// clan's owner may do it. The name is cleaned and checked like on create. Sending the name
+// the clan already has changes nothing and publishes nothing; a change of upper/lower case
+// only is a rename.
+//
+// Errors the client can act on:
+//   - 400 invalid_clan_name: the name is not 3 to 20 characters, or has invisible characters
+//   - 404 clan_not_found: no such clan in the caller's game
+//   - 403 not_clan_owner: the caller is not this clan's owner
+//   - 409 clan_name_taken: another clan of the game has this name (ignoring upper/lower case)
+func (s *Service) RenameClan(ctx context.Context, gameID, externalID, clanID, name string) (Clan, error) {
+	clean, err := cleanClanName(name)
+	if err != nil {
+		return Clan{}, err
+	}
+	if !uuidPattern.MatchString(clanID) {
+		return Clan{}, errClanNotFound()
+	}
+	res, err := s.store.RenameClan(ctx, gameID, strings.ToLower(clanID), externalID, clean)
+	switch {
+	case errors.Is(err, repository.ErrClanNotFound):
+		return Clan{}, errClanNotFound()
+	case errors.Is(err, repository.ErrNotClanOwner):
+		return Clan{}, httpx.NewError(http.StatusForbidden, "not_clan_owner", "Only the clan owner can rename the clan")
+	case errors.Is(err, repository.ErrClanNameTaken):
+		return Clan{}, httpx.NewError(http.StatusConflict, "clan_name_taken", "A clan with this name already exists")
+	case err != nil:
+		return Clan{}, fmt.Errorf("rename clan: %w", err)
+	}
+	c := res.Clan
+	if res.Changed {
+		_ = s.events.Publish(ctx, events.New(EventClanRenamed, gameID, map[string]any{
+			"clan":          ref(c.ID, c.Name),
+			"previous_name": res.PreviousName,
+		}))
+	}
+	return Clan{ID: c.ID, Name: c.Name, MemberCount: c.MemberCount, MaxMembers: c.MaxMembers}, nil
 }
 
 func errMemberNotFound() error {

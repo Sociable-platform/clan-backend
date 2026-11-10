@@ -502,18 +502,9 @@ func (r *Repository) KickMember(ctx context.Context, gameID, clanID, ownerExtern
 	}
 
 	// 2. The caller must be this clan's owner.
-	var owner ClanPlayer
-	err = tx.QueryRow(ctx,
-		`select m.player_id::text, p.display_name
-		 from clan_members m
-		 join players p on p.id = m.player_id and p.game_id = m.game_id
-		 where m.clan_id = $1 and m.game_id = $2 and p.external_id = $3 and m.role = 'owner'`,
-		clanID, gameID, ownerExternalID).Scan(&owner.ID, &owner.DisplayName)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return LeaveResult{}, ErrNotClanOwner
-	}
+	owner, err := clanOwner(ctx, tx, gameID, clanID, ownerExternalID)
 	if err != nil {
-		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
+		return LeaveResult{}, err
 	}
 	if strings.EqualFold(playerID, owner.ID) {
 		return LeaveResult{}, ErrKickSelf
@@ -545,5 +536,91 @@ func (r *Repository) KickMember(ctx context.Context, gameID, clanID, ownerExtern
 		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
 	}
 	res.KickedBy = &owner
+	return res, nil
+}
+
+// clanOwner returns the owner of clan clanID if that is the player (gameID, externalID), and
+// ErrNotClanOwner otherwise (also for a player who is not in the clan). Call it inside a
+// transaction that has locked the clan row, so the owner cannot change before the commit.
+func clanOwner(ctx context.Context, tx pgx.Tx, gameID, clanID, externalID string) (ClanPlayer, error) {
+	var owner ClanPlayer
+	err := tx.QueryRow(ctx,
+		`select m.player_id::text, p.display_name
+		 from clan_members m
+		 join players p on p.id = m.player_id and p.game_id = m.game_id
+		 where m.clan_id = $1 and m.game_id = $2 and p.external_id = $3 and m.role = 'owner'`,
+		clanID, gameID, externalID).Scan(&owner.ID, &owner.DisplayName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ClanPlayer{}, ErrNotClanOwner
+	}
+	if err != nil {
+		return ClanPlayer{}, fmt.Errorf("find clan owner: %w", err)
+	}
+	return owner, nil
+}
+
+// RenameResult is what RenameClan did.
+type RenameResult struct {
+	Clan         Clan   // the clan with its name now
+	PreviousName string // the name before; equal to Clan.Name when nothing changed
+	Changed      bool   // false when the clan already had exactly this name
+}
+
+// RenameClan gives clan clanID the name name; only the clan's owner, the player
+// (gameID, ownerExternalID), may do it. The name must already be cleaned (service does it).
+// The clan row is locked, like for join, leave and kick, so the owner cannot change while
+// the name does. Changing only upper/lower case ("wolves" to "Wolves") is a change; the
+// exact same name is not, and nothing is written.
+//
+// Errors, checked in this order: ErrClanNotFound (also another game's clan or an ID that is
+// not a UUID), ErrNotClanOwner, ErrClanNameTaken (another clan of the game has the name,
+// ignoring upper/lower case).
+func (r *Repository) RenameClan(ctx context.Context, gameID, clanID, ownerExternalID, name string) (RenameResult, error) {
+	if r.pool == nil {
+		return RenameResult{}, ErrNoDatabase
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return RenameResult{}, fmt.Errorf("rename clan: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1. Lock the clan.
+	var res RenameResult
+	c := &res.Clan
+	err = tx.QueryRow(ctx,
+		`select id::text, name, member_count, max_members from clans
+		 where id = $1 and game_id = $2 for update`,
+		clanID, gameID).Scan(&c.ID, &c.Name, &c.MemberCount, &c.MaxMembers)
+	if err != nil {
+		return RenameResult{}, leaveClanError(err)
+	}
+	res.PreviousName = c.Name
+
+	// 2. The caller must be this clan's owner.
+	if _, err := clanOwner(ctx, tx, gameID, clanID, ownerExternalID); err != nil {
+		return RenameResult{}, err
+	}
+	if name == c.Name {
+		return res, nil // nothing to do; the rollback only ends the transaction
+	}
+
+	// 3. Rename. The unique index on (game_id, lower(name)) refuses a name another clan has.
+	if _, err := tx.Exec(ctx, `update clans set name = $2 where id = $1`, clanID, name); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == uniqueClanName {
+			return RenameResult{}, ErrClanNameTaken
+		}
+		return RenameResult{}, fmt.Errorf("rename clan: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == uniqueClanName {
+			return RenameResult{}, ErrClanNameTaken
+		}
+		return RenameResult{}, fmt.Errorf("rename clan: %w", err)
+	}
+	c.Name = name
+	res.Changed = true
 	return res, nil
 }

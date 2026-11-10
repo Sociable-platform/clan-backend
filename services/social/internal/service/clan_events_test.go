@@ -157,6 +157,12 @@ func TestClanEventsHaveTheFieldsOfTheEventMessagesFile(t *testing.T) {
 			st.result = repository.LeaveResult{ClanID: someClan, ClanName: "Wolves", Player: ali}
 			return st, func(s *Service) error { return s.LeaveClan(ctx, gameA, "u_42", someClan) }
 		},
+		EventClanRenamed: func() (Store, func(*Service) error) {
+			return newRenamingStore(true), func(s *Service) error {
+				_, err := s.RenameClan(ctx, gameA, "u_42", someClan, "Grey Wolves")
+				return err
+			}
+		},
 		EventClanDisbanded: func() (Store, func(*Service) error) {
 			st := newLeavingStore()
 			st.result = repository.LeaveResult{ClanID: someClan, ClanName: "Wolves", Player: ali, Disbanded: true}

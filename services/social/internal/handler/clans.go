@@ -93,6 +93,32 @@ func (h *Handler) joinClan(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, toClanResponse(c))
 }
 
+// renameClanRequest is the body of PATCH /api/v1/clans/{clanID}.
+type renameClanRequest struct {
+	Name string `json:"name"`
+}
+
+// renameClan handles PATCH /api/v1/clans/{clanID}: the clan's owner gives it a new name.
+// 200 with the clan as it is now.
+func (h *Handler) renameClan(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	var req renameClanRequest
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	c, err := h.svc.RenameClan(r.Context(), caller.GameID, caller.ExternalID, r.PathValue("clanID"), req.Name)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, toClanResponse(c))
+}
+
 // kickMember handles DELETE /api/v1/clans/{clanID}/members/{playerID}: the clan's owner
 // removes a member. 204 with no body.
 func (h *Handler) kickMember(w http.ResponseWriter, r *http.Request) {

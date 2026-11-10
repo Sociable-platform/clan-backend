@@ -20,6 +20,7 @@ type Store interface {
 	JoinClan(ctx context.Context, gameID, clanID, playerID string) (repository.Clan, error)
 	LeaveClan(ctx context.Context, gameID, clanID, externalID string) (repository.LeaveResult, error)
 	KickMember(ctx context.Context, gameID, clanID, ownerExternalID, playerID string) (repository.LeaveResult, error)
+	RenameClan(ctx context.Context, gameID, clanID, ownerExternalID, name string) (repository.RenameResult, error)
 	MyClan(ctx context.Context, gameID, externalID string) (repository.PlayerClan, error)
 	ListMembers(ctx context.Context, gameID, clanID string) ([]repository.Member, error)
 	SendFriendRequest(ctx context.Context, gameID, senderID, receiverID string) (repository.SendFriendRequestResult, error)
