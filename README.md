@@ -230,33 +230,11 @@ Messages are persistent (`delivery_mode` 2) with `content_type` `application/jso
 
 | Event (routing key) | Published by | `data` |
 |---|---|---|
-| `friend.request_sent` | Social (not published yet) | `{ "request_id": "...", "from": { "id": "<uuid>", "name": "Ali" }, "to_id": "<uuid>" }` |
-| `friend.accepted` | Social (not published yet) | `{ "a": { "id": "<uuid>", "name": "Ali" }, "b": { "id": "<uuid>", "name": "Rashad" } }` |
-| `friend.removed` | Social (not published yet) | `{ "a_id": "<uuid>", "b_id": "<uuid>" }` |
+| `friend.request_sent` | social, `POST /api/v1/friends/requests` (201) | `{ "sender": { "id", "name" }, "receiver": { "id", "name" } }` |
+| `friend.accepted` | social, accept, or a request sent back (200) | `{ "players": [ { "id", "name" }, { "id", "name" } ] }`, the smaller ID first |
 
-Each clan event is added here, with its `data`, by the task that publishes it. Player ids in `data` are **Social's own player ID**
-(a UUID, not the game's player ID). The three friend events above are the ones realtime handles today:
-
-| Event | Realtime does |
-|---|---|
-| `friend.request_sent` | sends a `friend_request` notification to `to_id` (nothing is stored) |
-| `friend.accepted` | creates the DM conversation of the pair and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both |
-| `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both |
-
-Other event types that reach the queue (`clan.*`, `player.*`, `config.published`) are acknowledged and ignored until their tasks exist.
-Whoever publishes these events must keep the field names above: realtime drops an event with a missing or malformed field.
-
-### How realtime reads the queue
-
-- One consumer, one event at a time, in order. Prefetch is 20, acknowledgement is manual and comes after the database write.
-- An event that fails (for example the database is down) is put back **once** after one second; if it fails again it is logged
-  and dropped. An unusable event (not JSON, missing field, id that is not a UUID) is logged and dropped at once.
-  There is no dead-letter queue yet, so a dropped event is lost.
-- Every database write is an upsert or a delete, so a redelivered event changes nothing. The WebSocket frames are sent again;
-  the SDK ignores a conversation it already has.
-- If the broker is down or restarts, realtime keeps running and reconnects (1 s, 2 s, 4 s ... up to 30 s).
-  Without a database it does not read events at all, because it would have nowhere to store them.
-
+`id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
+`name` the display name at the time of the event. Clan events are added by the task that publishes them.
 
 ### Publishing from a service
 
@@ -413,6 +391,10 @@ always come from the token, never from the URL or the body.
 | POST | `/api/v1/clans/{clanID}/join` | no body. 200 with the clan and its new `memberCount`, the caller joins as a member. 404 `clan_not_found` (also for another game's clan); 409 `already_in_clan` / `clan_full` (default 10 members) |
 | POST | `/api/v1/clans/{clanID}/leave` | no body. 204: the caller left the clan and can join another one. A normal member is just removed. If the **owner** leaves and others remain, the member who joined first becomes the owner; if the owner is the only member, the clan is deleted. 404 `clan_not_found` (also for another game's clan); 409 `not_in_clan` (the caller is not a member of this clan) |
 | GET | `/api/v1/clans/{clanID}/members` | 200 `{ members: [...] }` with `playerId`, `displayName`, `role`, `joinedAt`; owner first, then by join time. 404 `clan_not_found` (also for another game's clan) |
+| GET | `/api/v1/friends` | 200 `{ friends: [...] }` with `id`, `displayName`, `since`, sorted by name |
+| GET | `/api/v1/friends/requests` | 200 `{ incoming: [...], outgoing: [...] }`, newest first; each has `id`, `player` (the other player: `id`, `displayName`) and `createdAt` |
+| POST | `/api/v1/friends/requests` | body `{ "playerId": "<social player ID>" }`. 201 with the new request. If that player had already asked the caller, it is accepted instead: 200 with the new friend. 400 `invalid_json` / `invalid_player_id` / `cannot_friend_yourself`; 404 `player_not_found` (also for another game's player); 409 `already_friends` / `friend_request_exists`. Publishes `friend.request_sent` or `friend.accepted` |
+| POST | `/api/v1/friends/requests/{requestID}/accept` | no body. 200 with the new friend. 403 `not_request_receiver` (the caller sent it); 404 `friend_request_not_found`. Publishes `friend.accepted` |
 
 ### Realtime service (port 8083)
 

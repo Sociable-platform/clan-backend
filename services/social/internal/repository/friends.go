@@ -1,0 +1,349 @@
+package repository
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+var (
+	// ErrPlayerNotFound means there is no player with this ID in the game.
+	// A player of another game is "not found" too, so players cannot reach other games.
+	ErrPlayerNotFound = errors.New("player not found")
+	// ErrFriendRequestToSelf means a player sent a friend request to themselves.
+	ErrFriendRequestToSelf = errors.New("friend request to yourself")
+	// ErrAlreadyFriends means the two players are friends already.
+	ErrAlreadyFriends = errors.New("already friends")
+	// ErrFriendRequestExists means the player already sent a pending request to this player.
+	ErrFriendRequestExists = errors.New("friend request already sent")
+	// ErrFriendRequestNotFound means there is no pending request with this ID that the player
+	// may see: it does not exist, belongs to another game, or is between two other players.
+	ErrFriendRequestNotFound = errors.New("friend request not found")
+	// ErrNotFriendRequestReceiver means the player sent the request, so they cannot accept it.
+	ErrNotFriendRequestReceiver = errors.New("only the receiver can accept a friend request")
+)
+
+// FriendPlayer is a player as the friends feature shows them.
+type FriendPlayer struct {
+	ID          string
+	DisplayName string
+}
+
+// FriendRequest is a pending friend request.
+type FriendRequest struct {
+	ID        string
+	Sender    FriendPlayer
+	Receiver  FriendPlayer
+	CreatedAt time.Time
+}
+
+// Friendship is two players who are friends. PlayerA has the smaller ID, as in the table.
+type Friendship struct {
+	PlayerA   FriendPlayer
+	PlayerB   FriendPlayer
+	CreatedAt time.Time
+}
+
+// Friend is one of a player's friends.
+type Friend struct {
+	FriendPlayer
+	Since time.Time
+}
+
+// SendFriendRequestResult tells what SendFriendRequest did. Exactly one field is set.
+type SendFriendRequestResult struct {
+	Request  *FriendRequest // a new pending request was created
+	Accepted *Friendship    // the receiver had already asked the sender, so that request was accepted
+}
+
+// lockPair takes a transaction-level lock on the pair (gameID, a, b), whichever order a and b
+// come in. Every change to a pair's requests or friendship takes it first, so two of them can
+// never run at the same time for one pair; the lock is released when the transaction ends.
+// Different pairs never wait for each other (except, very rarely, when two keys share a hash).
+const lockPairSQL = `select pg_advisory_xact_lock(hashtextextended(
+	$1::text || ':' || least($2::uuid, $3::uuid)::text || ':' || greatest($2::uuid, $3::uuid)::text, 0))`
+
+// SendFriendRequest sends a friend request from senderID to receiverID in gameID.
+//
+// If receiverID already sent senderID a pending request, that request is accepted instead and
+// the two become friends (Accepted is set). Otherwise a new pending request is created
+// (Request is set). Everything happens in one transaction, with the pair locked, so requests
+// sent by both players at the same moment end as one request or as friends, never as two rows.
+//
+// Errors: ErrPlayerNotFound (receiver missing, in another game, or not a UUID),
+// ErrFriendRequestToSelf, ErrAlreadyFriends, ErrFriendRequestExists.
+func (r *Repository) SendFriendRequest(ctx context.Context, gameID, senderID, receiverID string) (SendFriendRequestResult, error) {
+	if r.pool == nil {
+		return SendFriendRequestResult{}, ErrNoDatabase
+	}
+	if senderID == receiverID {
+		return SendFriendRequestResult{}, ErrFriendRequestToSelf
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return SendFriendRequestResult{}, fmt.Errorf("send friend request: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1. Both players, with their names. "and game_id = $2" makes another game's player look
+	//    like it does not exist.
+	sender, err := friendPlayer(ctx, tx, gameID, senderID)
+	if err != nil {
+		return SendFriendRequestResult{}, sendFriendRequestError(err)
+	}
+	receiver, err := friendPlayer(ctx, tx, gameID, receiverID)
+	if err != nil {
+		return SendFriendRequestResult{}, sendFriendRequestError(err)
+	}
+	if sender.ID == receiver.ID { // the same UUID written differently
+		return SendFriendRequestResult{}, ErrFriendRequestToSelf
+	}
+	senderID, receiverID = sender.ID, receiver.ID
+
+	// 2. Lock the pair: from here on nobody else changes these two players' requests or friendship.
+	if _, err := tx.Exec(ctx, lockPairSQL, gameID, senderID, receiverID); err != nil {
+		return SendFriendRequestResult{}, sendFriendRequestError(err)
+	}
+
+	// 3. Already friends? No table rule can check this across the two tables; the lock makes it safe.
+	var friends bool
+	err = tx.QueryRow(ctx,
+		`select exists (select 1 from friendships
+		 where game_id = $1 and player_a_id = least($2::uuid, $3::uuid) and player_b_id = greatest($2::uuid, $3::uuid))`,
+		gameID, senderID, receiverID).Scan(&friends)
+	if err != nil {
+		return SendFriendRequestResult{}, sendFriendRequestError(err)
+	}
+	if friends {
+		return SendFriendRequestResult{}, ErrAlreadyFriends
+	}
+
+	// 4. A pending request between the two, in either direction?
+	var existingID, existingSender string
+	err = tx.QueryRow(ctx,
+		`select id::text, sender_id::text from friend_requests
+		 where game_id = $1
+		   and least(sender_id, receiver_id) = least($2::uuid, $3::uuid)
+		   and greatest(sender_id, receiver_id) = greatest($2::uuid, $3::uuid)`,
+		gameID, senderID, receiverID).Scan(&existingID, &existingSender)
+	switch {
+	case err == nil && existingSender == senderID:
+		return SendFriendRequestResult{}, ErrFriendRequestExists
+	case err == nil:
+		// 5a. The receiver asked first: accept their request.
+		f, err := acceptLocked(ctx, tx, gameID, existingID, receiver, sender)
+		if err != nil {
+			return SendFriendRequestResult{}, sendFriendRequestError(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return SendFriendRequestResult{}, sendFriendRequestError(err)
+		}
+		return SendFriendRequestResult{Accepted: &f}, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return SendFriendRequestResult{}, sendFriendRequestError(err)
+	}
+
+	// 5b. No request yet: create one.
+	req := FriendRequest{Sender: sender, Receiver: receiver}
+	err = tx.QueryRow(ctx,
+		`insert into friend_requests (game_id, sender_id, receiver_id) values ($1, $2, $3)
+		 returning id::text, created_at`,
+		gameID, senderID, receiverID).Scan(&req.ID, &req.CreatedAt)
+	if err != nil {
+		return SendFriendRequestResult{}, sendFriendRequestError(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return SendFriendRequestResult{}, sendFriendRequestError(err)
+	}
+	return SendFriendRequestResult{Request: &req}, nil
+}
+
+// friendPlayer reads one player of gameID. The returned ID is the database's own spelling
+// (lower case), even if playerID was sent in upper case.
+// Errors: pgx.ErrNoRows, or 22P02 for an ID that is not a UUID.
+func friendPlayer(ctx context.Context, tx pgx.Tx, gameID, playerID string) (FriendPlayer, error) {
+	var p FriendPlayer
+	err := tx.QueryRow(ctx,
+		`select id::text, display_name from players where id = $1 and game_id = $2`,
+		playerID, gameID).Scan(&p.ID, &p.DisplayName)
+	return p, err
+}
+
+// acceptLocked turns request requestID (from sender to receiver) into a friendship.
+// The caller holds the pair lock and commits.
+func acceptLocked(ctx context.Context, tx pgx.Tx, gameID, requestID string, sender, receiver FriendPlayer) (Friendship, error) {
+	if _, err := tx.Exec(ctx, `delete from friend_requests where id = $1`, requestID); err != nil {
+		return Friendship{}, err
+	}
+	a, b := sender, receiver
+	if b.ID < a.ID { // UUIDs compare the same way as their lower-case text
+		a, b = b, a
+	}
+	f := Friendship{PlayerA: a, PlayerB: b}
+	err := tx.QueryRow(ctx,
+		`insert into friendships (game_id, player_a_id, player_b_id) values ($1, $2, $3) returning created_at`,
+		gameID, a.ID, b.ID).Scan(&f.CreatedAt)
+	return f, err
+}
+
+// sendFriendRequestError turns database errors into our own errors where it can.
+func sendFriendRequestError(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrPlayerNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "22P02": // invalid_text_representation: the player ID is not a UUID
+			return ErrPlayerNotFound
+		case "23505": // unique_violation: only possible without the pair lock, kept as a safety net
+			return ErrFriendRequestExists
+		}
+	}
+	return fmt.Errorf("send friend request: %w", err)
+}
+
+// AcceptFriendRequest accepts request requestID for playerID, who must be its receiver,
+// and returns the new friendship. The request is deleted and the friendship created in one
+// transaction, with the pair locked.
+//
+// Errors: ErrFriendRequestNotFound (missing, another game, not a UUID, or between two other
+// players), ErrNotFriendRequestReceiver (playerID sent it).
+func (r *Repository) AcceptFriendRequest(ctx context.Context, gameID, requestID, playerID string) (Friendship, error) {
+	if r.pool == nil {
+		return Friendship{}, ErrNoDatabase
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return Friendship{}, fmt.Errorf("accept friend request: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1. Find the pair, so it can be locked first, like every other change to it.
+	var senderID, receiverID string
+	err = tx.QueryRow(ctx,
+		`select sender_id::text, receiver_id::text from friend_requests where id = $1 and game_id = $2`,
+		requestID, gameID).Scan(&senderID, &receiverID)
+	if err != nil {
+		return Friendship{}, acceptFriendRequestError(err)
+	}
+	if _, err := tx.Exec(ctx, lockPairSQL, gameID, senderID, receiverID); err != nil {
+		return Friendship{}, acceptFriendRequestError(err)
+	}
+
+	// 2. Read it again under the lock: it may have been accepted or cancelled while we waited.
+	err = tx.QueryRow(ctx,
+		`select sender_id::text, receiver_id::text from friend_requests where id = $1 and game_id = $2`,
+		requestID, gameID).Scan(&senderID, &receiverID)
+	if err != nil {
+		return Friendship{}, acceptFriendRequestError(err)
+	}
+	switch playerID {
+	case receiverID:
+	case senderID:
+		return Friendship{}, ErrNotFriendRequestReceiver
+	default:
+		return Friendship{}, ErrFriendRequestNotFound
+	}
+
+	// 3. Names for the result, then the request becomes a friendship.
+	sender, err := friendPlayer(ctx, tx, gameID, senderID)
+	if err != nil {
+		return Friendship{}, acceptFriendRequestError(err)
+	}
+	receiver, err := friendPlayer(ctx, tx, gameID, receiverID)
+	if err != nil {
+		return Friendship{}, acceptFriendRequestError(err)
+	}
+	f, err := acceptLocked(ctx, tx, gameID, requestID, sender, receiver)
+	if err != nil {
+		return Friendship{}, acceptFriendRequestError(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Friendship{}, acceptFriendRequestError(err)
+	}
+	return f, nil
+}
+
+// acceptFriendRequestError turns database errors into our own errors where it can.
+func acceptFriendRequestError(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrFriendRequestNotFound
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "22P02" { // the request ID is not a UUID
+		return ErrFriendRequestNotFound
+	}
+	return fmt.Errorf("accept friend request: %w", err)
+}
+
+// ListFriendRequests returns the pending requests playerID sent or received in gameID,
+// newest first (ties: by ID). The caller tells incoming from outgoing by Sender.ID.
+func (r *Repository) ListFriendRequests(ctx context.Context, gameID, playerID string) ([]FriendRequest, error) {
+	if r.pool == nil {
+		return nil, ErrNoDatabase
+	}
+	rows, err := r.pool.Query(ctx,
+		`select fr.id::text, fr.created_at,
+		        s.id::text, s.display_name, rc.id::text, rc.display_name
+		 from friend_requests fr
+		 join players s  on s.id = fr.sender_id
+		 join players rc on rc.id = fr.receiver_id
+		 where fr.game_id = $1 and (fr.sender_id = $2 or fr.receiver_id = $2)
+		 order by fr.created_at desc, fr.id`,
+		gameID, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("list friend requests: %w", err)
+	}
+	defer rows.Close()
+
+	requests := make([]FriendRequest, 0)
+	for rows.Next() {
+		var q FriendRequest
+		if err := rows.Scan(&q.ID, &q.CreatedAt, &q.Sender.ID, &q.Sender.DisplayName,
+			&q.Receiver.ID, &q.Receiver.DisplayName); err != nil {
+			return nil, fmt.Errorf("list friend requests: %w", err)
+		}
+		requests = append(requests, q)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list friend requests: %w", err)
+	}
+	return requests, nil
+}
+
+// ListFriends returns playerID's friends in gameID, sorted by name ignoring upper/lower case
+// (ties: by ID).
+func (r *Repository) ListFriends(ctx context.Context, gameID, playerID string) ([]Friend, error) {
+	if r.pool == nil {
+		return nil, ErrNoDatabase
+	}
+	rows, err := r.pool.Query(ctx,
+		`select p.id::text, p.display_name, f.created_at
+		 from friendships f
+		 join players p on p.id = case when f.player_a_id = $2 then f.player_b_id else f.player_a_id end
+		 where f.game_id = $1 and (f.player_a_id = $2 or f.player_b_id = $2)
+		 order by lower(p.display_name), p.id`,
+		gameID, playerID)
+	if err != nil {
+		return nil, fmt.Errorf("list friends: %w", err)
+	}
+	defer rows.Close()
+
+	friends := make([]Friend, 0)
+	for rows.Next() {
+		var f Friend
+		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Since); err != nil {
+			return nil, fmt.Errorf("list friends: %w", err)
+		}
+		friends = append(friends, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list friends: %w", err)
+	}
+	return friends, nil
+}
