@@ -16,6 +16,7 @@ Names come from the code. If you change a flow, change the diagram in the same m
 | 8 Conversation lifecycle | a DM as a state machine |
 | 9 Frame and event envelope | the classes behind every message |
 | 10 Clan rooms (planned) | TEAM-147, **not built yet** |
+| 11 Live re-skin | a published config reaches every open connection of the game (TEAM-148) |
 
 Every frame the server sends has the event envelope: `event_id`, `type`, `occurred_at`, `game_id`, `data`
 (see [`event-messages.md`](event-messages.md) for every message and [`events.md`](events.md) for the details).
@@ -55,8 +56,11 @@ flowchart LR
     GameServer -->|"token"| SDK
     SDK -->|"friends REST + token"| Social
     SDK -->|"REST + WebSocket + token"| RT_HTTP
+    RT_Consumer -->|"GET /api/v1/public/games/id/widget-config on config.published"| Platform
+    RT_HTTP -->|"same call, once per game, when hello needs the version"| Platform
     RT_HTTP -->|"GET /players/me with the player's token"| Social
     Social -->|"publish after commit"| MQ
+    Platform -->|"config.published (not published yet)"| MQ
     MQ -->|"friend.*, player.*, clan.*, config.published"| RT_Consumer
     RT_Consumer --> RT_Service
     RT_HTTP --> RT_Service
@@ -83,6 +87,7 @@ sequenceDiagram
     participant SDK as Browser SDK
     participant RT as Realtime handler
     participant Social
+    participant Cache as Config cache
     participant Hub
 
     Game->>Platform: POST /api/v1/players/auth, X-API-Key, externalPlayerId, displayName
@@ -96,6 +101,8 @@ sequenceDiagram
     alt Social answers
         Social-->>RT: social player ID and display name
         RT-->>SDK: 101 Switching Protocols
+        RT->>Cache: version of the game's config (loaded from Platform the first time, at most 1 s, else 0)
+        Cache-->>RT: configVersion
         RT->>Hub: register the connection (game, social player ID)
         RT-->>SDK: frame hello (envelope, data: playerId, configVersion, onlineFriends)
     else Social cannot be reached
@@ -432,6 +439,48 @@ sequenceDiagram
 
 Chat in a clan room is the same `message.send` flow as diagram 4: a clan room is a conversation of `kind` `clan`.
 
+## 11 Live re-skin
+
+The developer presses Publish; every player who has the game open sees the new look without reloading. Realtime fetches the new config
+first, so the version in the frame is one it really holds. **Platform does not publish `config.published` yet**; Realtime handles it already.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Dev as Developer (dashboard)
+    participant Platform
+    participant MQ as RabbitMQ
+    participant Cons as Realtime consumer
+    participant Cache as Config cache
+    participant Hub
+    participant P as Players of the game (SDK)
+
+    Dev->>Platform: POST /api/v1/games/{gameID}/widget/publish
+    Platform->>Platform: save version N, COMMIT
+    Platform-)MQ: config.published (version N)
+    MQ->>Cons: deliver
+    Cons->>Cache: Published(game, N)
+    Cache->>Platform: GET /api/v1/public/games/{gameID}/widget-config (no-cache)
+    alt Platform answers with version N or newer
+        Platform-->>Cache: version and config
+        Cache->>Cache: swap it in (never to an older version)
+        Cache-->>Cons: current version, send
+        Cons->>Hub: config.updated { version } to every connection of the game
+        Hub-->>P: config.updated (all tabs of all players of this game, no other game)
+        P->>Platform: after 0 to 500 ms, GET the public config and redraw
+        Cons->>MQ: ack
+    else Platform is down, slow, or still at an older version
+        Cache-->>Cons: error, the old config stays in the cache
+        Note over Cons,MQ: wait 1 s, requeue once, then drop and log
+    else the event is older than the cache (it came late)
+        Cache-->>Cons: do not send
+        Cons->>MQ: ack, nothing is sent
+    end
+```
+
+A player who connects later gets the version in `hello` (`configVersion`) and compares it with the one the SDK has. The cache is loaded
+lazily from Platform, once per game at a time, and kept in memory.
+
 ## Which frame is sent when
 
 | Frame | Sent to | When | Source |
@@ -447,6 +496,7 @@ Chat in a clan room is the same `message.send` flow as diagram 4: a clan room is
 | `conversation.added` | both players, each with their own `unread` | `friend.accepted` | queue event |
 | `notification` `friend_accepted` | both players | `friend.accepted` | queue event |
 | `conversation.removed` | both players | `friend.removed` | queue event |
+| `config.updated` | every connection of the game | `config.published` | queue event, after the config is fetched |
 
 ## When something is down
 
@@ -454,5 +504,6 @@ Chat in a clan room is the same `message.send` flow as diagram 4: a clan room is
 |---|---|
 | RabbitMQ | Social still answers (a failed publish is only logged), but the events published while the broker is down are lost: there is no outbox yet. Realtime keeps serving WebSockets and REST and reconnects to the broker with 1, 2, 4 ... up to 30 s |
 | Realtime database | REST answers 500 `internal_error`, `message.send` answers an `error` frame `internal`, the consumer retries an event once and then drops it |
+| Platform | `hello` says `configVersion` 0 after a second (and for a few seconds after, without asking again); a `config.published` event is retried once and then dropped, so a missed `config.updated` is caught by `configVersion` in the next `hello`. Chat and friends are not affected |
 | Social | new WebSocket connections and REST calls to Realtime get 503 `social_unavailable`. Open sockets keep working |
 | Realtime itself | events wait in the queue and are handled when it is back. Frames sent meanwhile are not replayed: after a reconnect the SDK reloads the list and the history |

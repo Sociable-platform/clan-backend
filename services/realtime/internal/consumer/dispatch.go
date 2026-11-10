@@ -9,11 +9,12 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/frame"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/gameconfig"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 )
 
 // Event types this service handles (docs/events.md). Every other type that reaches the queue
-// (clan.*, player.blocked, config.published are added by later tasks) is acknowledged and ignored.
+// (clan.*, player.blocked are added by later tasks) is acknowledged and ignored.
 const (
 	typeFriendRequestSent      = "friend.request_sent"
 	typeFriendRequestCancelled = "friend.request_cancelled"
@@ -21,7 +22,11 @@ const (
 	typeFriendAccepted         = "friend.accepted"
 	typeFriendRemoved          = "friend.removed"
 	typePlayerRenamed          = "player.renamed"
+	typeConfigPublished        = "config.published"
 )
+
+// frameConfigUpdated is the frame every connection of a game gets when the game publishes a config.
+const frameConfigUpdated = "config.updated"
 
 // Events is what the dispatcher needs from the service layer.
 type Events interface {
@@ -39,17 +44,38 @@ type Sender interface {
 	SendToPlayers(gameID string, playerIDs []string, frame []byte)
 }
 
+// ConfigCache is what the dispatcher needs to answer config.published. gameconfig.Cache implements it.
+type ConfigCache interface {
+	// Published fetches the config again and swaps it in. It returns the version to tell the players
+	// about and whether to tell them at all. An error means try the event again.
+	Published(ctx context.Context, gameID string, version int) (current int, send bool, err error)
+}
+
+// Broadcaster writes an encoded frame to every open WebSocket of a game. The hub does this; it never blocks.
+type Broadcaster interface {
+	SendToGame(gameID string, frame []byte)
+}
+
 // Dispatcher decodes events, calls the service and sends the resulting frames. It is the Handler of
 // the Consumer.
 type Dispatcher struct {
 	events Events
 	send   Sender
 	log    *slog.Logger
+
+	config    ConfigCache // nil: config.published is acknowledged and ignored
+	broadcast Broadcaster
 }
 
 // NewDispatcher returns a Dispatcher.
 func NewDispatcher(events Events, send Sender, log *slog.Logger) *Dispatcher {
 	return &Dispatcher{events: events, send: send, log: log}
+}
+
+// WithConfig makes the dispatcher handle config.published: refresh cache, then tell every connection of the game.
+func (d *Dispatcher) WithConfig(cache ConfigCache, to Broadcaster) *Dispatcher {
+	d.config, d.broadcast = cache, to
+	return d
 }
 
 // playerData is a player inside an event's data.
@@ -83,6 +109,11 @@ type friendRemovedData struct {
 // playerRenamedData is the data of player.renamed.
 type playerRenamedData struct {
 	Player playerData `json:"player"`
+}
+
+// configPublishedData is the data of config.published.
+type configPublishedData struct {
+	Version int `json:"version"`
 }
 
 // Handle handles one message body. It returns an error wrapping ErrDrop when the event is unusable,
@@ -123,6 +154,12 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 		if err = decode(env.Data, &data); err == nil {
 			pushes, err = d.events.PlayerRenamed(ctx, env.GameID, player(data.Player))
 		}
+	case typeConfigPublished:
+		if d.config == nil {
+			d.log.Debug("ignoring config.published: no config cache", "event_id", env.ID)
+			return nil
+		}
+		return d.configPublished(ctx, env)
 	default:
 		d.log.Debug("ignoring event nobody handles yet", "event_id", env.ID, "type", env.Type)
 		return nil
@@ -146,6 +183,37 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 		d.send.SendToPlayers(p.GameID, p.PlayerIDs, encoded)
 	}
 	d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "frames", len(pushes))
+	return nil
+}
+
+// configPublished handles config.published: the game has a new config version. The cache fetches it
+// from Platform; when that fails the old config stays and the error makes the consumer try the event
+// once more. Then every connection of that game (and no other) gets config.updated { version }.
+func (d *Dispatcher) configPublished(ctx context.Context, env events.Event) error {
+	var data configPublishedData
+	if err := decode(env.Data, &data); err != nil {
+		return fmt.Errorf("event %s (%s): %w", env.ID, env.Type, err)
+	}
+	if data.Version < 1 {
+		return fmt.Errorf("event %s (%s): %w: version must be 1 or more", env.ID, env.Type, ErrDrop)
+	}
+	current, send, err := d.config.Published(ctx, env.GameID, data.Version)
+	if err != nil {
+		if errors.Is(err, gameconfig.ErrInvalidGame) {
+			err = fmt.Errorf("%w: %w", ErrDrop, err)
+		}
+		return fmt.Errorf("event %s (%s): %w", env.ID, env.Type, err)
+	}
+	if !send {
+		d.log.Info("event handled, a newer config was already announced", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "version", data.Version, "current", current)
+		return nil
+	}
+	encoded, err := frame.Encode(env.GameID, frameConfigUpdated, env.OccurredAt, map[string]int{"version": current})
+	if err != nil {
+		return fmt.Errorf("%w: encode %s frame: %w", ErrDrop, frameConfigUpdated, err)
+	}
+	d.broadcast.SendToGame(env.GameID, encoded)
+	d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "version", current)
 	return nil
 }
 

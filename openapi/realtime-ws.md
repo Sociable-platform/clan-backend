@@ -10,9 +10,10 @@ WebSocket. The two REST reads (conversation list and history) are in [`realtime.
   For `message.send` the server checks that the player is a member and that the trimmed body is not empty and at most 1000 characters
   (the game's own `max_message_length` comes with the message rules). Answers: `message.ack`, or `error` with `not_member`, `empty`, `too_long`,
   `bad_frame` or `internal`.
-  In `hello`, `configVersion` is always `0` ("not known yet") and `onlineFriends` is always `[]` until the config cache and friendships exist.
+  In `hello`, `configVersion` is the version of the game's published config (`0` when the game has none or Platform did not answer within a second)
+  and `onlineFriends` is always `[]` until presence exists. `config.updated` is sent when the game publishes a new config.
   Not built yet: presence, the clan notifications,
-  clan conversations, the `config.updated` frame, the message rules (`rate_limited`, `feature_disabled`, `blocked`, `slow_mode`, the profanity
+  clan conversations, the message rules (`rate_limited`, `feature_disabled`, `blocked`, `slow_mode`, the profanity
   filter), the 5-connections-per-player limit, and `1008`/`4003`.
 - **Endpoint:** `GET /api/v1/ws?token=<player token>` on the realtime service (`ws://localhost:8083/api/v1/ws` locally).
 - **Format:** every frame is one JSON object in a WebSocket **text** frame. Binary frames are a `bad_frame` error.
@@ -269,7 +270,8 @@ on the server, and a conversation returns with its history if the players become
 
 The game published a new config. Sent to every open connection of the game. Fetch the public config again
 (after a random 0 to 500 ms wait, so all players do not hit the server in the same second) and redraw. `version`
-is the new version.
+is the new version, the one the server's config cache holds. If Platform cannot be reached when the event arrives, the server tries again
+after a second, and if that fails too, the frame is not sent: that is why `hello` carries `configVersion` (compare it after a reconnect).
 
 ```json
 {

@@ -175,6 +175,7 @@ services:
       REALTIME_CORS_ORIGINS: ${REALTIME_CORS_ORIGINS:-http://localhost:5174}
       REALTIME_JWT_PUBLIC_KEY_FILE: /run/secrets/platform_jwt_public.pem
       REALTIME_SOCIAL_URL: http://social:8082
+      REALTIME_PLATFORM_URL: http://platform:8081
       REALTIME_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:

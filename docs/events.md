@@ -330,9 +330,38 @@ Cancel and decline are two event types because they have different recipients; a
   No frame is sent: the SDK sees the new name the next time it loads the conversations. Messages keep the name their sender
   had when they wrote them (`sender_name`). A redelivered event changes nothing.
 
+### `config.published`
+
+- **Published by Platform** when the developer presses Publish (or rolls back) and a new config version exists. **Not published yet**
+  (the Platform side is a separate task); Realtime handles it already.
+- **`data`:** `version` = the new version number, a whole number from 1. The config itself is **not** in the event.
+
+```json
+{
+  "event_id": "32b58d15-703e-46aa-a5ef-1d84a31b6a48",
+  "type": "config.published",
+  "occurred_at": "2026-11-10T09:42:45.030Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "version": 5
+  }
+}
+```
+
+- **Realtime does:** asks Platform for the game's newest published config (`GET /api/v1/public/games/{gameID}/widget-config`,
+  `REALTIME_PLATFORM_URL`), puts it in the in-memory config cache of that game, and sends `config.updated` with `{ version }`
+  to **every open connection of that game** (and of no other game). The frame names the version the cache now holds, which can be
+  newer than the event's when two publishes came quickly.
+- **If Platform fails** (down, too slow, an error), or does not have that version yet: the old config stays in the cache, nothing is
+  sent, and the event is tried once more after a second (see section 9); after that it is dropped and logged.
+- **A late event** (its version is older than the one the cache holds, so the players were told about a newer one already) is
+  acknowledged and sends nothing. **A redelivered event** sends the frame again; the SDK just fetches the same config again.
+- The cache is filled lazily too: the first `hello` of a game (or the first message rule that needs it) loads the config, and
+  every later call reads memory. `hello` carries the cached `configVersion`.
+
 ## 6. Events that arrive but are not handled yet
 
-The queue is bound to `config.published`, `player.*` and `clan.*`. Realtime **acknowledges and ignores** any type it has no
+The queue is bound to `config.published`, `friend.*`, `player.*` and `clan.*`. Realtime **acknowledges and ignores** any type it has no
 handler for (it logs them at debug level), so they never block the queue. The full messages are in
 [`event-messages.md`](event-messages.md). Each is handled by its own task:
 
@@ -344,7 +373,6 @@ handler for (it logs them at debug level), so they never block the queue. The fu
 | `clan.renamed` | `clan` (the new name), `previous_name` | clan chat rooms (TEAM-147) |
 | `clan.disbanded` | `clan` (only this event is published when the last member leaves) | clan chat rooms (TEAM-147) |
 | `player.blocked`, `player.unblocked` | `blocker_id`, `blocked_id` | blocks sync (TEAM-151, TEAM-154) |
-| `config.published` | `version` | live re-skin (TEAM-148) |
 
 ## 7. What the player's browser receives
 
@@ -386,6 +414,12 @@ in the "WebSocket frames" part of [`event-messages.md`](event-messages.md); `Tes
 { "event_id": "…", "type": "conversation.removed", "occurred_at": "…", "game_id": "…", "data": { "conversationId": "128cd7f6-…" } }
 ```
 
+**`config.updated`** (to every open connection of the game; `version` is the version of the config in the cache now). The SDK waits a
+random 0 to 500 ms, then fetches the public config again and redraws:
+```json
+{ "event_id": "…", "type": "config.updated", "occurred_at": "…", "game_id": "…", "data": { "version": 5 } }
+```
+
 Who gets what:
 
 | Event | Frames |
@@ -396,6 +430,7 @@ Who gets what:
 | `friend.accepted` | both, in this order: `conversation.added`, then `friend_accepted` |
 | `friend.removed` | both: `conversation.removed` |
 | `player.renamed` | nobody |
+| `config.published` | every connection of the game: `config.updated` |
 
 Chat messages are **not** events: they travel over the WebSocket only (`message.send` / `message.new`, see `openapi/realtime-ws.md`).
 
@@ -476,6 +511,8 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 | Social does not publish `player.renamed` | Names stored in Realtime are never refreshed | Social publishes it (shape in section 5). Realtime already handles it. |
 | An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until restart/backfill | Transactional outbox in Social, dead-letter queue and startup backfill (TEAM-151). |
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
+| Platform does not publish `config.published` yet | Pressing Publish in the dashboard does not reach Realtime; `hello` still shows the right `configVersion` after a reconnect | Platform publishes it after a publish or rollback is saved (shape in section 5). Realtime already handles it. |
+| The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
 | `online` in `conversation.added` is "has an open WebSocket now" | No grace period, ignores the game's "hide online status" | Presence task (TEAM-149). |
 | `data` field names are not compiler-checked | A rename on one side drops events silently (only a log line) | The two contract tests in section 2; keep `event-messages.md` and this file in step. |
