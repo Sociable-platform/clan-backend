@@ -59,7 +59,7 @@ What each hop guarantees:
 | Envelope, `Publisher` interface, `Noop`, `Safe`, `Recorder` (test fake) | `pkg/events/events.go` |
 | RabbitMQ publisher (confirms, lazy connect, reconnect) | `pkg/events/rabbitmq.go` |
 | Where Social publishes friend events | `services/social/internal/service/friends.go` |
-| Where Social publishes clan events | `services/social/internal/service/clans.go` (`clan.renamed` and a kick come with later tasks) |
+| Where Social publishes clan events | `services/social/internal/service/clans.go` (leave and kick both go through `publishLeave`; `clan.renamed` comes with the rename task) |
 | Where Platform publishes `config.published` | `services/platform/internal/service/widget.go` (`addWidgetVersion`), wired in `services/platform/cmd/main.go` |
 | Social wiring (`SOCIAL_RABBITMQ_URL`) | `services/social/cmd/main.go` |
 | Exchange, queue and bindings | `deploy/rabbitmq/definitions.json`, applied by the `rabbitmq-setup` job in `docker-compose.yml` |
