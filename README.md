@@ -441,14 +441,19 @@ always come from the token, never from the URL or the body.
 
 ### Realtime service (port 8083)
 
-The WebSocket endpoint is built; the conversation list, history and chat frames are specified in
-`openapi/realtime.yaml` and `openapi/realtime-ws.md` and come in later tasks.
+The WebSocket endpoint, the chat, the conversation list and the message history are built. The contract is in
+`openapi/realtime.yaml` (REST) and `openapi/realtime-ws.md` (WebSocket). The REST endpoints need
+`Authorization: Bearer <player token>`; the token is checked with platform's public key and realtime then asks the social
+service (`REALTIME_SOCIAL_URL`, with the player's own token) for the player's social ID, so they answer 503 `social_unavailable`
+while social is down.
 
 | Method | Path | Answer |
 |---|---|---|
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
 | GET | `/api/v1/ws?token=<player token>` | WebSocket upgrade (101). Checked **before** the upgrade: 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type` for the token, 403 `origin_not_allowed` when the page's `Origin` is not in `REALTIME_CORS_ORIGINS` (requests without `Origin`, like Postman's, are allowed), 503 `social_unavailable` when the social service cannot be reached (realtime asks social for the player's own ID with `GET /api/v1/players/me` and the player's token, so **social must be running**), 503 `shutting_down`. After the upgrade the server first sends a `hello` frame with the player's social ID; a `ping` frame is answered with `pong`; a frame over 8 KB closes the connection (1009); a bad frame gets an `error` frame with `bad_frame` and the connection stays; the connection is closed with 4001 when the token expires and with 1001 when the service stops; a client that does not answer the server's pings (every 25 s) for 60 s is dropped; a client that does not read its frames (64 waiting) is closed with 4002 without holding anyone else up. Public URL through Traefik: `/realtime/v1/ws` |
+| GET | `/api/v1/conversations` | 200 `{ "conversations": [...] }`: every conversation of the caller in the token's game, most recently active first, each with `members` (`online` = has an open WebSocket), `lastMessage` (or `null`) and `unread` (messages of other players after the caller's read position, at most 99). 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type`; 403 `origin_not_allowed`; 503 `social_unavailable` |
+| GET | `/api/v1/conversations/{conversationId}/messages?before=<messageId>&limit=50` | 200 `{ "messages": [...], "hasMore": true }`: **newest first**; `before` returns only older messages, `limit` is 1 to 100 (default 50). 400 `invalid_limit` / `invalid_before`; 403 `not_member` (not in it, or an unknown id or another game's: one answer for all); plus the errors above |
 | any | anything else | 404 `not_found` in the standard error format |
 
 **Try the WebSocket (Postman or any client).** Social and realtime must both be running (`docker compose up`). Make a player token
@@ -482,8 +487,26 @@ The sender gets `message.ack` (`replyTo: "c-1"`, `messageId`, `createdAt`) and t
 Errors come back as `error` frames with `replyTo` and nothing is stored or sent: `not_member` (not in the conversation, or an unknown id),
 `empty`, `too_long` (over 1000 characters for now; the game's own limit comes with the message rules), `bad_frame` (missing or wrong-type field),
 `internal` (for example the database is down).
-Not built yet: `conversation.read` (answers `bad_frame`), presence, the per-game message rules (slow mode, profanity filter, rate limit,
-blocks, `max_message_length`) and the REST history.
+Not built yet: presence and the per-game message rules (slow mode, profanity filter, rate limit, blocks, `max_message_length`).
+
+**Conversation list, history and "read" (Postman).** After the chat above, for each player (use that player's token):
+
+```
+GET http://localhost:8083/api/v1/conversations                                           Authorization: Bearer <token>
+GET http://localhost:8083/api/v1/conversations/<conversation id>/messages?limit=20       Authorization: Bearer <token>
+GET http://localhost:8083/api/v1/conversations/<conversation id>/messages?before=<id of the oldest message>&limit=20
+```
+
+The list shows the other player's `lastMessage` and `unread` (the number of messages the *other* player sent that you have not read).
+The messages come newest first; `hasMore` is `true` while older ones exist, then ask again with `before` set to the `id` of the
+last message you got. To clear the unread count send, in that player's WebSocket tab:
+
+```
+{"type":"conversation.read","id":"r-1","data":{"conversationId":"<conversation id>","lastMessageId":"<id of the newest message>"}}
+```
+
+There is no reply; `GET /api/v1/conversations` now shows `unread: 0`. A message sent later makes it `1` again. Reading is remembered per player
+and only moves forward. A player who is not in the conversation gets 403 `not_member` (REST) or an `error` frame with `not_member` (WebSocket).
 
 Only the service-wide `REALTIME_CORS_ORIGINS` list is checked for the origin so far. A per-game `allowed_origins` list needs
 Platform to store and serve it, which does not exist yet.

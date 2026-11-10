@@ -20,6 +20,14 @@ type Store interface {
 	RemoveDMMembers(ctx context.Context, gameID, dmKey string) (conversationID string, found bool, err error)
 	// RenamePlayer stores a new display name for the player's memberships in the game; safe to repeat.
 	RenamePlayer(ctx context.Context, gameID, playerID, name string) error
+	// ListConversations returns the player's conversations in the game, most recently active first.
+	ListConversations(ctx context.Context, gameID, playerID string) ([]repository.PlayerConversation, error)
+	// ListMessages returns one page of history, newest first, and whether older messages exist.
+	// It returns repository.ErrNotMember when the player is not in the conversation.
+	ListMessages(ctx context.Context, gameID, playerID, conversationID, before string, limit int) ([]repository.Message, bool, error)
+	// MarkRead moves the player's read position forward to the message; safe to repeat. It returns
+	// repository.ErrNotMember or repository.ErrNoSuchMessage.
+	MarkRead(ctx context.Context, gameID, playerID, conversationID, messageID string) error
 	// InsertMessage stores a message if the sender is a member and returns all members.
 	// It returns repository.ErrNotMember otherwise.
 	InsertMessage(ctx context.Context, gameID, conversationID, senderID string, m repository.NewMessage) ([]string, error)

@@ -158,7 +158,7 @@ func (h *Handler) handleFrame(c *hub.Conn, typ websocket.MessageType, data []byt
 	case frameTypeMessageSend:
 		h.messageSend(c, f)
 	case frameTypeConversationRead:
-		h.enqueueError(c, codeBadFrame, "This frame type is not available yet", f.idPointer())
+		h.conversationRead(c, f)
 	default:
 		h.enqueueError(c, codeBadFrame, "Unknown frame type", f.idPointer())
 	}

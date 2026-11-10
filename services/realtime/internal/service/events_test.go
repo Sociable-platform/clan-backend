@@ -34,6 +34,13 @@ type memStore struct {
 	inserts   []insertCall
 	members   []string
 	insertErr error
+
+	// the reads (reads_test.go)
+	convs     []repository.PlayerConversation
+	msgs      []repository.Message
+	hasMore   bool
+	readErr   error // what ListMessages and MarkRead return
+	readCalls []string
 }
 
 type upsertCall struct {

@@ -6,12 +6,12 @@ WebSocket. The two REST reads (conversation list and history) are in [`realtime.
 - **Status:** contract for the SDK. Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
   the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1009`, `4001` and `4002`,
   the friend frames (`conversation.added`, `conversation.removed`, the `friend_request`, `friend_request_cancelled`, `friend_request_declined` and `friend_accepted` notifications), and
-  `message.send` with `message.ack` and `message.new`.
+  `message.send` with `message.ack` and `message.new`, and `conversation.read`.
   For `message.send` the server checks that the player is a member and that the trimmed body is not empty and at most 1000 characters
   (the game's own `max_message_length` comes with the message rules). Answers: `message.ack`, or `error` with `not_member`, `empty`, `too_long`,
   `bad_frame` or `internal`.
   In `hello`, `configVersion` is always `0` ("not known yet") and `onlineFriends` is always `[]` until the config cache and friendships exist.
-  Not built yet: `conversation.read` (answers `error bad_frame` "not available yet"), presence, the clan notifications,
+  Not built yet: presence, the clan notifications,
   clan conversations, the `config.updated` frame, the message rules (`rate_limited`, `feature_disabled`, `blocked`, `slow_mode`, the profanity
   filter), the 5-connections-per-player limit, and `1008`/`4003`.
 - **Endpoint:** `GET /api/v1/ws?token=<player token>` on the realtime service (`ws://localhost:8083/api/v1/ws` locally).
@@ -107,6 +107,11 @@ Tell the server the player has read the conversation up to a message, so `unread
 The server keeps the newest value; sending an older `lastMessageId` than before changes nothing.
 No reply on success. The SDK sends it when the panel shows the conversation and when new messages arrive
 while it is open.
+
+`lastMessageId` must be a message of that conversation. Otherwise the answer is an `error` frame and nothing changes:
+`not_member` (the player is not in the conversation, also for an unknown ID or one of another game) or `bad_frame` (a
+missing or wrong-type field, an ID that is not a UUID, or a message that is not in that conversation). The new position
+shows in `unread` of `GET /api/v1/conversations`; other open tabs of the player are not told.
 
 ### `ping`
 

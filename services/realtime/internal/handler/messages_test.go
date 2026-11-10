@@ -21,6 +21,7 @@ const convID = "0193a6b4-7c1e-7d2a-9f10-2b3c4d5e6f70"
 // handler passed and answers with whatever send returns.
 type chatService struct {
 	fakeService
+	readFake // the REST reads and conversation.read (rest_test.go)
 
 	mu    sync.Mutex
 	calls []sendCall

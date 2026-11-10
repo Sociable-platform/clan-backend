@@ -486,7 +486,7 @@ func TestWSBadFramesKeepTheConnectionOpen(t *testing.T) {
 		{"id too long", `{"type":"ping","id":"` + strings.Repeat("a", 65) + `"}`, false, nil},
 		{"data is not an object", `{"type":"ping","id":"x-2","data":"hi"}`, false, "x-2"},
 		{"unknown type", `{"type":"nope","id":"x-3"}`, false, "x-3"},
-		{"type not built yet", `{"type":"conversation.read","id":"x-4","data":{"conversationId":"c","lastMessageId":"m"}}`, false, "x-4"},
+		{"a server frame sent by the client", `{"type":"message.new","id":"x-4","data":{}}`, false, "x-4"},
 		{"binary frame", `{"type":"ping"}`, true, nil},
 	}
 	for _, tt := range tests {
