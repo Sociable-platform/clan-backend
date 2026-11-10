@@ -18,7 +18,7 @@ clan-backend/
 ├── deploy/traefik/            # gateway: static config and the /realtime route
 ├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
-├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message
+├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)

@@ -48,6 +48,10 @@ func docShapes(t *testing.T) map[string]string {
 	}
 	// On Windows git may check the file out with CRLF line endings.
 	doc = bytes.ReplaceAll(doc, []byte("\r\n"), []byte("\n"))
+	// The part after "# WebSocket frames" holds frames of the WebSocket, not events.
+	if i := bytes.Index(doc, []byte("\n# WebSocket frames")); i >= 0 {
+		doc = doc[:i]
+	}
 	out := map[string]string{}
 	for _, b := range regexp.MustCompile("(?s)```json\\n(.*?)\\n```").FindAllSubmatch(doc, -1) {
 		var msg struct {

@@ -275,3 +275,170 @@
   }
 }
 ```
+
+# WebSocket frames
+
+## conversation.added: clan room for the owner (clan.created)
+
+```json
+{
+  "type": "conversation.added",
+  "data": {
+    "conversation": {
+      "id": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
+      "kind": "clan",
+      "clanId": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "members": [
+        {
+          "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+          "name": "Alice",
+          "online": true
+        }
+      ],
+      "lastMessage": null,
+      "unread": 0
+    }
+  }
+}
+```
+
+## conversation.added: clan room for a player who joins (clan.member_joined)
+
+```json
+{
+  "type": "conversation.added",
+  "data": {
+    "conversation": {
+      "id": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
+      "kind": "clan",
+      "clanId": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "members": [
+        {
+          "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+          "name": "Alice",
+          "online": true
+        },
+        {
+          "id": "2c33a1b2-c3d4-4e5f-8061-728394a5b6c7",
+          "name": "Emma",
+          "online": false
+        },
+        {
+          "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+          "name": "Bob",
+          "online": true
+        }
+      ],
+      "lastMessage": {
+        "id": "0193a6c0-1111-7222-8333-944455556666",
+        "senderId": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+        "senderName": "Alice",
+        "body": "Wolves practice tonight at 8",
+        "createdAt": "2026-11-10T09:45:12.314Z"
+      },
+      "unread": 1
+    }
+  }
+}
+```
+
+## notification clan_joined: to the clan's members (clan.member_joined)
+
+```json
+{
+  "type": "notification",
+  "data": {
+    "kind": "clan_joined",
+    "payload": {
+      "clanId": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "player": {
+        "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+        "name": "Bob"
+      }
+    }
+  }
+}
+```
+
+## conversation.removed: clan room leaves the list (clan.member_left, clan.disbanded)
+
+```json
+{
+  "type": "conversation.removed",
+  "data": {
+    "conversationId": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee"
+  }
+}
+```
+
+## notification clan_kicked: to the removed player (clan.member_left with reason kicked)
+
+```json
+{
+  "type": "notification",
+  "data": {
+    "kind": "clan_kicked",
+    "payload": {
+      "clanId": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091"
+    }
+  }
+}
+```
+
+## notification clan_disbanded: to the clan's members (clan.disbanded)
+
+```json
+{
+  "type": "notification",
+  "data": {
+    "kind": "clan_disbanded",
+    "payload": {
+      "clanId": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091"
+    }
+  }
+}
+```
+
+## message.send: client to server, clan chat
+
+```json
+{
+  "type": "message.send",
+  "id": "c-1",
+  "data": {
+    "conversationId": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
+    "body": "See you at 8"
+  }
+}
+```
+
+## message.ack: server to the sender
+
+```json
+{
+  "type": "message.ack",
+  "data": {
+    "replyTo": "c-1",
+    "messageId": "0193a6c0-1111-7222-8333-944455556666",
+    "createdAt": "2026-11-10T09:45:12.314Z"
+  }
+}
+```
+
+## message.new: server to every member of the clan room
+
+```json
+{
+  "type": "message.new",
+  "data": {
+    "conversationId": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
+    "message": {
+      "id": "0193a6c0-1111-7222-8333-944455556666",
+      "senderId": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+      "senderName": "Alice",
+      "body": "See you at 8",
+      "createdAt": "2026-11-10T09:45:12.314Z"
+    }
+  }
+}
+```
