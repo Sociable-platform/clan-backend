@@ -60,7 +60,7 @@ flowchart LR
     RT_HTTP -->|"same call, once per game, when hello needs the version"| Platform
     RT_HTTP -->|"GET /players/me with the player's token"| Social
     Social -->|"publish after commit"| MQ
-    Platform -->|"config.published (not published yet)"| MQ
+    Platform -->|"config.published"| MQ
     MQ -->|"friend.*, player.*, clan.*, config.published"| RT_Consumer
     RT_Consumer --> RT_Service
     RT_HTTP --> RT_Service
@@ -442,7 +442,7 @@ Chat in a clan room is the same `message.send` flow as diagram 4: a clan room is
 ## 11 Live re-skin
 
 The developer presses Publish; every player who has the game open sees the new look without reloading. Realtime fetches the new config
-first, so the version in the frame is one it really holds. **Platform does not publish `config.published` yet**; Realtime handles it already.
+first, so the version in the frame is one it really holds. Platform publishes `config.published` after a publish or rollback is saved.
 
 ```mermaid
 sequenceDiagram

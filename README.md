@@ -244,7 +244,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `player.renamed` | social (**not published yet**) | `{ "player": { "id", "name" } }` |
 | `clan.created`, `clan.member_joined`, `clan.member_left`, `clan.renamed`, `clan.disbanded` | social (clan task) | see [`docs/event-messages.md`](docs/event-messages.md) |
 | `player.blocked`, `player.unblocked` | social (block task) | `{ "blocker_id", "blocked_id" }` |
-| `config.published` | platform (**not published yet**; realtime handles it: `config.updated` to the game's connections) | `{ "version" }` |
+| `config.published` | platform, `POST /api/v1/games/{gameID}/widget/publish` and `.../widget/versions/{version}/rollback` (200); realtime then sends `config.updated` to the game's connections | `{ "version" }`, the new version number (a rollback saves a new version, so it is that number) |
 
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
 `name` the display name at the time of the event.

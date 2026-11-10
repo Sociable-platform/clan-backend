@@ -59,6 +59,7 @@ What each hop guarantees:
 | Envelope, `Publisher` interface, `Noop`, `Safe`, `Recorder` (test fake) | `pkg/events/events.go` |
 | RabbitMQ publisher (confirms, lazy connect, reconnect) | `pkg/events/rabbitmq.go` |
 | Where Social publishes friend events | `services/social/internal/service/friends.go` |
+| Where Platform publishes `config.published` | `services/platform/internal/service/widget.go` (`addWidgetVersion`), wired in `services/platform/cmd/main.go` |
 | Social wiring (`SOCIAL_RABBITMQ_URL`) | `services/social/cmd/main.go` |
 | Exchange, queue and bindings | `deploy/rabbitmq/definitions.json`, applied by the `rabbitmq-setup` job in `docker-compose.yml` |
 | Consumer loop (connect, ack, retry, reconnect) | `services/realtime/internal/consumer/consumer.go` |
@@ -67,7 +68,7 @@ What each hop guarantees:
 | Realtime wiring (`REALTIME_RABBITMQ_URL`, shared hub) | `services/realtime/cmd/main.go` |
 | What the player's browser receives | `openapi/realtime-ws.md` |
 | Every message, without explanation (events, then the clan chat frames) | `docs/event-messages.md` |
-| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile` |
+| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile`. Platform, in `services/platform/internal/service/config_events_test.go`: `TestConfigPublishedHasTheFieldsOfTheEventMessagesFile` |
 
 Realtime decodes the same `events.Event` struct that Social encodes, so a renamed envelope field breaks both sides at
 compile time. The `data` fields are plain maps and are **not** checked by the compiler: that is what the two tests above are for.
@@ -332,8 +333,8 @@ Cancel and decline are two event types because they have different recipients; a
 
 ### `config.published`
 
-- **Published by Platform** when the developer presses Publish (or rolls back) and a new config version exists. **Not published yet**
-  (the Platform side is a separate task); Realtime handles it already.
+- **Published by Platform** after the developer presses Publish (or rolls back) and the new config version is saved
+  (`services/platform/internal/service/widget.go`). A rollback saves a new version, so `version` is that new number.
 - **`data`:** `version` = the new version number, a whole number from 1. The config itself is **not** in the event.
 
 ```json
@@ -511,7 +512,6 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 | Social does not publish `player.renamed` | Names stored in Realtime are never refreshed | Social publishes it (shape in section 5). Realtime already handles it. |
 | An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until restart/backfill | Transactional outbox in Social, dead-letter queue and startup backfill (TEAM-151). |
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
-| Platform does not publish `config.published` yet | Pressing Publish in the dashboard does not reach Realtime; `hello` still shows the right `configVersion` after a reconnect | Platform publishes it after a publish or rollback is saved (shape in section 5). Realtime already handles it. |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
 | `online` in `conversation.added` is "has an open WebSocket now" | No grace period, ignores the game's "hide online status" | Presence task (TEAM-149). |
