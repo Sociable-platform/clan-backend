@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 )
@@ -629,7 +630,7 @@ func TestLeaveClanNormalMember(t *testing.T) {
 	joinAs(t, r, game, clan, "u_1")
 	leaver := joinAs(t, r, game, clan, "u_2")
 
-	if err := r.LeaveClan(ctx, game, clan, "u_2"); err != nil {
+	if _, err := r.LeaveClan(ctx, game, clan, "u_2"); err != nil {
 		t.Fatal(err)
 	}
 	if memberOf(t, r, clan, leaver) {
@@ -650,7 +651,7 @@ func TestLeaveClanNormalMember(t *testing.T) {
 	if _, err := r.JoinClan(ctx, game, other, leaver); err != nil {
 		t.Fatalf("joining another clan after leaving: %v", err)
 	}
-	if err := r.LeaveClan(ctx, game, other, "u_2"); err != nil {
+	if _, err := r.LeaveClan(ctx, game, other, "u_2"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.JoinClan(ctx, game, clan, leaver); err != nil {
@@ -658,6 +659,54 @@ func TestLeaveClanNormalMember(t *testing.T) {
 	}
 	checkClanIsConsistent(t, r, clan)
 	checkClanIsConsistent(t, r, other)
+}
+
+// LeaveClan tells what it did, so the service can publish clan.member_left or clan.disbanded.
+func TestLeaveClanReturnsWhatHappened(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	clan := ownClan(t, r, game, "Wolves")
+	owner := ownerOf(t, r, clan)
+	a := joinAs(t, r, game, clan, "u_a")
+	b := joinAs(t, r, game, clan, "u_b")
+	setJoinedAt(t, r, clan, a, 20) // a joined before b
+	setJoinedAt(t, r, clan, b, 10)
+
+	// a normal member leaves: no new owner, the clan stays
+	got, err := r.LeaveClan(ctx, game, clan, "u_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := LeaveResult{ClanID: clan, ClanName: "Wolves", Player: ClanPlayer{ID: b, DisplayName: "u_b"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("member leaves:\n got %+v\nwant %+v", got, want)
+	}
+
+	// the owner leaves: the oldest member takes over and is named
+	got, err = r.LeaveClan(ctx, game, clan, "owner_Wolves")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = LeaveResult{ClanID: clan, ClanName: "Wolves", Player: ClanPlayer{ID: owner, DisplayName: "owner_Wolves"},
+		NewOwner: &ClanPlayer{ID: a, DisplayName: "u_a"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("owner leaves:\n got %+v (new owner %+v)\nwant %+v (new owner %+v)", got, got.NewOwner, want, want.NewOwner)
+	}
+
+	// the last member leaves: the clan is disbanded, nobody takes over
+	got, err = r.LeaveClan(ctx, game, clan, "u_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = LeaveResult{ClanID: clan, ClanName: "Wolves", Player: ClanPlayer{ID: a, DisplayName: "u_a"}, Disbanded: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("last member leaves:\n got %+v\nwant %+v", got, want)
+	}
+	if clanExists(t, r, clan) {
+		t.Fatal("the clan should be deleted")
+	}
 }
 
 func TestLeaveClanOwnerLeavesAndTheOldestMemberTakesOver(t *testing.T) {
@@ -674,7 +723,7 @@ func TestLeaveClanOwnerLeavesAndTheOldestMemberTakesOver(t *testing.T) {
 	setJoinedAt(t, r, clan, a, 20)
 	setJoinedAt(t, r, clan, c, 10)
 
-	if err := r.LeaveClan(ctx, game, clan, "owner_Wolves"); err != nil {
+	if _, err := r.LeaveClan(ctx, game, clan, "owner_Wolves"); err != nil {
 		t.Fatal(err)
 	}
 	if got := ownerOf(t, r, clan); got != b {
@@ -698,7 +747,7 @@ func TestLeaveClanOwnerLeavesAndTheOldestMemberTakesOver(t *testing.T) {
 		t.Fatalf("old owner creating a clan: %v", err)
 	}
 	// the new owner can leave too: the next oldest takes over
-	if err := r.LeaveClan(ctx, game, clan, "u_b"); err != nil {
+	if _, err := r.LeaveClan(ctx, game, clan, "u_b"); err != nil {
 		t.Fatal(err)
 	}
 	if got := ownerOf(t, r, clan); got != a {
@@ -723,7 +772,7 @@ func TestLeaveClanOwnerLeavesTiesGoToTheLowerPlayerID(t *testing.T) {
 		want = b
 	}
 
-	if err := r.LeaveClan(context.Background(), game, clan, "owner_Wolves"); err != nil {
+	if _, err := r.LeaveClan(context.Background(), game, clan, "owner_Wolves"); err != nil {
 		t.Fatal(err)
 	}
 	if got := ownerOf(t, r, clan); got != want {
@@ -740,7 +789,7 @@ func TestLeaveClanOwnerAloneDeletesTheClan(t *testing.T) {
 	clan := ownClan(t, r, game, "Wolves")
 	other := ownClan(t, r, game, "Bears")
 
-	if err := r.LeaveClan(ctx, game, clan, "owner_Wolves"); err != nil {
+	if _, err := r.LeaveClan(ctx, game, clan, "owner_Wolves"); err != nil {
 		t.Fatal(err)
 	}
 	if clanExists(t, r, clan) {
@@ -760,7 +809,7 @@ func TestLeaveClanOwnerAloneDeletesTheClan(t *testing.T) {
 		t.Fatalf("creating the clan again: %v", err)
 	}
 	// and the deleted clan is gone for everyone
-	if err := r.LeaveClan(ctx, game, clan, "owner_Wolves"); !errors.Is(err, ErrClanNotFound) {
+	if _, err := r.LeaveClan(ctx, game, clan, "owner_Wolves"); !errors.Is(err, ErrClanNotFound) {
 		t.Fatalf("leaving the deleted clan: %v, want ErrClanNotFound", err)
 	}
 }
@@ -781,7 +830,7 @@ func TestLeaveClanNotAMember(t *testing.T) {
 		"owner_Bears", // the owner of another clan
 		"u_never_seen",
 	} {
-		if err := r.LeaveClan(ctx, game, wolves, ext); !errors.Is(err, ErrNotInClan) {
+		if _, err := r.LeaveClan(ctx, game, wolves, ext); !errors.Is(err, ErrNotInClan) {
 			t.Fatalf("%s leaving Wolves: %v, want ErrNotInClan", ext, err)
 		}
 	}
@@ -816,7 +865,7 @@ func TestLeaveClanNotFound(t *testing.T) {
 		"empty":          "",
 		"not hex":        "ZZZZZZZZ-0000-4000-8000-00000000dead",
 	} {
-		if err := r.LeaveClan(ctx, game, id, "owner_Wolves"); !errors.Is(err, ErrClanNotFound) {
+		if _, err := r.LeaveClan(ctx, game, id, "owner_Wolves"); !errors.Is(err, ErrClanNotFound) {
 			t.Errorf("%s: %v, want ErrClanNotFound", name, err)
 		}
 	}
@@ -842,7 +891,7 @@ func TestLeaveClanTwoMembersAtTheSameTime(t *testing.T) {
 			joinAs(t, r, game, clan, e)
 		}
 
-		ok, _ := race(t, 2, func(i int) error { return r.LeaveClan(ctx, game, clan, exts[i]) }, ErrNotInClan)
+		ok, _ := race(t, 2, func(i int) error { _, err := r.LeaveClan(ctx, game, clan, exts[i]); return err }, ErrNotInClan)
 		if ok != 2 {
 			t.Fatalf("round %d: %d of 2 left", round, ok)
 		}
@@ -866,7 +915,7 @@ func TestLeaveClanSamePlayerTwiceAtTheSameTime(t *testing.T) {
 	joinAs(t, r, game, clan, "u_1")
 	joinAs(t, r, game, clan, "u_2")
 
-	ok, notIn := race(t, 6, func(int) error { return r.LeaveClan(ctx, game, clan, "u_1") }, ErrNotInClan)
+	ok, notIn := race(t, 6, func(int) error { _, err := r.LeaveClan(ctx, game, clan, "u_1"); return err }, ErrNotInClan)
 	if ok != 1 || notIn != 5 {
 		t.Fatalf("left=%d notInClan=%d, want 1 and 5", ok, notIn)
 	}
@@ -895,7 +944,7 @@ func TestLeaveClanEveryoneAtTheSameTime(t *testing.T) {
 			exts = append(exts, e)
 		}
 
-		ok, _ := race(t, len(exts), func(i int) error { return r.LeaveClan(ctx, game, clan, exts[i]) }, ErrNotInClan)
+		ok, _ := race(t, len(exts), func(i int) error { _, err := r.LeaveClan(ctx, game, clan, exts[i]); return err }, ErrNotInClan)
 		if ok != len(exts) {
 			t.Fatalf("round %d: %d of %d left", round, ok, len(exts))
 		}
@@ -925,7 +974,7 @@ func TestLeaveClanOwnerLeavesWhileSomeoneJoins(t *testing.T) {
 		var wg sync.WaitGroup
 		errs := make([]error, 2)
 		wg.Add(2)
-		go func() { defer wg.Done(); errs[0] = r.LeaveClan(ctx, game, clan, fmt.Sprintf("owner_Race%d", round)) }()
+		go func() { defer wg.Done(); _, errs[0] = r.LeaveClan(ctx, game, clan, fmt.Sprintf("owner_Race%d", round)) }()
 		go func() { defer wg.Done(); _, errs[1] = r.JoinClan(ctx, game, clan, joiner) }()
 		wg.Wait()
 		if errs[0] != nil || errs[1] != nil {
@@ -959,7 +1008,10 @@ func TestLeaveClanAloneOwnerLeavesWhileSomeoneJoins(t *testing.T) {
 		var wg sync.WaitGroup
 		var leaveErr, joinErr error
 		wg.Add(2)
-		go func() { defer wg.Done(); leaveErr = r.LeaveClan(ctx, game, clan, fmt.Sprintf("owner_Solo%d", round)) }()
+		go func() {
+			defer wg.Done()
+			_, leaveErr = r.LeaveClan(ctx, game, clan, fmt.Sprintf("owner_Solo%d", round))
+		}()
 		go func() { defer wg.Done(); _, joinErr = r.JoinClan(ctx, game, clan, joiner) }()
 		wg.Wait()
 		if leaveErr != nil {

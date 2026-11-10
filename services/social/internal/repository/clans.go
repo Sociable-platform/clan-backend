@@ -334,6 +334,23 @@ func (r *Repository) ListMembers(ctx context.Context, gameID, clanID string) ([]
 	return members, nil
 }
 
+// ClanPlayer is a player as the clan events name them: social's player ID and display name.
+type ClanPlayer struct {
+	ID          string
+	DisplayName string
+}
+
+// LeaveResult is what LeaveClan did.
+type LeaveResult struct {
+	ClanID   string
+	ClanName string
+	Player   ClanPlayer // who left
+	// NewOwner is the member who took over because the owner left; nil when the owner
+	// did not change (a normal member left, or the clan was disbanded).
+	NewOwner  *ClanPlayer
+	Disbanded bool // the player was the last member, so the clan was deleted
+}
+
 // LeaveClan removes the player (gameID, externalID) from clan clanID. Everything happens in
 // one transaction, and the clan row is locked first (like JoinClan), so member_count and
 // the owner cannot get out of step when members join or leave at the same time.
@@ -345,26 +362,28 @@ func (r *Repository) ListMembers(ctx context.Context, gameID, clanID string) ([]
 //   - The owner is the only member: the clan is deleted.
 //
 // It never creates a player record: a player we have never seen is simply not a member.
+// It returns what happened (who left, the new owner, whether the clan is gone), read in
+// the same transaction, so the clan events tell exactly what was saved.
 //
 // Errors: ErrClanNotFound (also for another game's clan and for an ID that is not a UUID),
 // ErrNotInClan.
-func (r *Repository) LeaveClan(ctx context.Context, gameID, clanID, externalID string) error {
+func (r *Repository) LeaveClan(ctx context.Context, gameID, clanID, externalID string) (LeaveResult, error) {
 	if r.pool == nil {
-		return ErrNoDatabase
+		return LeaveResult{}, ErrNoDatabase
 	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("leave clan: %w", err)
+		return LeaveResult{}, fmt.Errorf("leave clan: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// 1. Lock the clan. "and game_id = $2" makes another game's clan look like it does not exist.
-	var locked string
+	var res LeaveResult
 	err = tx.QueryRow(ctx,
-		`select id::text from clans where id = $1 and game_id = $2 for update`,
-		clanID, gameID).Scan(&locked)
+		`select id::text, name from clans where id = $1 and game_id = $2 for update`,
+		clanID, gameID).Scan(&res.ClanID, &res.ClanName)
 	if err != nil {
-		return leaveClanError(err)
+		return LeaveResult{}, leaveClanError(err)
 	}
 
 	// 2. Delete the membership. No row means the player is not in this clan.
@@ -374,13 +393,13 @@ func (r *Repository) LeaveClan(ctx context.Context, gameID, clanID, externalID s
 		 using players p
 		 where m.clan_id = $1 and m.game_id = $2
 		   and p.id = m.player_id and p.game_id = m.game_id and p.external_id = $3
-		 returning m.role`,
-		clanID, gameID, externalID).Scan(&role)
+		 returning m.role, m.player_id::text, p.display_name`,
+		clanID, gameID, externalID).Scan(&role, &res.Player.ID, &res.Player.DisplayName)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotInClan
+		return LeaveResult{}, ErrNotInClan
 	}
 	if err != nil {
-		return leaveClanError(err)
+		return LeaveResult{}, leaveClanError(err)
 	}
 
 	// 3. Count down. Safe to trust member_count because we hold the lock.
@@ -389,42 +408,46 @@ func (r *Repository) LeaveClan(ctx context.Context, gameID, clanID, externalID s
 		`update clans set member_count = member_count - 1 where id = $1 returning member_count`,
 		clanID).Scan(&left)
 	if err != nil {
-		return leaveClanError(err)
+		return LeaveResult{}, leaveClanError(err)
 	}
 
 	switch {
 	case left == 0:
 		// 4a. Nobody is left: the clan goes away (its member rows are already gone).
 		if _, err := tx.Exec(ctx, `delete from clans where id = $1`, clanID); err != nil {
-			return leaveClanError(err)
+			return LeaveResult{}, leaveClanError(err)
 		}
+		res.Disbanded = true
 	case role == "owner":
 		// 4b. The owner left and others remain: the member who joined first takes over.
-		var heir string
+		var heir ClanPlayer
 		err = tx.QueryRow(ctx,
-			`select player_id::text from clan_members
-			 where clan_id = $1
-			 order by joined_at, player_id
+			`select m.player_id::text, p.display_name
+			 from clan_members m
+			 join players p on p.id = m.player_id and p.game_id = m.game_id
+			 where m.clan_id = $1
+			 order by m.joined_at, m.player_id
 			 limit 1`,
-			clanID).Scan(&heir)
+			clanID).Scan(&heir.ID, &heir.DisplayName)
 		if err != nil {
-			return leaveClanError(err)
+			return LeaveResult{}, leaveClanError(err)
 		}
 		if _, err := tx.Exec(ctx,
 			`update clan_members set role = 'owner' where clan_id = $1 and player_id = $2`,
-			clanID, heir); err != nil {
-			return leaveClanError(err)
+			clanID, heir.ID); err != nil {
+			return LeaveResult{}, leaveClanError(err)
 		}
 		if _, err := tx.Exec(ctx,
-			`update clans set owner_id = $2 where id = $1`, clanID, heir); err != nil {
-			return leaveClanError(err)
+			`update clans set owner_id = $2 where id = $1`, clanID, heir.ID); err != nil {
+			return LeaveResult{}, leaveClanError(err)
 		}
+		res.NewOwner = &heir
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return leaveClanError(err)
+		return LeaveResult{}, leaveClanError(err)
 	}
-	return nil
+	return res, nil
 }
 
 // leaveClanError turns database errors into our own errors where it can.

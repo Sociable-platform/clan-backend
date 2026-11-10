@@ -195,7 +195,7 @@ func (s *Service) LeaveClan(ctx context.Context, gameID, externalID, clanID stri
 	if !uuidPattern.MatchString(clanID) {
 		return errClanNotFound()
 	}
-	err := s.store.LeaveClan(ctx, gameID, strings.ToLower(clanID), externalID)
+	_, err := s.store.LeaveClan(ctx, gameID, strings.ToLower(clanID), externalID)
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return errClanNotFound()
