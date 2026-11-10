@@ -59,6 +59,7 @@ What each hop guarantees:
 | Envelope, `Publisher` interface, `Noop`, `Safe`, `Recorder` (test fake) | `pkg/events/events.go` |
 | RabbitMQ publisher (confirms, lazy connect, reconnect) | `pkg/events/rabbitmq.go` |
 | Where Social publishes friend events | `services/social/internal/service/friends.go` |
+| Where Social publishes clan events | `services/social/internal/service/clans.go` (`clan.renamed` and a kick come with later tasks) |
 | Where Platform publishes `config.published` | `services/platform/internal/service/widget.go` (`addWidgetVersion`), wired in `services/platform/cmd/main.go` |
 | Social wiring (`SOCIAL_RABBITMQ_URL`) | `services/social/cmd/main.go` |
 | Exchange, queue and bindings | `deploy/rabbitmq/definitions.json`, applied by the `rabbitmq-setup` job in `docker-compose.yml` |
@@ -68,7 +69,7 @@ What each hop guarantees:
 | Realtime wiring (`REALTIME_RABBITMQ_URL`, shared hub) | `services/realtime/cmd/main.go` |
 | What the player's browser receives | `openapi/realtime-ws.md` |
 | Every message, without explanation (events, then the clan chat frames) | `docs/event-messages.md` |
-| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile`. Platform, in `services/platform/internal/service/config_events_test.go`: `TestConfigPublishedHasTheFieldsOfTheEventMessagesFile` |
+| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile`, and in `clan_events_test.go`: `TestClanEventsHaveTheFieldsOfTheEventMessagesFile`. Platform, in `services/platform/internal/service/config_events_test.go`: `TestConfigPublishedHasTheFieldsOfTheEventMessagesFile` |
 
 Realtime decodes the same `events.Event` struct that Social encodes, so a renamed envelope field breaks both sides at
 compile time. The `data` fields are plain maps and are **not** checked by the compiler: that is what the two tests above are for.
