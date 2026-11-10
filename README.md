@@ -18,6 +18,7 @@ clan-backend/
 ├── deploy/traefik/            # gateway: static config and the /realtime route
 ├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
+├── docs/                      # events.md: how services publish and consume events
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
@@ -188,6 +189,8 @@ rewrites them to the service's own paths (`deploy/traefik/dynamic/realtime.yml`)
 - Port 80 busy on your computer? Set `TRAEFIK_HOST_PORT` in `.env` and use that port in the URLs.
 
 ## RabbitMQ events
+
+The full guide (flow diagram, every event's fields, publisher and consumer behavior, how to test, open gaps) is in [`docs/events.md`](docs/events.md).
 
 Services talk to each other through one topic exchange, `socialkit.events`. `docker compose up` starts RabbitMQ and then
 runs the one-shot `rabbitmq-setup` job, which imports `deploy/rabbitmq/definitions.json`:
