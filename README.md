@@ -6,7 +6,7 @@ Backend for the clan platform: three Go services in one repository (realtime is 
 |---|---|---|---|
 | `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
 | `services/social` | Players, clans, clan members | 8082 | `social` |
-| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, and friend events from RabbitMQ that create and remove DM conversations) | 8083 | `realtime` |
+| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, friend events from RabbitMQ that create and remove DM conversations, and sending messages) | 8083 | `realtime` |
 
 ## Layout
 
@@ -467,7 +467,23 @@ with it. Each tab gets its own `hello` with a different `playerId`; disconnectin
 
 A missing or wrong token makes Connect fail with HTTP 401 and a JSON error body. The token is in the URL, so the service
 and Traefik never log the query string. In `hello`, `configVersion` is `0` (not known yet) and `onlineFriends` is `[]` until the config cache and friendships exist.
-Not built yet: `message.send` and `conversation.read` (they answer `bad_frame`), presence and notifications.
+
+**Chat between two friends (first full slice).** Two players only share a conversation after a `friend.accepted` event (Social does not
+publish it yet; publish it by hand, see "RabbitMQ events" and its "Check by hand" bullet, with the `playerId`s from the two `hello` frames and
+the `gid` of the tokens as `game_id`). Both tabs then get `conversation.added`; copy `data.conversation.id`. In either tab send:
+
+```
+{"type":"message.send","id":"c-1","data":{"conversationId":"<conversation id>","body":"  hello  "}}
+```
+
+The sender gets `message.ack` (`replyTo: "c-1"`, `messageId`, `createdAt`) and then, like the friend and every other open tab of either player,
+`message.new` with the trimmed text. Check the rows with
+`docker compose exec postgres psql -U postgres -d clan -c "select id, sender_name, body, created_at from realtime.messages order by id"`.
+Errors come back as `error` frames with `replyTo` and nothing is stored or sent: `not_member` (not in the conversation, or an unknown id),
+`empty`, `too_long` (over 1000 characters for now; the game's own limit comes with the message rules), `bad_frame` (missing or wrong-type field),
+`internal` (for example the database is down).
+Not built yet: `conversation.read` (answers `bad_frame`), presence, the per-game message rules (slow mode, profanity filter, rate limit,
+blocks, `max_message_length`) and the REST history.
 
 Only the service-wide `REALTIME_CORS_ORIGINS` list is checked for the origin so far. A per-game `allowed_origins` list needs
 Platform to store and serve it, which does not exist yet.

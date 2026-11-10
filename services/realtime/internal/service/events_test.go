@@ -30,6 +30,10 @@ type memStore struct {
 		found bool
 	}
 	err error
+
+	inserts   []insertCall
+	members   []string
+	insertErr error
 }
 
 type upsertCall struct {
@@ -38,6 +42,16 @@ type upsertCall struct {
 }
 
 func (m *memStore) Ping(context.Context) error { return nil }
+
+type insertCall struct {
+	gameID, conversationID, senderID string
+	msg                              repository.NewMessage
+}
+
+func (m *memStore) InsertMessage(_ context.Context, gameID, conversationID, senderID string, msg repository.NewMessage) ([]string, error) {
+	m.inserts = append(m.inserts, insertCall{gameID, conversationID, senderID, msg})
+	return m.members, m.insertErr
+}
 
 func (m *memStore) UpsertDM(_ context.Context, gameID, key string, a, b repository.Member) (repository.DM, error) {
 	m.upserts = append(m.upserts, upsertCall{gameID, key, a, b})

@@ -13,6 +13,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/auth"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/social"
 )
 
@@ -33,6 +34,10 @@ func (noVerifier) Verify(string) (auth.Player, error) {
 }
 
 func (f fakeService) Ready(context.Context) error { return f.err }
+
+func (f fakeService) SendMessage(context.Context, service.Sender, string, string) (service.Sent, error) {
+	return service.Sent{}, errors.New("fakeService does not store messages")
+}
 
 // testLog is a logger that discards everything, for tests.
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

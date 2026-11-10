@@ -13,7 +13,7 @@ const (
 	frameTypeErr   = "error"
 	frameTypeHello = "hello"
 
-	// Types the protocol defines but this service does not handle yet.
+	// Types the protocol defines but this service does not handle yet (message.send lives in messages.go).
 	frameTypeMessageSend      = "message.send"
 	frameTypeConversationRead = "conversation.read"
 

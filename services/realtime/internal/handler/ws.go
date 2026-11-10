@@ -155,7 +155,9 @@ func (h *Handler) handleFrame(c *hub.Conn, typ websocket.MessageType, data []byt
 	switch f.Type {
 	case frameTypePing:
 		h.enqueue(c, serverFrame{Type: frameTypePong, Data: pongData{ReplyTo: f.idPointer()}})
-	case frameTypeMessageSend, frameTypeConversationRead:
+	case frameTypeMessageSend:
+		h.messageSend(c, f)
+	case frameTypeConversationRead:
 		h.enqueueError(c, codeBadFrame, "This frame type is not available yet", f.idPointer())
 	default:
 		h.enqueueError(c, codeBadFrame, "Unknown frame type", f.idPointer())

@@ -10,11 +10,14 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/hub"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 )
 
 // Service is what the handlers need from the service layer.
 type Service interface {
 	Ready(ctx context.Context) error
+	// SendMessage stores a message from a conversation member and says who must get it.
+	SendMessage(ctx context.Context, from service.Sender, conversationID, body string) (service.Sent, error)
 }
 
 // Handler holds the routes of the service.

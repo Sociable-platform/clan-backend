@@ -5,10 +5,15 @@ WebSocket. The two REST reads (conversation list and history) are in [`realtime.
 
 - **Status:** contract for the SDK. Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
   the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1009`, `4001` and `4002`,
-  and the friend frames: `conversation.added`, `conversation.removed` and the `friend_request`, `friend_request_cancelled`, `friend_request_declined` and `friend_accepted` notifications.
+  the friend frames (`conversation.added`, `conversation.removed`, the `friend_request`, `friend_request_cancelled`, `friend_request_declined` and `friend_accepted` notifications), and
+  `message.send` with `message.ack` and `message.new`.
+  For `message.send` the server checks that the player is a member and that the trimmed body is not empty and at most 1000 characters
+  (the game's own `max_message_length` comes with the message rules). Answers: `message.ack`, or `error` with `not_member`, `empty`, `too_long`,
+  `bad_frame` or `internal`.
   In `hello`, `configVersion` is always `0` ("not known yet") and `onlineFriends` is always `[]` until the config cache and friendships exist.
-  Not built yet: `message.send`, `conversation.read` (both answer `error bad_frame` "not available yet"), presence, the clan notifications,
-  clan conversations, the `config.updated` frame, the 5-connections-per-player limit, and `1008`/`4003`.
+  Not built yet: `conversation.read` (answers `error bad_frame` "not available yet"), presence, the clan notifications,
+  clan conversations, the `config.updated` frame, the message rules (`rate_limited`, `feature_disabled`, `blocked`, `slow_mode`, the profanity
+  filter), the 5-connections-per-player limit, and `1008`/`4003`.
 - **Endpoint:** `GET /api/v1/ws?token=<player token>` on the realtime service (`ws://localhost:8083/api/v1/ws` locally).
 - **Format:** every frame is one JSON object in a WebSocket **text** frame. Binary frames are a `bad_frame` error.
 - **Names:** frame types are lowercase with dots (`message.new`), JSON fields are camelCase, error codes are `snake_case`.
@@ -91,6 +96,8 @@ Send a text message to a conversation the player is a member of.
 - The reply comes **after** the message is stored: `message.ack` on success, otherwise `error` and nothing is stored or
   sent to anyone. Possible error codes: `rate_limited`, `feature_disabled`, `not_member`, `blocked`, `empty`,
   `too_long`, `slow_mode`, `bad_frame`, `internal`.
+- `message.ack` is sent to the tab that sent the message; `message.new` goes to **every** open tab of every member, the sending tab included (it
+  comes right after the ack, with the same `messageId` and `createdAt`, so the SDK can show the message once).
 - A resend after a reconnect can store the message twice; the SDK should not resend a message it has not seen
   acknowledged unless the user asks to.
 
