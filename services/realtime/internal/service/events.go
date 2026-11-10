@@ -145,7 +145,7 @@ func requestNotice(gameID, kind, requestID string, idRequired bool, sender Playe
 // it exists), both get conversation.added and a friend_accepted notification naming the other.
 // Running it again for the same pair stores nothing new; the frames are sent again, which the
 // SDK ignores (it knows the conversation ID already).
-// requestID is the request that was accepted; it may be empty (Social does not send it yet). When
+// requestID is the request that was accepted; it may be empty (an older event had none). When
 // it is there, the notification carries it so the SDK can drop the matching friend_request.
 func (s *Service) FriendAccepted(ctx context.Context, gameID, requestID string, a, b Player) ([]Push, error) {
 	gameID, err := cleanID("game_id", gameID)

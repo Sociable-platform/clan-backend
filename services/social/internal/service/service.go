@@ -25,8 +25,8 @@ type Store interface {
 	AcceptFriendRequest(ctx context.Context, gameID, requestID, playerID string) (repository.Friendship, error)
 	ListFriendRequests(ctx context.Context, gameID, playerID string) ([]repository.FriendRequest, error)
 	ListFriends(ctx context.Context, gameID, playerID string) ([]repository.Friend, error)
-	DeclineFriendRequest(ctx context.Context, gameID, requestID, playerID string) error
-	CancelFriendRequest(ctx context.Context, gameID, requestID, playerID string) error
+	DeclineFriendRequest(ctx context.Context, gameID, requestID, playerID string) (repository.FriendRequest, error)
+	CancelFriendRequest(ctx context.Context, gameID, requestID, playerID string) (repository.FriendRequest, error)
 	RemoveFriend(ctx context.Context, gameID, playerID, friendID string) (repository.Friendship, error)
 	SearchPlayers(ctx context.Context, gameID, playerID, query string, limit int) ([]repository.PlayerSearchResult, error)
 }
