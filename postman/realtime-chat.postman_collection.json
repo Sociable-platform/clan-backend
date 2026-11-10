@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "Clan realtime - friends, chat, history and read (TEAM-146, TEAM-147)",
-    "description": "Realtime service flow, end to end (TEAM-146: conversation list, message history, conversation.read; TEAM-147: every server frame has the event envelope).\n\nHOW TO RUN\n1. Start everything: docker compose up -d (platform 8081, social 8082, realtime 8083, postgres, rabbitmq). Collection variables: baseUrl (platform), socialUrl, realtimeUrl, wsUrl.\n2. Run folders 1, 2, 3 with the Runner (or request by request). They create a developer, game, key, three players, make Alice and Bob friends through Social, and check that Realtime made the conversation.\n3. Folder 4 is MANUAL (a collection cannot hold WebSocket requests): send its request, open the Visualize tab, open two WebSocket tabs and send the shown frames. Bob sends 3 messages, Alice 1. Check that every frame the server sends has event_id, type, occurred_at, game_id and data.\n4. Run folder 5 (list, history, paging).\n5. Folder 6 is MANUAL: send conversation.read in Alice's WebSocket tab (the Visualize tab shows the frame).\n6. Run folder 7 (unread is 0 for Alice, still 1 for Bob). Folder 8 (errors and security) can run any time after folder 3.\nRunning the whole collection in one go fails folders 5 and 7 unless the manual steps were done in between.",
+    "name": "Clan realtime - friends, chat, history and read (TEAM-146, TEAM-147, TEAM-150)",
+    "description": "Realtime service flow, end to end (TEAM-146: conversation list, message history, conversation.read; TEAM-147: every server frame has the event envelope).\n\nHOW TO RUN\n1. Start everything: docker compose up -d (platform 8081, social 8082, realtime 8083, postgres, rabbitmq). Collection variables: baseUrl (platform), socialUrl, realtimeUrl, wsUrl.\n2. Run folders 1, 2, 3 with the Runner (or request by request). They create a developer, game, key, three players, make Alice and Bob friends through Social, and check that Realtime made the conversation.\n3. Folder 4 is MANUAL (a collection cannot hold WebSocket requests): send its request, open the Visualize tab, open two WebSocket tabs and send the shown frames. Bob sends 3 messages, Alice 1. Check that every frame the server sends has event_id, type, occurred_at, game_id and data.\n4. Run folder 5 (list, history, paging).\n5. Folder 6 is MANUAL: send conversation.read in Alice's WebSocket tab (the Visualize tab shows the frame).\n6. Run folder 7 (unread is 0 for Alice, still 1 for Bob). Folder 8 (errors and security) can run any time after folder 3.\nFolder 9 (TEAM-150) tries every message.send rule: it sets the game's rules through Platform (draft and publish), puts a block event on RabbitMQ (set rabbitUser and rabbitPassword) and its STEP requests show the frames to send in the WebSocket tabs. Run it after folder 3; folder 8 does not depend on it.\nRunning the whole collection in one go fails folders 5 and 7 unless the manual steps were done in between.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -1999,6 +1999,924 @@
         }
       ],
       "description": "Every request here must be refused with the standard error shape { error: { code, message } }. They need folders 1 to 3 first (a conversation and tokens)."
+    },
+    {
+      "name": "9 Message rules over WebSocket (TEAM-150, manual steps)",
+      "item": [
+        {
+          "name": "Rules: 20 characters, profanity filter on, no slow mode - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 20,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": true,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: 20 characters, profanity filter on, no slow mode - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C1 - too_long, the filter, empty, not_member (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C1 - length, profanity filter, empty, not a member</h2><p>Use the two WebSocket tabs of folder 4 (Alice and Bob). If they are closed: <b>New &gt; WebSocket</b>, URL <code>{{wsAlice}}</code> for Alice and <code>{{wsBob}}</code> for Bob, Connect. A new connection starts with a fresh rate limit.</p><p>In <b>Alice's</b> tab send each frame below (a second apart, not more than 5 in 5 seconds) and read the answer. Bob's tab sees only the messages that were stored.</p><h3>1. 21 characters &rarr; <code>error</code> <b>too_long</b> (replyTo c-1, data.message names the limit 20)</h3><pre>{\"type\": \"message.send\", \"id\": \"c-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"{{twentyOne}}\"}}</pre><h3>2. 20 emoji (80 bytes) &rarr; <code>message.ack</code> (the limit counts characters)</h3><pre>{\"type\": \"message.send\", \"id\": \"c-2\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"{{twentyEmoji}}\"}}</pre><h3>3. a banned word &rarr; ack; Bob gets <code>message.new</code> with the body <b>oh *** happens</b> (the filter is on)</h3><pre>{\"type\": \"message.send\", \"id\": \"c-3\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"oh shit happens\"}}</pre><h3>4. a word that only contains a banned one &rarr; ack, text unchanged (whole words only)</h3><pre>{\"type\": \"message.send\", \"id\": \"c-4\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"a classy assassin\"}}</pre><h3>5. only spaces &rarr; <code>error</code> <b>empty</b></h3><pre>{\"type\": \"message.send\", \"id\": \"c-5\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"   \"}}</pre><h3>6. a conversation that does not exist &rarr; <code>error</code> <b>not_member</b></h3><pre>{\"type\": \"message.send\", \"id\": \"c-6\", \"data\": {\"conversationId\": \"{{other}}\", \"body\": \"hi\"}}</pre><p>Every error frame has the envelope (event_id, type, occurred_at, game_id, data) and <code>data.replyTo</code> = the id you sent. Then run folder 5's history request: the stored body is <code>oh *** happens</code>, never the original.</p>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C2 - rate_limited and the 1008 close (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C2 - rate limit: 5 per 5 seconds, 3 refused in a row close the connection</h2><p>Open a <b>new</b> WebSocket tab for Alice with <code>{{wsAlice}}</code> (a fresh connection). Click Send on the frame below five times, quickly, then once more, within 5 seconds. Change the <code>id</code> each time if you want to tell the answers apart.</p><pre>{\"type\": \"message.send\", \"id\": \"r-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"spam\"}}</pre><ul><li>Frames 1 to 5: <code>message.ack</code> (+ <code>message.new</code>)</li><li>Frame 6: <code>error</code> <b>rate_limited</b>, replyTo = its id, <b>no</b> retryAfterMs</li><li>Send two more right away: two more <b>rate_limited</b> errors, and then the connection <b>closes with code 1008</b> (Postman shows it in the connection log)</li><li>After <b>one or two</b> refusals nothing closes; wait 5 seconds and you may send again</li><li>Connect again: it works at once (the limit is per connection)</li></ul>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: slow mode 5 seconds - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 5,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: slow mode 5 seconds - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C3 - slow_mode with retryAfterMs, across tabs (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C3 - slow mode (5 s), counted for the player across tabs</h2><p>Open <b>two</b> WebSocket tabs for Alice (<code>{{wsAlice}}</code>) and keep Bob's. Within 5 seconds:</p><h3>1. Alice tab 1 &rarr; <code>message.ack</code></h3><pre>{\"type\": \"message.send\", \"id\": \"s-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"first\"}}</pre><h3>2. Alice tab 1, right after &rarr; <code>error</code> <b>slow_mode</b> with <code>data.retryAfterMs</code> (milliseconds, at most 5000, less because time has passed)</h3><pre>{\"type\": \"message.send\", \"id\": \"s-2\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"second\"}}</pre><h3>3. Alice tab 2 &rarr; <b>slow_mode</b> as well: it is one player, not one tab</h3><pre>{\"type\": \"message.send\", \"id\": \"s-3\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"from the other tab\"}}</pre><h3>4. Bob, a different player &rarr; <code>message.ack</code>, not held back</h3><pre>{\"type\": \"message.send\", \"id\": \"s-4\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"bob is free\"}}</pre><h3>5. Wait the retryAfterMs, then Alice (any tab) &rarr; <code>message.ack</code></h3><pre>{\"type\": \"message.send\", \"id\": \"s-5\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"after the wait\"}}</pre><p>The refused messages are not stored (folder 5's history request shows only the accepted ones).</p>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: direct messages off - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": false,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: direct messages off - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C4a - feature_disabled: direct messages off (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C4a - direct messages turned off</h2><p>Use the two WebSocket tabs of folder 4 (Alice and Bob). If they are closed: <b>New &gt; WebSocket</b>, URL <code>{{wsAlice}}</code> for Alice and <code>{{wsBob}}</code> for Bob, Connect. A new connection starts with a fresh rate limit.</p><h3>Alice sends &rarr; <code>error</code> <b>feature_disabled</b> (data.message: Direct messages are turned off in this game)</h3><pre>{\"type\": \"message.send\", \"id\": \"f-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"hi\"}}</pre>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: chat off - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": false,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: chat off - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C4b - feature_disabled: chat off (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C4b - the whole chat turned off</h2><p>Use the two WebSocket tabs of folder 4 (Alice and Bob). If they are closed: <b>New &gt; WebSocket</b>, URL <code>{{wsAlice}}</code> for Alice and <code>{{wsBob}}</code> for Bob, Connect. A new connection starts with a fresh rate limit.</p><h3>Alice sends &rarr; <code>error</code> <b>feature_disabled</b> (data.message: Chat is turned off in this game)</h3><pre>{\"type\": \"message.send\", \"id\": \"f-2\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"hi\"}}</pre><p><code>clan_chat</code> off gives the same error for a clan room; clan rooms do not exist yet in Realtime (TEAM-147), so that one is covered by unit tests only.</p>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: everything on again - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: everything on again - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Block: Alice blocks Bob (player.blocked on the exchange, 200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{rabbitUrl}}/api/exchanges/%2F/socialkit.events/publish",
+              "host": [
+                "{{rabbitUrl}}"
+              ],
+              "path": [
+                "api",
+                "exchanges",
+                "%2F",
+                "socialkit.events",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPassword}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{payload}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Social has no block endpoints yet, so the event it will publish is put on the RabbitMQ exchange by hand (management API). Needs rabbitUser and rabbitPassword (the RABBITMQ_USER and RABBITMQ_PASSWORD of your .env)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const ev = { event_id: pm.variables.replaceIn('{{$guid}}'), type: 'player.blocked', occurred_at: new Date().toISOString(), game_id: pm.collectionVariables.get('gameId'),",
+                  "  data: { blocker_id: pm.collectionVariables.get('aliceId'), blocked_id: pm.collectionVariables.get('bobId') } };",
+                  "pm.variables.set('payload', JSON.stringify({ properties: { content_type: 'application/json', delivery_mode: 2 }, routing_key: 'player.blocked', payload: JSON.stringify(ev), payload_encoding: 'string' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the exchange routed it to a queue', () => pm.expect(pm.response.json().routed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C5 - blocked, in both directions (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C5 - blocked</h2><p>Wait a second after the request before sending.</p><p>Use the two WebSocket tabs of folder 4 (Alice and Bob). If they are closed: <b>New &gt; WebSocket</b>, URL <code>{{wsAlice}}</code> for Alice and <code>{{wsBob}}</code> for Bob, Connect. A new connection starts with a fresh rate limit.</p><h3>1. Bob sends &rarr; <code>error</code> <b>blocked</b></h3><pre>{\"type\": \"message.send\", \"id\": \"b-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"hello?\"}}</pre><h3>2. Alice sends (she blocked Bob) &rarr; <b>blocked</b> too: a block stops the conversation both ways</h3><pre>{\"type\": \"message.send\", \"id\": \"b-2\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"hello?\"}}</pre><p>Then send the <b>Unblock</b> request below, wait a second, and send again: <code>message.ack</code>.</p>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unblock: Alice unblocks Bob (player.unblocked on the exchange, 200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{rabbitUrl}}/api/exchanges/%2F/socialkit.events/publish",
+              "host": [
+                "{{rabbitUrl}}"
+              ],
+              "path": [
+                "api",
+                "exchanges",
+                "%2F",
+                "socialkit.events",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPassword}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{payload}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Social has no block endpoints yet, so the event it will publish is put on the RabbitMQ exchange by hand (management API). Needs rabbitUser and rabbitPassword (the RABBITMQ_USER and RABBITMQ_PASSWORD of your .env)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const ev = { event_id: pm.variables.replaceIn('{{$guid}}'), type: 'player.unblocked', occurred_at: new Date().toISOString(), game_id: pm.collectionVariables.get('gameId'),",
+                  "  data: { blocker_id: pm.collectionVariables.get('aliceId'), blocked_id: pm.collectionVariables.get('bobId') } };",
+                  "pm.variables.set('payload', JSON.stringify({ properties: { content_type: 'application/json', delivery_mode: 2 }, routing_key: 'player.unblocked', payload: JSON.stringify(ev), payload_encoding: 'string' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the exchange routed it to a queue', () => pm.expect(pm.response.json().routed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset the rules - 300 characters, no filter, no slow mode (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Every message.send rule over a real WebSocket. The REST requests set the game's rules (Platform draft and Publish) or put a block event on RabbitMQ; the STEP requests are manual: send them, open the Visualize tab, and send the frames it shows in the two WebSocket tabs. Needs folders 1 to 3 first (a game, three players and the friendship of Alice and Bob). Set rabbitUser and rabbitPassword (and rabbitUrl, http://localhost:15672) for the block requests."
     }
   ],
   "variable": [
@@ -2064,6 +2982,18 @@
     },
     {
       "key": "carolId",
+      "value": ""
+    },
+    {
+      "key": "rabbitUrl",
+      "value": "http://localhost:15672"
+    },
+    {
+      "key": "rabbitUser",
+      "value": ""
+    },
+    {
+      "key": "rabbitPassword",
       "value": ""
     },
     {

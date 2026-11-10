@@ -80,10 +80,21 @@ func run() error {
 	// The hub of open connections is shared: the WebSocket handler fills it, the event consumer sends to it.
 	connections := hub.New()
 	repo := repository.New(pool)
+	// Platform owns each game's published config. Realtime keeps the newest version of each game in memory,
+	// loads it from Platform's public endpoint the first time it is needed, and fetches it again on config.published.
+	platformURL := config.String("REALTIME_PLATFORM_URL", "http://localhost:8081")
+	configSource, err := gameconfig.NewHTTPSource(platformURL, 3*time.Second)
+	if err != nil {
+		return err
+	}
+	configCache := gameconfig.NewCache(configSource, gameconfig.Options{})
+	log.Info("platform", "url", platformURL)
+
 	// Presence adds the 10 s grace period to "has an open WebSocket", and tells friends about going offline.
 	tracker := presence.New(connections, repo, connections, presence.Options{Log: log})
 	defer tracker.Close()
-	svc := service.New(repo, service.WithPresence(tracker))
+	// The message rules (slow mode, length, filter, ...) come from each game's published config, kept by the cache above.
+	svc := service.New(repo, service.WithPresence(tracker), service.WithRules(configCache))
 
 	// Browser pages allowed to call this service and to open a WebSocket (the demo game, where the SDK runs).
 	origins := config.List("REALTIME_CORS_ORIGINS", []string{"http://localhost:5174"})
@@ -100,16 +111,6 @@ func run() error {
 		return err
 	}
 	log.Info("social", "url", socialURL)
-
-	// Platform owns each game's published config. Realtime keeps the newest version of each game in memory,
-	// loads it from Platform's public endpoint the first time it is needed, and fetches it again on config.published.
-	platformURL := config.String("REALTIME_PLATFORM_URL", "http://localhost:8081")
-	configSource, err := gameconfig.NewHTTPSource(platformURL, 3*time.Second)
-	if err != nil {
-		return err
-	}
-	configCache := gameconfig.NewCache(configSource, gameconfig.Options{})
-	log.Info("platform", "url", platformURL)
 
 	hdl := handler.New(serviceName, svc, handler.WSOptions{
 		Verifier: auth.NewVerifier(verifyKey, time.Now),

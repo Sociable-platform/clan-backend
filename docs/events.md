@@ -374,7 +374,8 @@ handler for (it logs them at debug level), so they never block the queue. The fu
 | `clan.member_left` | `clan`, `player`, `reason` (`left` or `kicked`), `kicked_by` (player or `null`), `new_owner` (player or `null`) | clan chat rooms (TEAM-147) |
 | `clan.renamed` | `clan` (the new name), `previous_name` | clan chat rooms (TEAM-147) |
 | `clan.disbanded` | `clan` (only this event is published when the last member leaves) | clan chat rooms (TEAM-147) |
-| `player.blocked`, `player.unblocked` | `blocker_id`, `blocked_id` | blocks sync (TEAM-151, TEAM-154) |
+| `player.blocked` | `blocker_id`, `blocked_id` | Realtime stores the block in its own `blocks` table (idempotent); nothing is sent to anybody (TEAM-150). Social does not publish it yet. |
+| `player.unblocked` | `blocker_id`, `blocked_id` | Realtime deletes the block (idempotent); nothing is sent (TEAM-150). Social does not publish it yet. |
 
 ## 7. What the player's browser receives
 
@@ -522,6 +523,10 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
+| Social does not publish `player.blocked` / `player.unblocked` (no block endpoints yet) | Nobody can be blocked in a real game yet; `blocked` is only reachable with an event put on the exchange by hand | Social block endpoints and events (own task). Realtime already handles them. |
+| A lost `player.blocked` (no outbox yet) | The blocked player can still message the blocker | Transactional outbox in Social and a startup backfill of the blocks (TEAM-151). |
+| Slow mode and the rate limit are in the memory of the one Realtime process | A restart gives everybody a fresh start | Fine while Realtime is one process. |
+| The profanity list is built in and the same for every game | A game can only switch the filter on or off; no spelling tricks are caught | A per-game word list in the config, if developers ask. |
 | Presence ignores the game's "hide online status" | The config v1 schema has no such field, so every game shows online status | Add the field to the schema (Platform and the dashboard), then Realtime reads it from its config cache (TEAM-149 did not build it). |
 | Connecting sends friends no "online" frame | A friend who comes online after you loaded `hello` shows as offline until you reconnect | Send `presence.update` `online` to friends on the first connection (not a pending grace period); the tracker already knows when that is. |
 | Presence grace timers are in the memory of the one Realtime process | A restart during the 10 seconds means the friends are never told the player went offline | Fine while Realtime is one process. |

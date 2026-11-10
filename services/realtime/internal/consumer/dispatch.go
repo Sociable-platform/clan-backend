@@ -14,7 +14,7 @@ import (
 )
 
 // Event types this service handles (docs/events.md). Every other type that reaches the queue
-// (clan.*, player.blocked are added by later tasks) is acknowledged and ignored.
+// (clan.* is added by a later task) is acknowledged and ignored.
 const (
 	typeFriendRequestSent      = "friend.request_sent"
 	typeFriendRequestCancelled = "friend.request_cancelled"
@@ -22,6 +22,8 @@ const (
 	typeFriendAccepted         = "friend.accepted"
 	typeFriendRemoved          = "friend.removed"
 	typePlayerRenamed          = "player.renamed"
+	typePlayerBlocked          = "player.blocked"
+	typePlayerUnblocked        = "player.unblocked"
 	typeConfigPublished        = "config.published"
 )
 
@@ -36,6 +38,8 @@ type Events interface {
 	FriendAccepted(ctx context.Context, gameID, requestID string, a, b service.Player) ([]service.Push, error)
 	FriendRemoved(ctx context.Context, gameID, aID, bID, removedBy string) ([]service.Push, error)
 	PlayerRenamed(ctx context.Context, gameID string, p service.Player) ([]service.Push, error)
+	PlayerBlocked(ctx context.Context, gameID, blockerID, blockedID string) ([]service.Push, error)
+	PlayerUnblocked(ctx context.Context, gameID, blockerID, blockedID string) ([]service.Push, error)
 }
 
 // Sender writes an encoded frame to the open WebSockets of some players of a game.
@@ -111,6 +115,12 @@ type playerRenamedData struct {
 	Player playerData `json:"player"`
 }
 
+// blockData is the data of player.blocked and player.unblocked.
+type blockData struct {
+	BlockerID string `json:"blocker_id"`
+	BlockedID string `json:"blocked_id"`
+}
+
 // configPublishedData is the data of config.published.
 type configPublishedData struct {
 	Version int `json:"version"`
@@ -153,6 +163,15 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 		var data playerRenamedData
 		if err = decode(env.Data, &data); err == nil {
 			pushes, err = d.events.PlayerRenamed(ctx, env.GameID, player(data.Player))
+		}
+	case typePlayerBlocked, typePlayerUnblocked:
+		var data blockData
+		if err = decode(env.Data, &data); err == nil {
+			if env.Type == typePlayerBlocked {
+				pushes, err = d.events.PlayerBlocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
+			} else {
+				pushes, err = d.events.PlayerUnblocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
+			}
 		}
 	case typeConfigPublished:
 		if d.config == nil {

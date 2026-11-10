@@ -35,6 +35,13 @@ type memStore struct {
 	members   []string
 	insertErr error
 
+	// the message rules (rules_test.go)
+	conv     *repository.ConversationInfo // what ConversationOf returns; nil: a DM with the members above
+	convErr  error
+	blocked  map[string]bool // "blocker|blocked"
+	blockErr error
+	blockOps []string // "add game|blocker|blocked" / "remove ..."
+
 	// the reads (reads_test.go)
 	convs     []repository.PlayerConversation
 	msgs      []repository.Message
@@ -58,6 +65,30 @@ type insertCall struct {
 func (m *memStore) InsertMessage(_ context.Context, gameID, conversationID, senderID string, msg repository.NewMessage) ([]string, error) {
 	m.inserts = append(m.inserts, insertCall{gameID, conversationID, senderID, msg})
 	return m.members, m.insertErr
+}
+
+func (m *memStore) ConversationOf(_ context.Context, _, _, _ string) (repository.ConversationInfo, error) {
+	if m.convErr != nil {
+		return repository.ConversationInfo{}, m.convErr
+	}
+	if m.conv != nil {
+		return *m.conv, nil
+	}
+	return repository.ConversationInfo{Kind: "dm", Members: m.members}, nil
+}
+
+func (m *memStore) IsBlocked(_ context.Context, _, a, b string) (bool, error) {
+	return m.blocked[a+"|"+b] || m.blocked[b+"|"+a], m.blockErr
+}
+
+func (m *memStore) AddBlock(_ context.Context, gameID, blocker, blocked string) error {
+	m.blockOps = append(m.blockOps, "add "+gameID+"|"+blocker+"|"+blocked)
+	return m.blockErr
+}
+
+func (m *memStore) RemoveBlock(_ context.Context, gameID, blocker, blocked string) error {
+	m.blockOps = append(m.blockOps, "remove "+gameID+"|"+blocker+"|"+blocked)
+	return m.blockErr
 }
 
 func (m *memStore) UpsertDM(_ context.Context, gameID, key string, a, b repository.Member) (repository.DM, error) {

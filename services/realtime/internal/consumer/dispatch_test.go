@@ -56,6 +56,14 @@ func (f *fakeEvents) PlayerRenamed(_ context.Context, gameID string, p service.P
 	return f.record(gameID, "renamed "+p.ID+"/"+p.Name)
 }
 
+func (f *fakeEvents) PlayerBlocked(_ context.Context, gameID, blockerID, blockedID string) ([]service.Push, error) {
+	return f.record(gameID, "blocked "+blockerID+" -> "+blockedID)
+}
+
+func (f *fakeEvents) PlayerUnblocked(_ context.Context, gameID, blockerID, blockedID string) ([]service.Push, error) {
+	return f.record(gameID, "unblocked "+blockerID+" -> "+blockedID)
+}
+
 type sent struct {
 	gameID string
 	ids    []string
@@ -98,6 +106,12 @@ func TestDispatchRoutesEachEventToItsHandler(t *testing.T) {
 		{"player.renamed",
 			`{"event_id":"e4","type":"player.renamed","game_id":"g-1","data":{"player":{"id":"u-1","name":"Alice Brown"}}}`,
 			"renamed u-1/Alice Brown"},
+		{"player.blocked",
+			`{"event_id":"e5","type":"player.blocked","game_id":"g-1","data":{"blocker_id":"u-1","blocked_id":"u-2"}}`,
+			"blocked u-1 -> u-2"},
+		{"player.unblocked",
+			`{"event_id":"e6","type":"player.unblocked","game_id":"g-1","data":{"blocker_id":"u-1","blocked_id":"u-2"}}`,
+			"unblocked u-1 -> u-2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -184,7 +198,7 @@ func TestDispatchFrameOfAnEventWithoutATimeGetsNow(t *testing.T) {
 }
 
 func TestDispatchIgnoresEventsNobodyHandlesYet(t *testing.T) {
-	for _, typ := range []string{"clan.created", "clan.renamed", "player.blocked", "player.unblocked", "config.published", "something.else", ""} {
+	for _, typ := range []string{"clan.created", "clan.renamed", "config.published", "something.else", ""} {
 		ev, send := &fakeEvents{}, &fakeSender{}
 		body, _ := json.Marshal(map[string]any{"event_id": "e", "type": typ, "game_id": "g-1", "data": map[string]any{}})
 		if err := NewDispatcher(ev, send, slog.Default()).Handle(context.Background(), body); err != nil {
@@ -208,6 +222,8 @@ func TestDispatchDropsUnusableEvents(t *testing.T) {
 		{"data is a string", `{"event_id":"e","type":"friend.removed","game_id":"g-1","data":"x"}`},
 		{"removed in the old a_id/b_id shape", `{"event_id":"e","type":"friend.removed","game_id":"g-1","data":{"a_id":"u-1","b_id":"u-2"}}`},
 		{"removed with one player", `{"event_id":"e","type":"friend.removed","game_id":"g-1","data":{"players":[{"id":"u-1","name":"Emma"}],"removed_by":"u-1"}}`},
+		{"blocked with no data", `{"event_id":"e","type":"player.blocked","game_id":"g-1"}`},
+		{"unblocked with ids that are not strings", `{"event_id":"e","type":"player.unblocked","game_id":"g-1","data":{"blocker_id":1,"blocked_id":2}}`},
 		{"cancelled with a request_id that is not a string", `{"event_id":"e","type":"friend.request_cancelled","game_id":"g-1","data":{"request_id":7,"sender":{"id":"u-1","name":"Alice"},"receiver":{"id":"u-2","name":"Bob"}}}`},
 	}
 	for _, tt := range tests {
@@ -312,7 +328,7 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 		"friend.removed":           "removed " + emma + " " + oliver + " by " + emma,
 		"player.renamed":           "renamed " + alice + "/Alice Brown",
 		"clan.created":             "", "clan.member_joined": "", "clan.member_left": "", "clan.renamed": "", "clan.disbanded": "",
-		"player.blocked": "", "player.unblocked": "", "config.published": "",
+		"player.blocked": "blocked " + alice + " -> " + bob, "player.unblocked": "unblocked " + alice + " -> " + bob, "config.published": "",
 	}
 
 	blocks := regexp.MustCompile("(?s)```json\n(.*?)\n```").FindAllSubmatch(doc, -1)

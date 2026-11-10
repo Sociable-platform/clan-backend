@@ -18,9 +18,13 @@ import (
 
 // Close codes the protocol defines (see openapi/realtime-ws.md).
 const (
-	CloseTokenExpired websocket.StatusCode = 4001 // the player token passed its exp
-	CloseSlowClient   websocket.StatusCode = 4002 // the send queue is full
+	CloseTokenExpired websocket.StatusCode = 4001                            // the player token passed its exp
+	CloseSlowClient   websocket.StatusCode = 4002                            // the send queue is full
+	ClosePolicy       websocket.StatusCode = websocket.StatusPolicyViolation // 1008: the client broke a rule (too many rate-limited messages)
 )
+
+// flushTimeout is how long a connection that is closing with its queue flushed may take to write it.
+const flushTimeout = 2 * time.Second
 
 // Defaults for ConnOptions, from the design doc.
 const (
@@ -93,6 +97,7 @@ type Conn struct {
 	closeOnce sync.Once
 	code      websocket.StatusCode // set once, before done is closed
 	reason    string
+	flush     bool // set once, before done is closed: write the queued frames before the close frame
 }
 
 // NewConn wraps an accepted WebSocket. Call Serve to run it.
@@ -132,6 +137,16 @@ func (c *Conn) Enqueue(frame []byte) {
 func (c *Conn) Close(code websocket.StatusCode, reason string) {
 	c.closeOnce.Do(func() {
 		c.code, c.reason = code, reason
+		close(c.done)
+	})
+}
+
+// CloseAfterFlush is Close, but the writer first sends the frames that are already queued (for at most
+// 2 seconds in all), so the client reads the last error frame before the close frame. Only the first
+// call to Close or CloseAfterFlush counts.
+func (c *Conn) CloseAfterFlush(code websocket.StatusCode, reason string) {
+	c.closeOnce.Do(func() {
+		c.code, c.reason, c.flush = code, reason, true
 		close(c.done)
 	})
 }
@@ -198,9 +213,28 @@ func (c *Conn) writeLoop() {
 		case <-c.opts.Shutdown.Done():
 			c.Close(websocket.StatusGoingAway, "server shutting down")
 		case <-c.done:
+			if c.flush {
+				c.flushQueue()
+			}
 			// Sends the close frame and waits for the client's answer (at most 5 s); the reader
 			// is still running, so it sees that answer and ends.
 			_ = c.ws.Close(c.code, c.reason)
+			return
+		}
+	}
+}
+
+// flushQueue writes the frames that are waiting, then returns, whether or not the client took them all.
+func (c *Conn) flushQueue() {
+	ctx, cancel := context.WithTimeout(context.Background(), flushTimeout)
+	defer cancel()
+	for {
+		select {
+		case frame := <-c.send:
+			if err := c.ws.Write(ctx, websocket.MessageText, frame); err != nil {
+				return
+			}
+		default:
 			return
 		}
 	}

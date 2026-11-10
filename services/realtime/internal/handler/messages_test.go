@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -190,7 +191,7 @@ func TestWSMessageSendInternalFailureIsLoggedWithoutTheMessage(t *testing.T) {
 }
 
 func TestWSMessageSendBadFrames(t *testing.T) {
-	env := newWSEnv(t, nil)
+	env := newWSEnv(t, func(o *WSOptions, _ *httptest.Server) { o.RateLimit = RateLimit{Max: 1000} }) // many bad frames in a row
 	alice, _ := env.connect(t, env.tokenFor(t, "alice"))
 	env.chat.storing()
 

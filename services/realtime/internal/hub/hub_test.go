@@ -1,7 +1,11 @@
 package hub
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -256,4 +260,68 @@ func TestSendToGameWithAFullQueueDoesNotStopTheOthers(t *testing.T) {
 	if got := drain(fast); len(got) != 2 {
 		t.Errorf("fast got %v, want both frames", got)
 	}
+}
+
+func TestCloseAfterFlushKeepsCodeAndReasonAndOnlyTheFirstCloseCounts(t *testing.T) {
+	c := detached("g", "p", 4)
+	c.CloseAfterFlush(ClosePolicy, "rate limit")
+	c.Close(CloseSlowClient, "slow client") // a later close does not change it
+	select {
+	case <-c.Done():
+	default:
+		t.Fatal("not closed")
+	}
+	if code, reason := c.CloseInfo(); code != ClosePolicy || reason != "rate limit" || int(ClosePolicy) != 1008 {
+		t.Errorf("close = %d %q, want 1008 rate limit", code, reason)
+	}
+	if !c.flush {
+		t.Error("the flush flag was not kept")
+	}
+
+	d := detached("g", "p", 4)
+	d.Close(websocket.StatusNormalClosure, "")
+	d.CloseAfterFlush(ClosePolicy, "rate limit") // too late
+	if code, _ := d.CloseInfo(); code != websocket.StatusNormalClosure || d.flush {
+		t.Errorf("a close after the first one changed the result: %d flush=%v", code, d.flush)
+	}
+}
+
+// Frames that are queued when the connection closes with CloseAfterFlush all reach the client, then it gets the
+// close code. Closing before Serve starts makes the writer see both a full queue and a closed connection.
+func TestCloseAfterFlushWritesTheQueuedFramesBeforeTheCloseFrame(t *testing.T) {
+	const frames = 20
+	served := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(served)
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		c := NewConn(ws, Identity{GameID: "g", PlayerID: "p"}, ConnOptions{SendBuffer: frames})
+		for i := 0; i < frames; i++ {
+			c.Enqueue([]byte(fmt.Sprintf("frame %d", i)))
+		}
+		c.CloseAfterFlush(ClosePolicy, "rate limit exceeded")
+		c.Serve(r.Context(), func(*Conn, websocket.MessageType, []byte) {})
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseNow()
+	for i := 0; i < frames; i++ {
+		_, b, err := client.Read(ctx)
+		if err != nil || string(b) != fmt.Sprintf("frame %d", i) {
+			t.Fatalf("frame %d: %q, %v; want every queued frame, in order, before the close", i, b, err)
+		}
+	}
+	_, _, err = client.Read(ctx)
+	if websocket.CloseStatus(err) != 1008 {
+		t.Fatalf("after the frames: %v, want a close with 1008", err)
+	}
+	<-served
 }
