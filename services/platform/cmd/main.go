@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/config"
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
@@ -75,12 +76,26 @@ func run() error {
 		log.Warn("PLATFORM_DATABASE_URL is not set: starting without a database, /ready will report not ready")
 	}
 
+	// Events for the other services (config.published for Realtime's live re-skin). The broker is
+	// reached lazily, so a broker that is down does not stop platform from starting, and
+	// events.Safe makes sure it never fails a publish or rollback either.
+	var publisher events.Publisher = events.Noop{}
+	if url := config.String("PLATFORM_RABBITMQ_URL", ""); url != "" {
+		rabbit := events.NewRabbitMQ(url, log)
+		defer rabbit.Close()
+		publisher = rabbit
+		log.Info("publishing events to rabbitmq", "exchange", events.Exchange) // never log the URL: it holds the password
+	} else {
+		log.Warn("PLATFORM_RABBITMQ_URL is not set: events for other services are dropped")
+	}
+
 	// Wiring: repository (database) -> service (rules) -> handler (HTTP).
 	repo := repository.New(pool)
 	svc, err := service.New(repo, signingKey, tokenTTL)
 	if err != nil {
 		return err
 	}
+	svc.WithPublisher(events.Safe(publisher, log))
 
 	mux := http.NewServeMux()
 	handler.New(serviceName, svc, log).Register(mux)
