@@ -18,7 +18,7 @@ clan-backend/
 ├── deploy/traefik/            # gateway: static config and the /realtime route
 ├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
-├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames
+├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
@@ -490,6 +490,8 @@ Errors come back as `error` frames with `replyTo` and nothing is stored or sent:
 `empty`, `too_long` (over 1000 characters for now; the game's own limit comes with the message rules), `bad_frame` (missing or wrong-type field),
 `internal` (for example the database is down).
 Not built yet: presence and the per-game message rules (slow mode, profanity filter, rate limit, blocks, `max_message_length`).
+
+**Postman collection and flow diagrams.** `postman/realtime-chat.postman_collection.json` runs the whole flow against a local stack: it makes its own developer, game, three players and a friendship, then checks the conversation, the history, paging, unread and the error cases (103 checks). The two things that need a WebSocket (sending messages and `conversation.read`) are two manual steps that show the exact frames to send in the Visualize tab; the collection description says how to run it. How everything flows, as UML diagrams: [`docs/realtime-flow.md`](docs/realtime-flow.md).
 
 **Conversation list, history and "read" (Postman).** After the chat above, for each player (use that player's token):
 
