@@ -628,6 +628,133 @@ paths:
                 error:
                   code: friend_request_not_found
                   message: Friend request not found
+  /api/v1/friends/{playerID}:
+    delete:
+      tags: [friends]
+      operationId: removeFriend
+      summary: Remove a friend
+      description: |
+        Ends the caller's friendship with this player, for both of them, in one transaction with
+        the pair locked. Afterwards they are strangers again and either may send a new request.
+        Publishes `friend.removed` afterwards. No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: playerID
+          in: path
+          required: true
+          description: The friend's player ID in the social service (from the friends list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Removed. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: The caller is not friends with this player (not_friends). Also for an unknown player, a player of another game, or an ID that is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_friends
+                  message: You are not friends with this player
+  /api/v1/friends/requests/{requestID}:
+    delete:
+      tags: [friends]
+      operationId: cancelFriendRequest
+      summary: Cancel a friend request
+      description: |
+        The caller takes back a pending request they sent. Only the sender can cancel; the
+        receiver declines instead. Nothing is published. No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          description: The request's ID (from the outgoing list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Cancelled. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The website is not allowed (origin_not_allowed), or the caller received this request and
+            can only decline it (not_request_sender).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_request_sender
+                  message: Only the player who sent this request can cancel it
+        "404":
+          description: No such pending request for the caller (friend_request_not_found). Also when it was already accepted, declined or cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: friend_request_not_found
+                  message: Friend request not found
+  /api/v1/friends/requests/{requestID}/decline:
+    post:
+      tags: [friends]
+      operationId: declineFriendRequest
+      summary: Decline a friend request
+      description: |
+        The caller turns down a pending request sent to them; the request is deleted. Only the
+        receiver can decline; the sender cancels instead. Nothing is published, so the sender is
+        not told. No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          description: The request's ID (from the incoming list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Declined. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The website is not allowed (origin_not_allowed), or the caller sent this request and
+            can only cancel it (not_request_receiver).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_request_receiver
+                  message: Only the player who received this request can decline it
+        "404":
+          description: No such pending request for the caller (friend_request_not_found). Also when it was already accepted, declined or cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: friend_request_not_found
+                  message: Friend request not found
 components:
   securitySchemes:
     playerToken:

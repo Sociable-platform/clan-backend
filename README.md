@@ -230,8 +230,9 @@ Messages are persistent (`delivery_mode` 2) with `content_type` `application/jso
 
 | Event (routing key) | Published by | `data` |
 |---|---|---|
-| `friend.request_sent` | social, `POST /api/v1/friends/requests` (201) | `{ "sender": { "id", "name" }, "receiver": { "id", "name" } }` |
+| `friend.request_sent` | social, `POST /api/v1/friends/requests` (201) | `{ "request_id", "sender": { "id", "name" }, "receiver": { "id", "name" } }`; `request_id` is the request's own ID, so a notification can accept it |
 | `friend.accepted` | social, accept, or a request sent back (200) | `{ "players": [ { "id", "name" }, { "id", "name" } ] }`, the smaller ID first |
+| `friend.removed` | social, `DELETE /api/v1/friends/{playerID}` (204) | `{ "players": [ { "id", "name" }, { "id", "name" } ], "removed_by" }`, the smaller ID first; `removed_by` is the ID of the player who removed the other |
 
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
 `name` the display name at the time of the event. Clan events are added by the task that publishes them.
@@ -394,6 +395,9 @@ always come from the token, never from the URL or the body.
 | GET | `/api/v1/friends` | 200 `{ friends: [...] }` with `id`, `displayName`, `since`, sorted by name |
 | GET | `/api/v1/friends/requests` | 200 `{ incoming: [...], outgoing: [...] }`, newest first; each has `id`, `player` (the other player: `id`, `displayName`) and `createdAt` |
 | POST | `/api/v1/friends/requests` | body `{ "playerId": "<social player ID>" }`. 201 with the new request. If that player had already asked the caller, it is accepted instead: 200 with the new friend. 400 `invalid_json` / `invalid_player_id` / `cannot_friend_yourself`; 404 `player_not_found` (also for another game's player); 409 `already_friends` / `friend_request_exists`. Publishes `friend.request_sent` or `friend.accepted` |
+| POST | `/api/v1/friends/requests/{requestID}/decline` | no body. 204: the request sent to the caller is deleted (nothing is published). 403 `not_request_receiver` (the caller sent it; cancel instead); 404 `friend_request_not_found` |
+| DELETE | `/api/v1/friends/requests/{requestID}` | 204: the caller's own request is cancelled (nothing is published). 403 `not_request_sender` (the caller received it; decline instead); 404 `friend_request_not_found` |
+| DELETE | `/api/v1/friends/{playerID}` | 204: the friendship ends for both players; either may send a new request afterwards. 404 `not_friends` (also for another game's player). Publishes `friend.removed` |
 | POST | `/api/v1/friends/requests/{requestID}/accept` | no body. 200 with the new friend. 403 `not_request_receiver` (the caller sent it); 404 `friend_request_not_found`. Publishes `friend.accepted` |
 
 ### Realtime service (port 8083)

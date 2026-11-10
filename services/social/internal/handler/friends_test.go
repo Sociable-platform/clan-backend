@@ -49,10 +49,35 @@ func (s *recordingService) ListFriends(context.Context, string, string, string) 
 	return []service.Friend{}, s.err
 }
 
+func (f fakeService) DeclineFriendRequest(context.Context, string, string, string, string) error {
+	return f.err
+}
+
+func (s *recordingService) DeclineFriendRequest(context.Context, string, string, string, string) error {
+	return s.err
+}
+
+func (f fakeService) CancelFriendRequest(context.Context, string, string, string, string) error {
+	return f.err
+}
+
+func (s *recordingService) CancelFriendRequest(context.Context, string, string, string, string) error {
+	return s.err
+}
+
+func (f fakeService) RemoveFriend(context.Context, string, string, string, string) error {
+	return f.err
+}
+
+func (s *recordingService) RemoveFriend(context.Context, string, string, string, string) error {
+	return s.err
+}
+
 // friendService remembers what the handler passed on and answers with what the test gave it.
 type friendService struct {
 	fakeService
 	gameID, externalID, name, arg string
+	called                        string // which of decline, cancel, remove was called
 
 	send     service.SendFriendRequestResult
 	friend   service.Friend
@@ -79,6 +104,21 @@ func (s *friendService) ListFriendRequests(_ context.Context, gameID, externalID
 func (s *friendService) ListFriends(_ context.Context, gameID, externalID, name string) ([]service.Friend, error) {
 	s.gameID, s.externalID, s.name = gameID, externalID, name
 	return s.friends, s.err
+}
+
+func (s *friendService) DeclineFriendRequest(_ context.Context, gameID, externalID, name, requestID string) error {
+	s.gameID, s.externalID, s.name, s.arg, s.called = gameID, externalID, name, requestID, "decline"
+	return s.err
+}
+
+func (s *friendService) CancelFriendRequest(_ context.Context, gameID, externalID, name, requestID string) error {
+	s.gameID, s.externalID, s.name, s.arg, s.called = gameID, externalID, name, requestID, "cancel"
+	return s.err
+}
+
+func (s *friendService) RemoveFriend(_ context.Context, gameID, externalID, name, playerID string) error {
+	s.gameID, s.externalID, s.name, s.arg, s.called = gameID, externalID, name, playerID, "remove"
+	return s.err
 }
 
 // callFriends sends method path (with body, if any) through the real router and token guard,
@@ -213,6 +253,66 @@ func TestFriendRoutesNeedAToken(t *testing.T) {
 		rec := callFriends(t, svc, rt.method, rt.path, rt.body, true)
 		if rec.Code != http.StatusUnauthorized || svc.gameID != "" {
 			t.Errorf("%s %s without a token: status %d, service reached = %v", rt.method, rt.path, rec.Code, svc.gameID != "")
+		}
+	}
+}
+
+func TestDeclineCancelAndRemoveAnswerNoContent(t *testing.T) {
+	cases := []struct {
+		method, path, call, arg string
+	}{
+		{http.MethodPost, "/api/v1/friends/requests/req-1/decline", "decline", "req-1"},
+		{http.MethodDelete, "/api/v1/friends/requests/req-1", "cancel", "req-1"},
+		{http.MethodDelete, "/api/v1/friends/" + friendID, "remove", friendID},
+	}
+	for _, c := range cases {
+		t.Run(c.call, func(t *testing.T) {
+			svc := &friendService{}
+			rec := callFriends(t, svc, c.method, c.path, "", false)
+			if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
+				t.Fatalf("status %d, body %q; want 204 and no body", rec.Code, rec.Body.String())
+			}
+			svc.checkCaller(t)
+			if svc.called != c.call || svc.arg != c.arg {
+				t.Errorf("service got %s(%q), want %s(%q)", svc.called, svc.arg, c.call, c.arg)
+			}
+		})
+	}
+}
+
+func TestDeclineCancelAndRemovePassErrorsOn(t *testing.T) {
+	cases := []struct {
+		method, path string
+		err          error
+		status       int
+		code         string
+	}{
+		{http.MethodPost, "/api/v1/friends/requests/req-1/decline",
+			httpx.NewError(http.StatusForbidden, "not_request_receiver", "x"), http.StatusForbidden, "not_request_receiver"},
+		{http.MethodDelete, "/api/v1/friends/requests/req-1",
+			httpx.NewError(http.StatusForbidden, "not_request_sender", "x"), http.StatusForbidden, "not_request_sender"},
+		{http.MethodDelete, "/api/v1/friends/" + friendID,
+			httpx.NewError(http.StatusNotFound, "not_friends", "x"), http.StatusNotFound, "not_friends"},
+	}
+	for _, c := range cases {
+		rec := callFriends(t, &friendService{err: c.err}, c.method, c.path, "", false)
+		if rec.Code != c.status || !strings.Contains(rec.Body.String(), `"`+c.code+`"`) {
+			t.Errorf("%s %s: status %d, body %s; want %d %s", c.method, c.path, rec.Code, rec.Body.String(), c.status, c.code)
+		}
+	}
+}
+
+func TestDeclineCancelAndRemoveNeedAToken(t *testing.T) {
+	cases := []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/friends/requests/req-1/decline"},
+		{http.MethodDelete, "/api/v1/friends/requests/req-1"},
+		{http.MethodDelete, "/api/v1/friends/" + friendID},
+	}
+	for _, c := range cases {
+		svc := &friendService{}
+		rec := callFriends(t, svc, c.method, c.path, "", true)
+		if rec.Code != http.StatusUnauthorized || svc.called != "" {
+			t.Errorf("%s %s without a token: status %d, service called %q", c.method, c.path, rec.Code, svc.called)
 		}
 	}
 }

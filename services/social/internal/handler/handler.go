@@ -27,6 +27,9 @@ type Service interface {
 	AcceptFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) (service.Friend, error)
 	ListFriendRequests(ctx context.Context, gameID, externalID, displayName string) (service.FriendRequests, error)
 	ListFriends(ctx context.Context, gameID, externalID, displayName string) ([]service.Friend, error)
+	DeclineFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) error
+	CancelFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) error
+	RemoveFriend(ctx context.Context, gameID, externalID, displayName, playerID string) error
 }
 
 // Handler holds the routes of the service.
@@ -75,6 +78,9 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/friends/requests", h.listFriendRequests},
 		{http.MethodPost, "/api/v1/friends/requests", h.sendFriendRequest},
 		{http.MethodPost, "/api/v1/friends/requests/{requestID}/accept", h.acceptFriendRequest},
+		{http.MethodPost, "/api/v1/friends/requests/{requestID}/decline", h.declineFriendRequest},
+		{http.MethodDelete, "/api/v1/friends/requests/{requestID}", h.cancelFriendRequest},
+		{http.MethodDelete, "/api/v1/friends/{playerID}", h.removeFriend},
 	}
 }
 
