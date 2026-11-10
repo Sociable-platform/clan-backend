@@ -137,3 +137,48 @@ func (h *Handler) listFriends(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
+
+// declineFriendRequest handles POST /api/v1/friends/requests/{requestID}/decline: the caller
+// turns down a request sent to them. No body; 204 with no body.
+func (h *Handler) declineFriendRequest(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	if err := h.svc.DeclineFriendRequest(r.Context(), caller.GameID, caller.ExternalID, caller.Name, r.PathValue("requestID")); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// cancelFriendRequest handles DELETE /api/v1/friends/requests/{requestID}: the caller takes back
+// a request they sent. 204 with no body.
+func (h *Handler) cancelFriendRequest(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	if err := h.svc.CancelFriendRequest(r.Context(), caller.GameID, caller.ExternalID, caller.Name, r.PathValue("requestID")); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeFriend handles DELETE /api/v1/friends/{playerID}: the caller ends the friendship with
+// that player, for both of them. 204 with no body.
+func (h *Handler) removeFriend(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	if err := h.svc.RemoveFriend(r.Context(), caller.GameID, caller.ExternalID, caller.Name, r.PathValue("playerID")); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
