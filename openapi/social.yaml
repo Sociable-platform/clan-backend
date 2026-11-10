@@ -740,7 +740,7 @@ paths:
       summary: Cancel a friend request
       description: |
         The caller takes back a pending request they sent. Only the sender can cancel; the
-        receiver declines instead. Publishes `friend.request_cancelled` afterwards. No request body is needed.
+        receiver declines instead. Nothing is published. No request body is needed.
       security:
         - playerToken: []
       parameters:
@@ -785,8 +785,8 @@ paths:
       summary: Decline a friend request
       description: |
         The caller turns down a pending request sent to them; the request is deleted. Only the
-        receiver can decline; the sender cancels instead. Publishes `friend.request_declined` afterwards
-        (Realtime tells only the caller's own tabs, so the sender is not told). No request body is needed.
+        receiver can decline; the sender cancels instead. Nothing is published, so the sender is
+        not told. No request body is needed.
       security:
         - playerToken: []
       parameters:

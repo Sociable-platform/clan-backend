@@ -192,7 +192,7 @@ func TestDispatchTellsInvalidFromTransientServiceErrors(t *testing.T) {
 }
 
 // These are the events exactly as Social publishes them today (services/social/internal/service/friends.go),
-// built with the same pkg/events code and the same data maps.
+// built with the same pkg/events code and the same data maps. friend.accepted has no request_id yet.
 // If Social changes a field name, this test is where Realtime finds out.
 func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 	alice := map[string]any{"id": "u-1", "name": "Alice"}
@@ -204,12 +204,8 @@ func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 	}{
 		{"friend.request_sent", events.New("friend.request_sent", "g-1", map[string]any{"request_id": "r-1", "sender": alice, "receiver": bob}),
 			"request_sent r-1 u-1/Alice -> u-2"},
-		{"friend.request_cancelled", events.New("friend.request_cancelled", "g-1", map[string]any{"request_id": "r-1", "sender": alice, "receiver": bob}),
-			"request_cancelled r-1 u-1/Alice -> u-2"},
-		{"friend.request_declined", events.New("friend.request_declined", "g-1", map[string]any{"request_id": "r-1", "sender": alice, "receiver": bob}),
-			"request_declined r-1 u-1/Alice -> u-2"},
-		{"friend.accepted", events.New("friend.accepted", "g-1", map[string]any{"request_id": "r-1", "players": []map[string]any{alice, bob}}),
-			"accepted r-1 u-1/Alice u-2/Bob"},
+		{"friend.accepted", events.New("friend.accepted", "g-1", map[string]any{"players": []map[string]any{alice, bob}}),
+			"accepted  u-1/Alice u-2/Bob"},
 		{"friend.removed", events.New("friend.removed", "g-1", map[string]any{"players": []map[string]any{alice, bob}, "removed_by": "u-1"}),
 			"removed u-1 u-2 by u-1"},
 	}

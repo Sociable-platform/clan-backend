@@ -236,9 +236,9 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | Event (routing key) | Published by | `data` |
 |---|---|---|
 | `friend.request_sent` | social, `POST /api/v1/friends/requests` (201) | `{ "request_id", "sender": { "id", "name" }, "receiver": { "id", "name" } }`; `request_id` is the request's own ID, so a notification can accept it |
-| `friend.request_cancelled` | social, `DELETE /api/v1/friends/requests/{requestID}` (204) | `{ "request_id", "sender": { "id", "name" }, "receiver": { "id", "name" } }` |
-| `friend.request_declined` | social, `POST /api/v1/friends/requests/{requestID}/decline` (204) | the same as `friend.request_cancelled` |
-| `friend.accepted` | social, accept, or a request sent back (200) | `{ "request_id", "players": [ { "id", "name" }, { "id", "name" } ] }`, the smaller ID first; `request_id` is the request that was accepted (for a request sent back: the older one) |
+| `friend.request_cancelled` | social, the sender takes the request back (**not published yet**) | `{ "request_id", "sender": { "id", "name" }, "receiver": { "id", "name" } }` |
+| `friend.request_declined` | social, the receiver declines (**not published yet**) | the same as `friend.request_cancelled` |
+| `friend.accepted` | social, accept, or a request sent back (200) | `{ "request_id", "players": [ { "id", "name" }, { "id", "name" } ] }`, the smaller ID first (Social does not send `request_id` yet) |
 | `friend.removed` | social, `DELETE /api/v1/friends/{playerID}` (204) | `{ "players": [ { "id", "name" }, { "id", "name" } ], "removed_by" }`, the smaller ID first; `removed_by` is the ID of the player who removed the other |
 | `player.renamed` | social (**not published yet**) | `{ "player": { "id", "name" } }` |
 | `clan.created`, `clan.member_joined`, `clan.member_left`, `clan.renamed`, `clan.disbanded` | social (clan task) | see [`docs/event-messages.md`](docs/event-messages.md) |
@@ -255,7 +255,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `friend.request_sent` | sends a `friend_request` notification to the `receiver` (nothing is stored). `request_id` goes into the notification as `requestId`, so the SDK can accept that very request. It is optional here only so that an older event without it is still shown (`requestId: null`). |
 | `friend.request_cancelled` | sends a `friend_request_cancelled` notification to the `receiver` (all open tabs) so the SDK removes the `friend_request` with the same `requestId`. `request_id` is required. The sender is not told. |
 | `friend.request_declined` | sends a `friend_request_declined` notification to the `receiver` only (their other tabs drop the `friend_request`). `request_id` is required. The sender is **not** told. |
-| `friend.accepted` | creates the DM conversation of the two `players` and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both. Exactly two players are required. The notification carries `requestId` (`null` when the event has no `request_id`). |
+| `friend.accepted` | creates the DM conversation of the two `players` and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both. Exactly two players are required. The notification carries `requestId` (`null` while Social does not send `request_id`). |
 | `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both, with no notification. Exactly two `players` are required and `removed_by` must be one of them. |
 | `player.renamed` | stores the new name with the player's memberships in that game. No frame is sent; messages keep the name their sender had when writing them. |
 
@@ -434,8 +434,8 @@ always come from the token, never from the URL or the body.
 | GET | `/api/v1/friends` | 200 `{ friends: [...] }` with `id`, `displayName`, `since`, sorted by name |
 | GET | `/api/v1/friends/requests` | 200 `{ incoming: [...], outgoing: [...] }`, newest first; each has `id`, `player` (the other player: `id`, `displayName`) and `createdAt` |
 | POST | `/api/v1/friends/requests` | body `{ "playerId": "<social player ID>" }`. 201 with the new request. If that player had already asked the caller, it is accepted instead: 200 with the new friend. 400 `invalid_json` / `invalid_player_id` / `cannot_friend_yourself`; 404 `player_not_found` (also for another game's player); 409 `already_friends` / `friend_request_exists`. Publishes `friend.request_sent` or `friend.accepted` |
-| POST | `/api/v1/friends/requests/{requestID}/decline` | no body. 204: the request sent to the caller is deleted. 403 `not_request_receiver` (the caller sent it; cancel instead); 404 `friend_request_not_found`. Publishes `friend.request_declined` |
-| DELETE | `/api/v1/friends/requests/{requestID}` | 204: the caller's own request is cancelled. 403 `not_request_sender` (the caller received it; decline instead); 404 `friend_request_not_found`. Publishes `friend.request_cancelled` |
+| POST | `/api/v1/friends/requests/{requestID}/decline` | no body. 204: the request sent to the caller is deleted (nothing is published). 403 `not_request_receiver` (the caller sent it; cancel instead); 404 `friend_request_not_found` |
+| DELETE | `/api/v1/friends/requests/{requestID}` | 204: the caller's own request is cancelled (nothing is published). 403 `not_request_sender` (the caller received it; decline instead); 404 `friend_request_not_found` |
 | DELETE | `/api/v1/friends/{playerID}` | 204: the friendship ends for both players; either may send a new request afterwards. 404 `not_friends` (also for another game's player). Publishes `friend.removed` |
 | POST | `/api/v1/friends/requests/{requestID}/accept` | no body. 200 with the new friend. 403 `not_request_receiver` (the caller sent it); 404 `friend_request_not_found`. Publishes `friend.accepted` |
 

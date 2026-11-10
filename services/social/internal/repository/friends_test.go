@@ -110,7 +110,7 @@ func TestSendFriendRequestBackAcceptsTheFirstOne(t *testing.T) {
 	game := newGameID(t)
 	defer cleanup(game)
 	ali, aysel := newPlayer(t, r, game, "ali"), newPlayer(t, r, game, "aysel")
-	first := sendRequest(t, r, game, ali, aysel)
+	sendRequest(t, r, game, ali, aysel)
 
 	// Aysel sends one back, with Ali's ID in upper case: it still counts as the same player.
 	res, err := r.SendFriendRequest(context.Background(), game, aysel, strings.ToUpper(ali))
@@ -119,9 +119,6 @@ func TestSendFriendRequestBackAcceptsTheFirstOne(t *testing.T) {
 	}
 	if res.Request != nil || res.Accepted == nil {
 		t.Fatalf("result = %+v, want the first request accepted", res)
-	}
-	if res.Accepted.RequestID != first.ID {
-		t.Errorf("accepted request = %q, want the first request %q", res.Accepted.RequestID, first.ID)
 	}
 	got := []FriendPlayer{res.Accepted.PlayerA, res.Accepted.PlayerB}
 	want := []FriendPlayer{{ali, "ali"}, {aysel, "aysel"}}
@@ -171,9 +168,6 @@ func TestAcceptFriendRequest(t *testing.T) {
 	}
 	if f.CreatedAt.IsZero() || f.PlayerA.ID >= f.PlayerB.ID {
 		t.Errorf("friendship = %+v, want a time and the smaller ID first", f)
-	}
-	if f.RequestID != req.ID {
-		t.Errorf("friendship request = %q, want %q (the request that was accepted)", f.RequestID, req.ID)
 	}
 	if got := friendsOf(t, r, game, ali); len(got) != 1 || got[0] != aysel {
 		t.Errorf("ali's friends = %v, want [aysel]", got)
@@ -378,17 +372,13 @@ func TestDeclineFriendRequest(t *testing.T) {
 	ali, aysel := newPlayer(t, r, game, "ali"), newPlayer(t, r, game, "aysel")
 	req := sendRequest(t, r, game, ali, aysel)
 
-	got, err := r.DeclineFriendRequest(ctx, game, req.ID, aysel)
-	if err != nil {
+	if err := r.DeclineFriendRequest(ctx, game, req.ID, aysel); err != nil {
 		t.Fatal(err)
-	}
-	if got.ID != req.ID || got.Sender.ID != ali || got.Sender.DisplayName != "ali" || got.Receiver.ID != aysel || got.Receiver.DisplayName != "aysel" || got.CreatedAt.IsZero() {
-		t.Errorf("declined request = %+v, want the request %s from ali to aysel with names", got, req.ID)
 	}
 	if reqs, friends := pairState(t, r, game, ali, aysel); reqs != 0 || friends != 0 {
 		t.Errorf("rows: %d requests, %d friendships; want 0, 0", reqs, friends)
 	}
-	if _, err := r.DeclineFriendRequest(ctx, game, req.ID, aysel); !errors.Is(err, ErrFriendRequestNotFound) {
+	if err := r.DeclineFriendRequest(ctx, game, req.ID, aysel); !errors.Is(err, ErrFriendRequestNotFound) {
 		t.Errorf("decline twice: err = %v, want ErrFriendRequestNotFound", err)
 	}
 	// strangers again: Ali may ask once more
@@ -403,12 +393,8 @@ func TestCancelFriendRequest(t *testing.T) {
 	ali, aysel := newPlayer(t, r, game, "ali"), newPlayer(t, r, game, "aysel")
 	req := sendRequest(t, r, game, ali, aysel)
 
-	got, err := r.CancelFriendRequest(ctx, game, req.ID, ali)
-	if err != nil {
+	if err := r.CancelFriendRequest(ctx, game, req.ID, ali); err != nil {
 		t.Fatal(err)
-	}
-	if got.ID != req.ID || got.Sender.ID != ali || got.Receiver.ID != aysel || got.Sender.DisplayName == "" || got.Receiver.DisplayName == "" {
-		t.Errorf("cancelled request = %+v, want the request %s from ali to aysel with names", got, req.ID)
 	}
 	if reqs, _ := pairState(t, r, game, ali, aysel); reqs != 0 {
 		t.Errorf("%d requests after cancel, want 0", reqs)
@@ -426,7 +412,7 @@ func TestDeclineAndCancelErrors(t *testing.T) {
 
 	cases := []struct {
 		name string
-		fn   func(ctx context.Context, gameID, requestID, playerID string) (FriendRequest, error)
+		fn   func(ctx context.Context, gameID, requestID, playerID string) error
 		game string
 		id   string
 		who  string
@@ -442,7 +428,7 @@ func TestDeclineAndCancelErrors(t *testing.T) {
 		{"not a UUID", r.CancelFriendRequest, game, "nope", ali, ErrFriendRequestNotFound},
 	}
 	for _, c := range cases {
-		if _, err := c.fn(ctx, c.game, c.id, c.who); !errors.Is(err, c.want) {
+		if err := c.fn(ctx, c.game, c.id, c.who); !errors.Is(err, c.want) {
 			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)
 		}
 	}
@@ -531,8 +517,7 @@ func TestAcceptAndCancelAtTheSameTime(t *testing.T) {
 				_, err := r.AcceptFriendRequest(ctx, game, req.ID, b)
 				return err
 			}
-			_, err := r.CancelFriendRequest(ctx, game, req.ID, a)
-			return err
+			return r.CancelFriendRequest(ctx, game, req.ID, a)
 		}, ErrFriendRequestNotFound)
 		if ok != 1 || lost != 1 {
 			t.Errorf("pair %d: %d succeeded, %d found nothing; want 1 and 1", i, ok, lost)

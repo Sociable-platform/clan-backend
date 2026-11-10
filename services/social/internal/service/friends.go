@@ -15,11 +15,9 @@ import (
 
 // Event types published by the friends feature (routing keys on events.Exchange).
 const (
-	EventFriendRequestSent      = "friend.request_sent"
-	EventFriendRequestCancelled = "friend.request_cancelled"
-	EventFriendRequestDeclined  = "friend.request_declined"
-	EventFriendAccepted         = "friend.accepted"
-	EventFriendRemoved          = "friend.removed"
+	EventFriendRequestSent = "friend.request_sent"
+	EventFriendAccepted    = "friend.accepted"
+	EventFriendRemoved     = "friend.removed"
 )
 
 // FriendPlayer is another player as the friends feature shows them.
@@ -104,7 +102,11 @@ func (s *Service) SendFriendRequest(ctx context.Context, gameID, externalID, dis
 		return SendFriendRequestResult{Friend: &friend}, nil
 	}
 	req := row.Request
-	_ = s.events.Publish(ctx, events.New(EventFriendRequestSent, gameID, requestData(*req)))
+	_ = s.events.Publish(ctx, events.New(EventFriendRequestSent, gameID, map[string]any{
+		"request_id": req.ID, // lets the notification accept this very request
+		"sender":     playerData(req.Sender),
+		"receiver":   playerData(req.Receiver),
+	}))
 	out := FriendRequest{ID: req.ID, Player: FriendPlayer(req.Receiver), CreatedAt: req.CreatedAt}
 	return SendFriendRequestResult{Request: &out}, nil
 }
@@ -183,19 +185,8 @@ func (s *Service) ListFriends(ctx context.Context, gameID, externalID, displayNa
 // publishFriendAccepted tells the other services that the two players are friends now.
 func (s *Service) publishFriendAccepted(ctx context.Context, gameID string, f repository.Friendship) {
 	_ = s.events.Publish(ctx, events.New(EventFriendAccepted, gameID, map[string]any{
-		"request_id": f.RequestID, // the request that was accepted, so every tab can drop its notification
-		"players":    []map[string]any{playerData(f.PlayerA), playerData(f.PlayerB)},
+		"players": []map[string]any{playerData(f.PlayerA), playerData(f.PlayerB)},
 	}))
-}
-
-// requestData is the data of the three events about a friend request (docs/event-messages.md).
-// The request ID lets the notification accept, or drop, this very request.
-func requestData(req repository.FriendRequest) map[string]any {
-	return map[string]any{
-		"request_id": req.ID,
-		"sender":     playerData(req.Sender),
-		"receiver":   playerData(req.Receiver),
-	}
 }
 
 // playerData is how a player appears in event data: social's own ID and the display name.
@@ -220,8 +211,7 @@ func errFriendRequestNotFound() error {
 }
 
 // DeclineFriendRequest deletes request requestID, which must have been sent to the calling
-// player. It publishes friend.request_declined afterwards; Realtime tells only the receiver's own
-// tabs, so the sender is not told.
+// player. Nothing is published: the sender is not told.
 //
 // Errors the client can act on:
 //   - 404 friend_request_not_found: no such pending request for this player
@@ -234,7 +224,7 @@ func (s *Service) DeclineFriendRequest(ctx context.Context, gameID, externalID, 
 	if err != nil {
 		return fmt.Errorf("decline friend request: %w", err)
 	}
-	req, err := s.store.DeclineFriendRequest(ctx, gameID, strings.ToLower(requestID), me.ID)
+	err = s.store.DeclineFriendRequest(ctx, gameID, strings.ToLower(requestID), me.ID)
 	switch {
 	case errors.Is(err, repository.ErrFriendRequestNotFound):
 		return errFriendRequestNotFound()
@@ -244,12 +234,11 @@ func (s *Service) DeclineFriendRequest(ctx context.Context, gameID, externalID, 
 	case err != nil:
 		return fmt.Errorf("decline friend request: %w", err)
 	}
-	_ = s.events.Publish(ctx, events.New(EventFriendRequestDeclined, gameID, requestData(req)))
 	return nil
 }
 
 // CancelFriendRequest deletes request requestID, which the calling player must have sent.
-// It publishes friend.request_cancelled afterwards.
+// Nothing is published.
 //
 // Errors the client can act on:
 //   - 404 friend_request_not_found: no such pending request for this player
@@ -262,7 +251,7 @@ func (s *Service) CancelFriendRequest(ctx context.Context, gameID, externalID, d
 	if err != nil {
 		return fmt.Errorf("cancel friend request: %w", err)
 	}
-	req, err := s.store.CancelFriendRequest(ctx, gameID, strings.ToLower(requestID), me.ID)
+	err = s.store.CancelFriendRequest(ctx, gameID, strings.ToLower(requestID), me.ID)
 	switch {
 	case errors.Is(err, repository.ErrFriendRequestNotFound):
 		return errFriendRequestNotFound()
@@ -272,7 +261,6 @@ func (s *Service) CancelFriendRequest(ctx context.Context, gameID, externalID, d
 	case err != nil:
 		return fmt.Errorf("cancel friend request: %w", err)
 	}
-	_ = s.events.Publish(ctx, events.New(EventFriendRequestCancelled, gameID, requestData(req)))
 	return nil
 }
 
