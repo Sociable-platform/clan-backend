@@ -51,16 +51,21 @@ type playerData struct {
 	Name string `json:"name"`
 }
 
+// friendRequestSentData is the data of friend.request_sent as Social publishes it. request_id is
+// optional: Social does not send it yet, and without it the notification just has no requestId.
 type friendRequestSentData struct {
 	RequestID string     `json:"request_id"`
-	From      playerData `json:"from"`
-	ToID      string     `json:"to_id"`
+	Sender    playerData `json:"sender"`
+	Receiver  playerData `json:"receiver"`
 }
 
+// friendAcceptedData is the data of friend.accepted as Social publishes it: the two new friends.
 type friendAcceptedData struct {
-	A playerData `json:"a"`
-	B playerData `json:"b"`
+	Players []playerData `json:"players"`
 }
+
+// friendRemovedData is the data of friend.removed. Social does not publish this event yet; the
+// field names here are the ones realtime expects when it does (see README "Event format").
 
 type friendRemovedData struct {
 	AID string `json:"a_id"`
@@ -82,12 +87,15 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 	case typeFriendRequestSent:
 		var data friendRequestSentData
 		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.FriendRequestSent(ctx, env.GameID, data.RequestID, player(data.From), data.ToID)
+			pushes, err = d.events.FriendRequestSent(ctx, env.GameID, data.RequestID, player(data.Sender), data.Receiver.ID)
 		}
 	case typeFriendAccepted:
 		var data friendAcceptedData
-		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.FriendAccepted(ctx, env.GameID, player(data.A), player(data.B))
+		if err = decode(env.Data, &data); err == nil && len(data.Players) != 2 {
+			err = fmt.Errorf("%w: friend.accepted needs exactly two players, got %d", ErrDrop, len(data.Players))
+		}
+		if err == nil {
+			pushes, err = d.events.FriendAccepted(ctx, env.GameID, player(data.Players[0]), player(data.Players[1]))
 		}
 	case typeFriendRemoved:
 		var data friendRemovedData

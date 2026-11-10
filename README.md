@@ -237,6 +237,29 @@ Messages are persistent (`delivery_mode` 2) with `content_type` `application/jso
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
 `name` the display name at the time of the event. Clan events are added by the task that publishes them.
 
+**Realtime reads three of them** (the others that reach `realtime.events` are acknowledged and ignored until their tasks exist):
+
+| Event | Realtime does |
+|---|---|
+| `friend.request_sent` | sends a `friend_request` notification to the `receiver` (nothing is stored). `request_id` is optional in the event, because Social does not send it yet; without it the notification has `requestId: null`, and the SDK cannot tell which request to accept from the notification alone. Social should add `"request_id"` to this event. |
+| `friend.accepted` | creates the DM conversation of the two `players` and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both. Exactly two players are required. |
+| `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both |
+
+A field Realtime needs that is missing or malformed makes it drop that event (logged as `dropping unusable event`).
+So **Social and Realtime must keep these field names in step**; `TestDispatchReadsEventsAsSocialPublishesThem` in
+`services/realtime/internal/consumer` checks the shape Social publishes today.
+
+**How realtime reads the queue**
+
+- One consumer, one event at a time, in order. Prefetch is 20, acknowledgement is manual and comes after the database write.
+- An event that fails (for example the database is down) is put back **once** after one second; if it fails again it is logged
+  and dropped. An unusable event (not JSON, missing field, id that is not a UUID) is logged and dropped at once.
+  There is no dead-letter queue yet, so a dropped event is lost.
+- Every database write is an upsert or a delete, so a redelivered event changes nothing. The WebSocket frames are sent again;
+  the SDK ignores a conversation it already has.
+- If the broker is down or restarts, realtime keeps running and reconnects (1 s, 2 s, 4 s ... up to 30 s).
+  Without a database it does not read events at all, because it would have nowhere to store them.
+
 ### Publishing from a service
 
 - Social publishes when `SOCIAL_RABBITMQ_URL` is set (docker compose sets it). Without it social starts anyway, logs

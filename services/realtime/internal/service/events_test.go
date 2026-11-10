@@ -174,10 +174,6 @@ func TestEventsRejectBadInputWithoutTouchingTheDatabase(t *testing.T) {
 			_, err := s.FriendRemoved(context.Background(), game, ali, "")
 			return err
 		}},
-		{"request: no request id", func(s *Service) error {
-			_, err := s.FriendRequestSent(context.Background(), game, " ", Player{ali, "Ali"}, rashad)
-			return err
-		}},
 		{"request: receiver is not a uuid", func(s *Service) error {
 			_, err := s.FriendRequestSent(context.Background(), game, "r-1", Player{ali, "Ali"}, "rashad")
 			return err
@@ -261,6 +257,20 @@ func TestFriendRequestSent(t *testing.T) {
 	want := `{"kind":"friend_request","payload":{"from":{"id":"` + ali + `","name":"Ali"},"requestId":"req-7"}}`
 	if s := mustJSON(t, pushes[0].Data); s != want {
 		t.Errorf("data = %s, want %s", s, want)
+	}
+}
+
+// Social does not send a request id yet: the notification is still sent, with requestId null.
+func TestFriendRequestSentWithoutARequestID(t *testing.T) {
+	for _, id := range []string{"", "  "} {
+		pushes, err := New(&memStore{}).FriendRequestSent(context.Background(), game, id, Player{ali, "Ali"}, rashad)
+		if err != nil || len(pushes) != 1 {
+			t.Fatalf("id %q: = (%v, %v), want one notification", id, pushes, err)
+		}
+		want := `{"kind":"friend_request","payload":{"from":{"id":"` + ali + `","name":"Ali"},"requestId":null}}`
+		if s := mustJSON(t, pushes[0].Data); s != want {
+			t.Errorf("id %q: data = %s, want %s", id, s, want)
+		}
 	}
 }
 

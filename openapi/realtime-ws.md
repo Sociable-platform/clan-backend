@@ -186,7 +186,7 @@ Something happened that the SDK should show as a notice. `kind` says what; `payl
 
 | `kind` | Sent to | `payload` |
 |---|---|---|
-| `friend_request` | the player who received the request | `{ "requestId": "...", "from": { "id": "...", "name": "..." } }` |
+| `friend_request` | the player who received the request | `{ "requestId": "...", "from": { "id": "...", "name": "..." } }` (`requestId` is `null` until Social puts the request ID in its event) |
 | `friend_accepted` | both players | `{ "player": { "id": "...", "name": "..." } }` (the other player) |
 | `clan_joined` | the clan's members | `{ "clanId": "...", "player": { "id": "...", "name": "..." } }` |
 | `clan_kicked` | the player who was removed | `{ "clanId": "..." }` |

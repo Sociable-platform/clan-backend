@@ -90,13 +90,15 @@ type playerRef struct {
 
 // FriendRequestSent handles friend.request_sent: the receiver gets a friend_request notification.
 // Nothing is stored; a request that arrives twice shows twice (the SDK matches it by requestId).
+// requestID may be empty (Social does not send it yet); the notification then has requestId null.
 func (s *Service) FriendRequestSent(_ context.Context, gameID, requestID string, from Player, toID string) ([]Push, error) {
 	gameID, err := cleanID("game_id", gameID)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(requestID) == "" {
-		return nil, invalid("request_id is missing")
+	var reqID *string
+	if id := strings.TrimSpace(requestID); id != "" {
+		reqID = &id
 	}
 	from, err = cleanPlayer("from", from)
 	if err != nil {
@@ -115,7 +117,7 @@ func (s *Service) FriendRequestSent(_ context.Context, gameID, requestID string,
 		Type:      frameNotification,
 		Data: notificationData{
 			Kind:    kindFriendRequest,
-			Payload: map[string]any{"requestId": requestID, "from": playerRef(from)},
+			Payload: map[string]any{"requestId": reqID, "from": playerRef(from)},
 		},
 	}}, nil
 }

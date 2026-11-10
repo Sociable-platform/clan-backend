@@ -56,10 +56,13 @@ func TestDispatchRoutesEachEventToItsHandler(t *testing.T) {
 		want string
 	}{
 		{"friend.request_sent",
-			`{"event_id":"e1","type":"friend.request_sent","occurred_at":"2026-11-10T08:00:00Z","game_id":"g-1","data":{"request_id":"r-1","from":{"id":"u-1","name":"Ali"},"to_id":"u-2"}}`,
+			`{"event_id":"e1","type":"friend.request_sent","occurred_at":"2026-11-10T08:00:00Z","game_id":"g-1","data":{"request_id":"r-1","sender":{"id":"u-1","name":"Ali"},"receiver":{"id":"u-2","name":"Rashad"}}}`,
 			"request_sent r-1 u-1/Ali -> u-2"},
+		{"friend.request_sent without request_id (what Social sends today)",
+			`{"event_id":"e1","type":"friend.request_sent","game_id":"g-1","data":{"sender":{"id":"u-1","name":"Ali"},"receiver":{"id":"u-2","name":"Rashad"}}}`,
+			"request_sent  u-1/Ali -> u-2"},
 		{"friend.accepted",
-			`{"event_id":"e2","type":"friend.accepted","game_id":"g-1","data":{"a":{"id":"u-1","name":"Ali"},"b":{"id":"u-2","name":"Rashad"}}}`,
+			`{"event_id":"e2","type":"friend.accepted","game_id":"g-1","data":{"players":[{"id":"u-1","name":"Ali"},{"id":"u-2","name":"Rashad"}]}}`,
 			"accepted u-1/Ali u-2/Rashad"},
 		{"friend.removed",
 			`{"event_id":"e3","type":"friend.removed","game_id":"g-1","data":{"a_id":"u-1","b_id":"u-2"}}`,
@@ -119,7 +122,10 @@ func TestDispatchDropsUnusableEvents(t *testing.T) {
 		{"not json", `hello`},
 		{"json but not an object", `[1,2]`},
 		{"no data", `{"event_id":"e","type":"friend.accepted","game_id":"g-1"}`},
-		{"data of the wrong shape", `{"event_id":"e","type":"friend.accepted","game_id":"g-1","data":{"a":"u-1"}}`},
+		{"data of the wrong shape", `{"event_id":"e","type":"friend.accepted","game_id":"g-1","data":{"players":"u-1"}}`},
+		{"accepted with one player", `{"event_id":"e","type":"friend.accepted","game_id":"g-1","data":{"players":[{"id":"u-1","name":"Ali"}]}}`},
+		{"accepted with three players", `{"event_id":"e","type":"friend.accepted","game_id":"g-1","data":{"players":[{"id":"1"},{"id":"2"},{"id":"3"}]}}`},
+		{"accepted in the old a/b shape", `{"event_id":"e","type":"friend.accepted","game_id":"g-1","data":{"a":{"id":"u-1","name":"Ali"},"b":{"id":"u-2","name":"Rashad"}}}`},
 		{"data is a string", `{"event_id":"e","type":"friend.removed","game_id":"g-1","data":"x"}`},
 	}
 	for _, tt := range tests {
@@ -156,21 +162,35 @@ func TestDispatchTellsInvalidFromTransientServiceErrors(t *testing.T) {
 	}
 }
 
-// An event built and encoded the way Social's publisher does it (pkg/events) is understood.
-func TestDispatchReadsEventsMadeByThePublisherPackage(t *testing.T) {
-	e := events.New("friend.accepted", "g-1", map[string]any{
-		"a": map[string]any{"id": "u-1", "name": "Ali"},
-		"b": map[string]any{"id": "u-2", "name": "Rashad"},
-	})
-	body, err := json.Marshal(e)
-	if err != nil {
-		t.Fatal(err)
+// These are the events exactly as Social publishes them today (services/social/internal/service/friends.go,
+// README "Event format"), built with the same pkg/events code and the same data maps. If Social changes a
+// field name, this test is where Realtime finds out.
+func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
+	ali := map[string]any{"id": "u-1", "name": "Ali"}
+	rashad := map[string]any{"id": "u-2", "name": "Rashad"}
+	tests := []struct {
+		name string
+		e    events.Event
+		want string
+	}{
+		{"friend.request_sent", events.New("friend.request_sent", "g-1", map[string]any{"sender": ali, "receiver": rashad}),
+			"request_sent  u-1/Ali -> u-2"},
+		{"friend.accepted", events.New("friend.accepted", "g-1", map[string]any{"players": []map[string]any{ali, rashad}}),
+			"accepted u-1/Ali u-2/Rashad"},
 	}
-	ev := &fakeEvents{}
-	if err := NewDispatcher(ev, &fakeSender{}, slog.Default()).Handle(context.Background(), body); err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"accepted u-1/Ali u-2/Rashad"}; !reflect.DeepEqual(ev.calls, want) || ev.gotGame != "g-1" {
-		t.Errorf("calls = %v, game = %q, want %v for g-1", ev.calls, ev.gotGame, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ev := &fakeEvents{}
+			if err := NewDispatcher(ev, &fakeSender{}, slog.Default()).Handle(context.Background(), body); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(ev.calls, []string{tt.want}) || ev.gotGame != "g-1" {
+				t.Errorf("calls = %v, game = %q, want [%s] for g-1", ev.calls, ev.gotGame, tt.want)
+			}
+		})
 	}
 }
