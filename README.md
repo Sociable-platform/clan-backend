@@ -18,7 +18,7 @@ clan-backend/
 ├── deploy/traefik/            # gateway: static config and the /realtime route
 ├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
-├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message
+├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
@@ -462,9 +462,11 @@ while social is down.
 ```bash
 go run ./tools/devtoken -player u_42 -name Ali        # prints a token
 # Postman: New > WebSocket, URL  ws://localhost/realtime/v1/ws?token=<token>   (or ws://localhost:8083/api/v1/ws?token=<token>)
-# On connect you get: {"type":"hello","data":{"playerId":"<social uuid>","configVersion":0,"onlineFriends":[]}}
+# On connect you get: {"event_id":"...","type":"hello","occurred_at":"...","game_id":"<game>","data":{"playerId":"<social uuid>","configVersion":0,"onlineFriends":[]}}
 # Then send:           {"type":"ping","id":"p-1","data":{}}
-# You get:             {"type":"pong","data":{"replyTo":"p-1"}}
+# You get:             {"event_id":"...","type":"pong","occurred_at":"...","game_id":"<game>","data":{"replyTo":"p-1"}}
+# Every frame the server sends has the envelope of a queue event: event_id, type, occurred_at, game_id, data.
+# Frames you send stay {"type","id","data"}.
 ```
 
 Two players: make a second token with `go run ./tools/devtoken -player u_43 -name Rashad`, open a second Postman WebSocket tab
@@ -488,6 +490,8 @@ Errors come back as `error` frames with `replyTo` and nothing is stored or sent:
 `empty`, `too_long` (over 1000 characters for now; the game's own limit comes with the message rules), `bad_frame` (missing or wrong-type field),
 `internal` (for example the database is down).
 Not built yet: presence and the per-game message rules (slow mode, profanity filter, rate limit, blocks, `max_message_length`).
+
+**Postman collection and flow diagrams.** `postman/realtime-chat.postman_collection.json` runs the whole flow against a local stack: it makes its own developer, game, three players and a friendship, then checks the conversation, the history, paging, unread and the error cases (103 checks). The two things that need a WebSocket (sending messages and `conversation.read`) are two manual steps that show the exact frames to send in the Visualize tab; the collection description says how to run it. How everything flows, as UML diagrams: [`docs/realtime-flow.md`](docs/realtime-flow.md).
 
 **Conversation list, history and "read" (Postman).** After the chat above, for each player (use that player's token):
 

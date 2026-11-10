@@ -31,7 +31,7 @@ type Event struct {
 // New returns an event with a fresh random ID and the current time (UTC).
 func New(eventType, gameID string, data map[string]any) Event {
 	return Event{
-		ID:         newID(),
+		ID:         NewID(),
 		Type:       eventType,
 		OccurredAt: time.Now().UTC(),
 		GameID:     gameID,
@@ -39,8 +39,9 @@ func New(eventType, gameID string, data map[string]any) Event {
 	}
 }
 
-// newID returns a random UUID (version 4), for example "3f1c0b7e-9a2d-4c51-8e0f-6b7a1d2c3e4f".
-func newID() string {
+// NewID returns a random UUID (version 4), for example "3f1c0b7e-9a2d-4c51-8e0f-6b7a1d2c3e4f".
+// Events use it for event_id; so do the frames realtime sends to browsers.
+func NewID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])  // crypto/rand.Read never fails (Go 1.24+ crashes the program instead)
 	b[6] = b[6]&0x0f | 0x40 // version 4

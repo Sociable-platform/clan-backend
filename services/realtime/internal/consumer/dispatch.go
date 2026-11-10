@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/events"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/frame"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 )
 
@@ -136,15 +137,13 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 	// The data is stored; now tell whoever is connected. Sending cannot fail: a player who is not
 	// connected is skipped and one with a full queue is disconnected by the hub.
 	for _, p := range pushes {
-		frame, err := json.Marshal(struct {
-			Type string `json:"type"`
-			Data any    `json:"data"`
-		}{p.Type, p.Data})
+		// The frame has the envelope of an event too; it happened when the event did.
+		encoded, err := frame.Encode(p.GameID, p.Type, env.OccurredAt, p.Data)
 		if err != nil {
 			// Our own data does not encode: a bug, and not one a retry fixes.
 			return fmt.Errorf("%w: encode %s frame: %w", ErrDrop, p.Type, err)
 		}
-		d.send.SendToPlayers(p.GameID, p.PlayerIDs, frame)
+		d.send.SendToPlayers(p.GameID, p.PlayerIDs, encoded)
 	}
 	d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "frames", len(pushes))
 	return nil
