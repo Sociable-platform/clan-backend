@@ -36,6 +36,9 @@ const (
 	frameConversationRemoved = "conversation.removed"
 	framePresenceUpdate      = "presence.update"
 
+	kindDM   = "dm"
+	kindClan = "clan"
+
 	kindFriendRequest          = "friend_request"
 	kindFriendRequestCancelled = "friend_request_cancelled"
 	kindFriendRequestDeclined  = "friend_request_declined"
@@ -261,11 +264,55 @@ func (s *Service) PlayerRenamed(ctx context.Context, gameID string, p Player) ([
 	return nil, nil
 }
 
+// PlayerBlocked handles player.blocked: Realtime keeps its own copy of who blocked whom, so a message
+// to a blocked player can be refused (blocked) without asking Social. Nothing is sent to anybody:
+// blocking is private. Running it again changes nothing.
+func (s *Service) PlayerBlocked(ctx context.Context, gameID, blockerID, blockedID string) ([]Push, error) {
+	gameID, blockerID, blockedID, err := cleanBlock(gameID, blockerID, blockedID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.AddBlock(ctx, gameID, blockerID, blockedID); err != nil {
+		return nil, fmt.Errorf("player blocked: %w", err)
+	}
+	return nil, nil
+}
+
+// PlayerUnblocked handles player.unblocked: the copy of the block is deleted. Nothing is sent to anybody.
+// Running it again, or for a block Realtime never saw, changes nothing.
+func (s *Service) PlayerUnblocked(ctx context.Context, gameID, blockerID, blockedID string) ([]Push, error) {
+	gameID, blockerID, blockedID, err := cleanBlock(gameID, blockerID, blockedID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.RemoveBlock(ctx, gameID, blockerID, blockedID); err != nil {
+		return nil, fmt.Errorf("player unblocked: %w", err)
+	}
+	return nil, nil
+}
+
+func cleanBlock(gameID, blockerID, blockedID string) (string, string, string, error) {
+	gameID, err := cleanID("game_id", gameID)
+	if err != nil {
+		return "", "", "", err
+	}
+	if blockerID, err = cleanID("blocker_id", blockerID); err != nil {
+		return "", "", "", err
+	}
+	if blockedID, err = cleanID("blocked_id", blockedID); err != nil {
+		return "", "", "", err
+	}
+	if blockerID == blockedID {
+		return "", "", "", invalid("a player cannot block themselves")
+	}
+	return gameID, blockerID, blockedID, nil
+}
+
 // dmConversation builds the conversation object for a freshly upserted DM.
 func (s *Service) dmConversation(gameID string, dm repository.DM, a, b Player, unread int) Conversation {
 	c := Conversation{
 		ID:   dm.ConversationID,
-		Kind: "dm",
+		Kind: kindDM,
 		Members: []ConversationMember{
 			{ID: a.ID, Name: a.Name, Online: s.online(gameID, a.ID)},
 			{ID: b.ID, Name: b.Name, Online: s.online(gameID, b.ID)},

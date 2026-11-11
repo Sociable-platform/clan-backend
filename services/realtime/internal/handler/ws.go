@@ -49,6 +49,8 @@ type WSOptions struct {
 	// Shutdown is cancelled when the service stops; every open socket is then closed with 1001.
 	// Nil means never.
 	Shutdown context.Context
+	// RateLimit tunes the limit on message.send frames per connection. Zero values give 5 in 5 s, and 3 refused in a row close the connection.
+	RateLimit RateLimit
 	// PingInterval is how often the server pings an idle connection (default 25 s).
 	PingInterval time.Duration
 	// PongTimeout is how long the server waits for the answer before dropping the connection (default 60 s).
@@ -182,7 +184,9 @@ func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 
 	h.enqueue(conn, serverFrame{Type: frameTypeHello, Data: helloData{PlayerID: sp.ID, ConfigVersion: configVersion, OnlineFriends: h.onlineFriends(r.Context(), log, player.GameID, sp.ID)}})
 
-	conn.Serve(r.Context(), h.handleFrame)
+	// One limiter per connection: only the goroutine that reads the connection's frames uses it.
+	state := newConnState(h.wsOpts.RateLimit)
+	conn.Serve(r.Context(), func(c *hub.Conn, typ websocket.MessageType, data []byte) { h.handleFrame(c, typ, data, state) })
 
 	code, reason := conn.CloseInfo()
 	log.Info("websocket disconnected", "code", int(code), "reason", reason)
@@ -209,7 +213,7 @@ func (h *Handler) onlineFriends(ctx context.Context, log *slog.Logger, gameID, p
 
 // handleFrame answers one client frame. A frame the server cannot accept gets an error frame
 // and the connection stays open.
-func (h *Handler) handleFrame(c *hub.Conn, typ websocket.MessageType, data []byte) {
+func (h *Handler) handleFrame(c *hub.Conn, typ websocket.MessageType, data []byte, state *connState) {
 	if typ != websocket.MessageText {
 		h.enqueueError(c, codeBadFrame, "Frames must be text (JSON)", nil)
 		return
@@ -224,7 +228,7 @@ func (h *Handler) handleFrame(c *hub.Conn, typ websocket.MessageType, data []byt
 	case frameTypePing:
 		h.enqueue(c, serverFrame{Type: frameTypePong, Data: pongData{ReplyTo: f.idPointer()}})
 	case frameTypeMessageSend:
-		h.messageSend(c, f)
+		h.messageSend(c, f, state)
 	case frameTypeConversationRead:
 		h.conversationRead(c, f)
 	default:

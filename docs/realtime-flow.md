@@ -9,7 +9,7 @@ Names come from the code. If you change a flow, change the diagram in the same m
 | 1 Components | the services, the database schemas, RabbitMQ and who talks to whom |
 | 2 Sign in and connect | a player token, the WebSocket connection and the first frame |
 | 3 Friends become a conversation | friend request, accept, and how Realtime reacts |
-| 4 Sending a message | `message.send`, the checks, the save and the fan-out |
+| 4 Sending a message | `message.send`, the message rules in order, the save and the fan-out |
 | 5 Conversation list and history | the two REST reads |
 | 6 Marking a conversation read | the `conversation.read` frame |
 | 7 Request cancelled or declined, friend removed | the other friend events |
@@ -178,9 +178,16 @@ sequenceDiagram
     participant Hub
 
     A1->>H: message.send, id c-1, conversationId, body
+    H->>H: 1 rate limit of the connection: 5 in 5 s (refused: error rate_limited, the third in a row also closes with 1008)
     H->>H: read the frame (missing or wrong type: error bad_frame)
     H->>Svc: SendMessage(game and sender from the connection, conversationId, body)
-    Svc->>Svc: trim, not empty, no NUL, at most 1000 characters, conversationId is a UUID
+    Svc->>Svc: 2 trim, not empty, no NUL, conversationId is a UUID
+    Svc->>DB: 3 kind and members of the conversation in this game (the sender must be one: not_member)
+    Svc->>Svc: 4 the game's chat switches from the config cache (feature_disabled)
+    Svc->>DB: 5 DM only: did one block the other? (blocked)
+    Svc->>Svc: 6 at most the game's maxMessageLength characters (too_long)
+    Svc->>Svc: 7 slow mode per player across tabs (slow_mode with retryAfterMs)
+    Svc->>Svc: 8 profanity filter if on: banned whole words become ***
     Svc->>Svc: new UUIDv7 id (its time is createdAt)
     Svc->>DB: INSERT ... WHERE the sender is a member of this conversation in this game (one statement)
     alt stored
@@ -192,7 +199,7 @@ sequenceDiagram
         Hub-->>A2: message.new
         Hub-->>B: message.new (same event_id for everybody)
     else the player may not send
-        Svc-->>H: not_member, empty, too_long or bad_frame
+        Svc-->>H: not_member, feature_disabled, blocked, empty, too_long, slow_mode or bad_frame
         H-->>A1: error frame with replyTo c-1, nothing stored, nobody else told
     else our own failure
         Svc-->>H: database error (logged without the text)
@@ -551,6 +558,6 @@ with a restart.
 |---|---|
 | RabbitMQ | Social still answers (a failed publish is only logged), but the events published while the broker is down are lost: there is no outbox yet. Realtime keeps serving WebSockets and REST and reconnects to the broker with 1, 2, 4 ... up to 30 s |
 | Realtime database | REST answers 500 `internal_error`, `message.send` answers an `error` frame `internal`, the consumer retries an event once and then drops it; `hello.onlineFriends` is `[]`, and when a player's 10 s end and the friends cannot be looked up, nobody is told and the player stops counting as online |
-| Platform | `hello` says `configVersion` 0 after a second (and for a few seconds after, without asking again); a `config.published` event is retried once and then dropped, so a missed `config.updated` is caught by `configVersion` in the next `hello`. Chat and friends are not affected |
+| Platform | message rules of a game whose config is not cached are the permissive defaults (chat on, 1000 characters, no slow mode, no filter); `hello` says `configVersion` 0 after a second (and for a few seconds after, without asking again); a `config.published` event is retried once and then dropped, so a missed `config.updated` is caught by `configVersion` in the next `hello`. Chat and friends are not affected |
 | Social | new WebSocket connections and REST calls to Realtime get 503 `social_unavailable`. Open sockets keep working |
 | Realtime itself | events wait in the queue and are handled when it is back. Frames sent meanwhile are not replayed: after a reconnect the SDK reloads the list and the history |

@@ -140,6 +140,7 @@ func (c *Cache) store(gameID string, cfg Config) Config {
 	if old, ok := c.configs[gameID]; ok && old.Version > cfg.Version {
 		return old
 	}
+	cfg.Chat = ParseChatRules(cfg.Settings) // once per version, not once per message
 	c.configs[gameID] = cfg
 	return cfg
 }

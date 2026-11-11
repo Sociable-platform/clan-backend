@@ -18,7 +18,8 @@ const (
 	frameTypeMessageSend      = "message.send"
 	frameTypeConversationRead = "conversation.read"
 
-	codeBadFrame = "bad_frame"
+	codeBadFrame    = "bad_frame"
+	codeRateLimited = "rate_limited"
 
 	// maxFrameIDLen is the longest request id a client may send.
 	maxFrameIDLen = 64

@@ -6,6 +6,8 @@ import (
 	"context"
 	"time"
 
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/profanity"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/ratelimit"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/uuidv7"
 )
@@ -28,6 +30,14 @@ type Store interface {
 	// MarkRead moves the player's read position forward to the message; safe to repeat. It returns
 	// repository.ErrNotMember or repository.ErrNoSuchMessage.
 	MarkRead(ctx context.Context, gameID, playerID, conversationID, messageID string) error
+	// ConversationOf returns the kind and the members of a conversation the player is a member of.
+	// It returns repository.ErrNotMember otherwise.
+	ConversationOf(ctx context.Context, gameID, conversationID, playerID string) (repository.ConversationInfo, error)
+	// IsBlocked reports whether one of the two players blocked the other.
+	IsBlocked(ctx context.Context, gameID, a, b string) (bool, error)
+	// AddBlock and RemoveBlock keep Realtime's copy of Social's blocks; both are safe to repeat.
+	AddBlock(ctx context.Context, gameID, blockerID, blockedID string) error
+	RemoveBlock(ctx context.Context, gameID, blockerID, blockedID string) error
 	// InsertMessage stores a message if the sender is a member and returns all members.
 	// It returns repository.ErrNotMember otherwise.
 	InsertMessage(ctx context.Context, gameID, conversationID, senderID string, m repository.NewMessage) ([]string, error)
@@ -38,11 +48,15 @@ type Service struct {
 	store    Store
 	presence Presence
 	ids      IDs
+	rules    Rules
+	slow     *ratelimit.Slow
+	filter   *profanity.Filter
+	now      func() time.Time
 }
 
 // New returns a Service.
 func New(store Store, opts ...Option) *Service {
-	s := &Service{store: store, ids: uuidv7.New(time.Now)}
+	s := &Service{store: store, ids: uuidv7.New(time.Now), slow: ratelimit.NewSlow(), filter: profanity.Default(), now: time.Now}
 	for _, opt := range opts {
 		opt(s)
 	}

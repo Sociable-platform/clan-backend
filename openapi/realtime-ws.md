@@ -4,18 +4,17 @@ The live half of the realtime service: new messages, presence, notifications and
 WebSocket. The two REST reads (conversation list and history) are in [`realtime.yaml`](realtime.yaml).
 
 - **Status:** contract for the SDK. Every frame the server sends has the envelope of a queue event (section 2). Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
-  the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1009`, `4001` and `4002`,
+  the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1008`, `1009`, `4001` and `4002`,
   the friend frames (`conversation.added`, `conversation.removed`, the `friend_request`, `friend_request_cancelled`, `friend_request_declined` and `friend_accepted` notifications), and
   `message.send` with `message.ack` and `message.new`, and `conversation.read`.
-  For `message.send` the server checks that the player is a member and that the trimmed body is not empty and at most 1000 characters
-  (the game's own `max_message_length` comes with the message rules). Answers: `message.ack`, or `error` with `not_member`, `empty`, `too_long`,
-  `bad_frame` or `internal`.
+  `message.send` follows the game's message rules (see `message.send` below): a rate limit per connection, the game's chat switches, blocks,
+  its maximum length, slow mode and the profanity filter. Answers: `message.ack`, or `error` with `rate_limited`, `not_member`,
+  `feature_disabled`, `blocked`, `empty`, `too_long`, `slow_mode`, `bad_frame` or `internal`.
   In `hello`, `configVersion` is the version of the game's published config (`0` when the game has none or Platform did not answer within a second)
   and `onlineFriends` lists the friends who are online. `config.updated` is sent when the game publishes a new config.
   `presence.update` tells a friend went offline (after a 10 second grace period) or, for a new friendship, that the other one is online.
   Not built yet: the clan notifications,
-  clan conversations, the message rules (`rate_limited`, `feature_disabled`, `blocked`, `slow_mode`, the profanity
-  filter), the 5-connections-per-player limit, and `1008`/`4003`.
+  clan conversations (so `clan_chat` cannot be tried end to end yet), the 5-connections-per-player limit, and `4003`.
 - **Endpoint:** `GET /api/v1/ws?token=<player token>` on the realtime service (`ws://localhost:8083/api/v1/ws` locally).
 - **Format:** every frame is one JSON object in a WebSocket **text** frame. Binary frames are a `bad_frame` error.
 - **Names:** frame types are lowercase with dots (`message.new`), JSON fields are camelCase, error codes are `snake_case`.
@@ -112,8 +111,24 @@ Send a text message to a conversation the player is a member of.
 - If the game's profanity filter is on, banned words in the stored and broadcast body are replaced with `***`.
   The `message.new` frame carries the final text.
 - The reply comes **after** the message is stored: `message.ack` on success, otherwise `error` and nothing is stored or
-  sent to anyone. Possible error codes: `rate_limited`, `feature_disabled`, `not_member`, `blocked`, `empty`,
+  sent to anyone. Every `error` has `replyTo` (the frame's `id`). Possible error codes: `rate_limited`, `feature_disabled`, `not_member`, `blocked`, `empty`,
   `too_long`, `slow_mode`, `bad_frame`, `internal`.
+- **The checks run in this order, and the first one that fails answers:**
+
+  | # | Check | Error |
+  |---|---|---|
+  | 1 | Rate limit of the connection: at most 5 `message.send` frames in any 5 seconds (every `message.send` counts, even a malformed one; refused ones do not). A refused frame is not looked at further. Three refused frames in a row (no accepted one between them) also close the connection with `1008`, after their error frames. | `rate_limited` |
+  | 2 | The body is not empty after trimming and has no NUL character | `empty`, `bad_frame` |
+  | 3 | The player is a member of the conversation | `not_member` |
+  | 4 | The game turned this chat on: `chat.enabled`, and `chat.directMessages` for a DM or `chat.clanChat` for a clan room | `feature_disabled` |
+  | 5 | In a DM, neither player blocked the other (a block works both ways, and clan rooms are not affected) | `blocked` |
+  | 6 | The body is at most `chat.maxMessageLength` characters | `too_long` |
+  | 7 | Slow mode: `chat.slowModeSeconds` since this player's last stored message, counted across all their tabs and conversations. `retryAfterMs` says how long to wait. | `slow_mode` |
+  | 8 | The profanity filter, if `chat.profanityFilter` is on: whole words, compared in lower case, replaced with `***` | (no error) |
+
+  Refused messages do not start the slow mode, and neither does one that could not be stored. The rules are those of the game's **published** config,
+  which Realtime keeps in memory and updates on `config.published`. A game with no published config, or one Realtime cannot read yet (Platform down
+  and nothing cached), has chat on, up to 1000 characters, no slow mode and no filter.
 - `message.ack` is sent to the tab that sent the message; `message.new` goes to **every** open tab of every member, the sending tab included (it
   comes right after the ack, with the same `messageId` and `createdAt`, so the SDK can show the message once).
 - A resend after a reconnect can store the message twice; the SDK should not resend a message it has not seen
@@ -317,10 +332,10 @@ A client frame was rejected. The connection stays open unless a close code in se
 
 | Code | When | What the SDK does |
 |---|---|---|
-| `rate_limited` | More than 5 `message.send` frames in 5 seconds. Three in a row also close the connection with `1008`. | Slow down; keep the text in the input. |
+| `rate_limited` | More than 5 `message.send` frames in 5 seconds on this connection. Three refused in a row also close the connection with `1008`. | Slow down; keep the text in the input. |
 | `feature_disabled` | The game turned off direct messages or clan chat for this kind of conversation. | Hide or disable the input. |
 | `not_member` | The player is not in the conversation (also for an unknown ID or one of another game). | Reload the conversation list. |
-| `blocked` | One of the two players blocked the other (direct messages only). | Show "you can't message this player". |
+| `blocked` | One of the two players blocked the other (direct messages only). The player is not told who blocked whom. | Show "you can't message this player". |
 | `empty` | The body is empty after trimming. | Do not send empty messages. |
 | `too_long` | The body is longer than the game's `max_message_length`. | Show the limit; the SDK checks first too. |
 | `slow_mode` | The player sent a message sooner than the game's slow mode allows. Has `retryAfterMs`. | Disable sending until the time has passed. |

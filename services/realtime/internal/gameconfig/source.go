@@ -40,6 +40,7 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 type Config struct {
 	Version  int             // 1, 2, 3 ...: every publish or rollback makes a new, higher one
 	Settings json.RawMessage // the config document exactly as Platform sent it
+	Chat     ChatRules       // the message rules in Settings, read once when the version is stored
 }
 
 // Source is where the config comes from.
