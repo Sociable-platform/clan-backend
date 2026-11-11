@@ -86,13 +86,14 @@ func (s *Service) ListClans(ctx context.Context, gameID string, in ListClansInpu
 		return nil, httpx.NewError(http.StatusBadRequest, "invalid_has_space", "hasSpace must be true or false")
 	}
 
+	opts.MaxMembers = s.maxMembers(ctx, gameID)
 	rows, err := s.store.ListClans(ctx, gameID, q, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list clans: %w", err)
 	}
 	clans := make([]Clan, 0, len(rows))
 	for _, c := range rows {
-		clans = append(clans, Clan{ID: c.ID, Name: c.Name, MemberCount: c.MemberCount, MaxMembers: c.MaxMembers})
+		clans = append(clans, toClan(c, opts.MaxMembers))
 	}
 	return clans, nil
 }
@@ -129,7 +130,7 @@ func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayNam
 		"clan":   ref(row.ID, row.Name),
 		"player": ref(owner.ID, owner.DisplayName),
 	}))
-	return Clan{ID: row.ID, Name: row.Name, MemberCount: row.MemberCount, MaxMembers: row.MaxMembers}, nil
+	return toClan(row, s.maxMembers(ctx, gameID)), nil
 }
 
 // Clan events for the other services (docs/event-messages.md). Each is published after the
@@ -145,6 +146,12 @@ const (
 // ref is how events name a clan or a player.
 func ref(id, name string) map[string]any {
 	return map[string]any{"id": id, "name": name}
+}
+
+// toClan is a clan row as the API shows it, with the game's clan size as maxMembers. A clan
+// over a lowered limit shows memberCount above maxMembers: it keeps its members, takes no one.
+func toClan(c repository.Clan, maxMembers int) Clan {
+	return Clan{ID: c.ID, Name: c.Name, MemberCount: c.MemberCount, MaxMembers: maxMembers}
 }
 
 // cleanClanName trims the name and turns any run of spaces inside it into one space,
@@ -188,7 +195,8 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 		return Clan{}, fmt.Errorf("join clan: %w", err)
 	}
 
-	row, err := s.store.JoinClan(ctx, gameID, strings.ToLower(clanID), player.ID)
+	limit := s.maxMembers(ctx, gameID)
+	row, err := s.store.JoinClan(ctx, gameID, strings.ToLower(clanID), player.ID, limit)
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return Clan{}, errClanNotFound()
@@ -203,7 +211,7 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 		"clan":   ref(row.ID, row.Name),
 		"player": ref(player.ID, player.DisplayName),
 	}))
-	return Clan{ID: row.ID, Name: row.Name, MemberCount: row.MemberCount, MaxMembers: row.MaxMembers}, nil
+	return toClan(row, limit), nil
 }
 
 // LeaveClan removes the calling player from clan clanID of their game. If the caller is
@@ -301,7 +309,7 @@ func (s *Service) RenameClan(ctx context.Context, gameID, externalID, clanID, na
 			"previous_name": res.PreviousName,
 		}))
 	}
-	return Clan{ID: c.ID, Name: c.Name, MemberCount: c.MemberCount, MaxMembers: c.MaxMembers}, nil
+	return toClan(c, s.maxMembers(ctx, gameID)), nil
 }
 
 func errMemberNotFound() error {
@@ -356,7 +364,7 @@ func (s *Service) MyClan(ctx context.Context, gameID, externalID string) (Player
 	}
 	c := row.Clan
 	return PlayerClan{
-		Clan: Clan{ID: c.ID, Name: c.Name, MemberCount: c.MemberCount, MaxMembers: c.MaxMembers},
+		Clan: toClan(c, s.maxMembers(ctx, gameID)),
 		Role: row.Role,
 	}, nil
 }

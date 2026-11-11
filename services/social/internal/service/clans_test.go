@@ -21,7 +21,7 @@ func (m *memStore) CreateClan(context.Context, string, string, string) (reposito
 	return repository.Clan{}, errors.New("memStore has no clans")
 }
 
-func (m *memStore) JoinClan(context.Context, string, string, string) (repository.Clan, error) {
+func (m *memStore) JoinClan(context.Context, string, string, string, int) (repository.Clan, error) {
 	return repository.Clan{}, errors.New("memStore has no clans")
 }
 
@@ -67,12 +67,12 @@ func newClanStore(clans ...repository.Clan) *clanStore {
 }
 
 func TestListClansPassesGameQueryAndLimit(t *testing.T) {
-	store := newClanStore(repository.Clan{ID: "c-1", Name: "Wolves", MemberCount: 3, MaxMembers: 10})
+	store := newClanStore(repository.Clan{ID: "c-1", Name: "Wolves", MemberCount: 3})
 	got, err := New(store).ListClans(context.Background(), gameA, ListClansInput{Query: "  wol  "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.game != gameA || store.query != "wol" || store.opts != (repository.ListClansOptions{Limit: clanListLimit}) {
+	if store.game != gameA || store.query != "wol" || store.opts != (repository.ListClansOptions{Limit: clanListLimit, MaxMembers: 10}) {
 		t.Fatalf("store got game=%q query=%q opts=%+v", store.game, store.query, store.opts)
 	}
 	want := Clan{ID: "c-1", Name: "Wolves", MemberCount: 3, MaxMembers: 10}
@@ -135,7 +135,7 @@ func (c *creatingStore) CreateClan(_ context.Context, gameID, ownerID, name stri
 	if c.createErr != nil {
 		return repository.Clan{}, c.createErr
 	}
-	return repository.Clan{ID: "clan-1", Name: name, MemberCount: 1, MaxMembers: 10}, nil
+	return repository.Clan{ID: "clan-1", Name: name, MemberCount: 1}, nil
 }
 
 func newCreatingStore() *creatingStore { return &creatingStore{memStore: newMemStore()} }
@@ -237,15 +237,16 @@ type joiningStore struct {
 	game    string
 	clan    string
 	player  string
+	limit   int // the maxMembers the service passed
 }
 
-func (j *joiningStore) JoinClan(_ context.Context, gameID, clanID, playerID string) (repository.Clan, error) {
+func (j *joiningStore) JoinClan(_ context.Context, gameID, clanID, playerID string, maxMembers int) (repository.Clan, error) {
 	j.joins++
-	j.game, j.clan, j.player = gameID, clanID, playerID
+	j.game, j.clan, j.player, j.limit = gameID, clanID, playerID, maxMembers
 	if j.joinErr != nil {
 		return repository.Clan{}, j.joinErr
 	}
-	return repository.Clan{ID: clanID, Name: "Wolves", MemberCount: 2, MaxMembers: 10}, nil
+	return repository.Clan{ID: clanID, Name: "Wolves", MemberCount: 2}, nil
 }
 
 func newJoiningStore() *joiningStore { return &joiningStore{memStore: newMemStore()} }
@@ -420,7 +421,7 @@ func TestLeaveClanErrors(t *testing.T) {
 func TestMyClanReturnsClanAndRole(t *testing.T) {
 	store := newReadingStore()
 	store.myClan = repository.PlayerClan{
-		Clan: repository.Clan{ID: someClan, Name: "Wolves", MemberCount: 3, MaxMembers: 10},
+		Clan: repository.Clan{ID: someClan, Name: "Wolves", MemberCount: 3},
 		Role: "owner",
 	}
 	got, err := New(store).MyClan(context.Background(), gameA, "u_42")
@@ -498,14 +499,14 @@ func TestListClansOptionsFromInput(t *testing.T) {
 		in   ListClansInput
 		want repository.ListClansOptions
 	}{
-		{"nothing given", ListClansInput{}, repository.ListClansOptions{Limit: clanListLimit}},
+		{"nothing given", ListClansInput{}, repository.ListClansOptions{Limit: clanListLimit, MaxMembers: 10}},
 		{"featured clans", ListClansInput{Limit: "3", Sort: "members", HasSpace: "true"},
-			repository.ListClansOptions{Limit: 3, ByMembers: true, OnlyWithSpace: true}},
-		{"sort by name said out loud", ListClansInput{Sort: "name"}, repository.ListClansOptions{Limit: clanListLimit}},
-		{"hasSpace false", ListClansInput{HasSpace: "false"}, repository.ListClansOptions{Limit: clanListLimit}},
-		{"limit 1", ListClansInput{Limit: "1"}, repository.ListClansOptions{Limit: 1}},
-		{"limit at the top", ListClansInput{Limit: "100"}, repository.ListClansOptions{Limit: 100}},
-		{"a search does not change the options", ListClansInput{Query: "nova"}, repository.ListClansOptions{Limit: clanListLimit}},
+			repository.ListClansOptions{Limit: 3, ByMembers: true, OnlyWithSpace: true, MaxMembers: 10}},
+		{"sort by name said out loud", ListClansInput{Sort: "name"}, repository.ListClansOptions{Limit: clanListLimit, MaxMembers: 10}},
+		{"hasSpace false", ListClansInput{HasSpace: "false"}, repository.ListClansOptions{Limit: clanListLimit, MaxMembers: 10}},
+		{"limit 1", ListClansInput{Limit: "1"}, repository.ListClansOptions{Limit: 1, MaxMembers: 10}},
+		{"limit at the top", ListClansInput{Limit: "100"}, repository.ListClansOptions{Limit: 100, MaxMembers: 10}},
+		{"a search does not change the options", ListClansInput{Query: "nova"}, repository.ListClansOptions{Limit: clanListLimit, MaxMembers: 10}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newClanStore()
