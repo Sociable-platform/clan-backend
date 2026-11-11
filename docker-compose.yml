@@ -154,6 +154,8 @@ services:
       SOCIAL_JWT_PUBLIC_KEY_FILE: /run/secrets/platform_jwt_public.pem
       # Events for the other services (README "RabbitMQ events")
       SOCIAL_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      # Secret of the /internal endpoints; empty switches them off (README "Social service")
+      SOCIAL_INTERNAL_TOKEN: ${SOCIAL_INTERNAL_TOKEN:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       # Platform's public key, created by you (see README "JWT signing key"). Never committed (*.pem).

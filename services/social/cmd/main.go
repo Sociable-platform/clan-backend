@@ -27,6 +27,9 @@ import (
 
 const serviceName = "social"
 
+// minInternalTokenLen keeps the shared secret of the /internal endpoints from being guessable.
+const minInternalTokenLen = 32
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, serviceName+":", err)
@@ -89,9 +92,22 @@ func run() error {
 	repo := repository.New(pool)
 	svc := service.New(repo).WithPublisher(events.Safe(publisher, log))
 
+	// The /internal routes (for realtime's backfill) need a shared secret. Without one they answer 404.
+	internalToken := config.String("SOCIAL_INTERNAL_TOKEN", "")
+	switch {
+	case internalToken == "":
+		log.Warn("SOCIAL_INTERNAL_TOKEN is not set: the /internal endpoints are switched off")
+	case len(internalToken) < minInternalTokenLen:
+		return fmt.Errorf("SOCIAL_INTERNAL_TOKEN must be at least %d characters (try: openssl rand -hex 32)", minInternalTokenLen)
+	default:
+		log.Info("internal endpoints enabled") // never log the token itself
+	}
+
 	mux := http.NewServeMux()
 	// Every /api/v1 route requires a player token signed by platform (checked with verifyKey).
-	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now), log).Register(mux)
+	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now), log).
+		WithInternal(auth.RequireInternal(internalToken)).
+		Register(mux)
 
 	// Browser pages allowed to call this service (the demo game, where the SDK runs).
 	origins := config.List("SOCIAL_CORS_ORIGINS", []string{"http://localhost:5174"})

@@ -109,6 +109,14 @@ func (f fakeService) SearchPlayers(context.Context, string, string, string, serv
 	return []service.PlayerSearchResult{}, f.err
 }
 
+func (f fakeService) ListFriendshipsForSync(context.Context, service.SyncFriendshipsInput) (service.FriendshipPage, error) {
+	return service.FriendshipPage{}, f.err
+}
+
+func (s *recordingService) ListFriendshipsForSync(context.Context, service.SyncFriendshipsInput) (service.FriendshipPage, error) {
+	return service.FriendshipPage{}, nil
+}
+
 func (s *recordingService) SearchPlayers(context.Context, string, string, string, service.SearchPlayersInput) ([]service.PlayerSearchResult, error) {
 	return []service.PlayerSearchResult{}, s.err
 }
@@ -120,6 +128,10 @@ type searchingService struct {
 	err                      error
 	gameID, externalID, name string
 	in                       service.SearchPlayersInput
+}
+
+func (s *searchingService) ListFriendshipsForSync(context.Context, service.SyncFriendshipsInput) (service.FriendshipPage, error) {
+	return service.FriendshipPage{}, nil
 }
 
 func (s *searchingService) SearchPlayers(_ context.Context, gameID, externalID, name string, in service.SearchPlayersInput) ([]service.PlayerSearchResult, error) {

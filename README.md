@@ -80,6 +80,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `PLATFORM_JWT_PRIVATE_KEY_FILE` | none (required) | Path to the PEM file. Docker Compose sets it to the mounted `secrets/platform_jwt_private.pem`. |
 | `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
+| `SOCIAL_INTERNAL_TOKEN` | none | Shared secret of social's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops social at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
 | `REALTIME_SOCIAL_URL` | `http://localhost:8082` | Where realtime reaches the social service to learn each connecting player's own ID. Docker Compose sets it to `http://social:8082`. |
 | `REALTIME_PLATFORM_URL` | `http://localhost:8081` | Where realtime reaches the platform service to read a game's published config (`GET /api/v1/public/games/{gameID}/widget-config`). Docker Compose sets it to `http://platform:8081`. If platform is down, realtime still runs: `hello` says `configVersion` 0 and a `config.published` event is retried once. |
@@ -446,6 +447,14 @@ always come from the token, never from the URL or the body.
 | DELETE | `/api/v1/friends/requests/{requestID}` | 204: the caller's own request is cancelled. 403 `not_request_sender` (the caller received it; decline instead); 404 `friend_request_not_found`. Publishes `friend.request_cancelled` |
 | DELETE | `/api/v1/friends/{playerID}` | 204: the friendship ends for both players; either may send a new request afterwards. 404 `not_friends` (also for another game's player). Publishes `friend.removed` |
 | POST | `/api/v1/friends/requests/{requestID}/accept` | no body. 200 with the new friend. 403 `not_request_receiver` (the caller sent it); 404 `friend_request_not_found`. Publishes `friend.accepted` |
+
+**Internal endpoints** are for other services, not for the SDK. They need `X-Internal-Token: <SOCIAL_INTERNAL_TOKEN>`
+(401 `invalid_internal_token` otherwise; a player token is not accepted). They are the only routes that
+see more than one game.
+
+| Method | Path | Answer |
+|---|---|---|
+| GET | `/internal/v1/friendships?after=&limit=` | 200 `{ friendships: [...], nextCursor }`: every friendship of every game, page by page, in a fixed order. Each has `gameId`, `playerA` and `playerB` (`id`, `displayName`; `playerA` has the smaller ID) and `since`. `limit` 1 to 500, default 200 (400 `invalid_limit`). Pass `nextCursor` as `after` for the next page; it is missing on the last page; `after` must come from a previous page (400 `invalid_cursor`). The realtime backfill (TEAM-151) reads it |
 
 ### Realtime service (port 8083)
 

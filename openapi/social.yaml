@@ -25,6 +25,8 @@ tags:
     description: Clans of the player's game
   - name: friends
     description: Friend requests and friends inside the player's game
+  - name: internal
+    description: Endpoints for other services (they send a shared secret, never a player token)
 paths:
   /health:
     get:
@@ -985,6 +987,85 @@ paths:
                 error:
                   code: friend_request_not_found
                   message: Friend request not found
+  /internal/v1/friendships:
+    get:
+      tags: [internal]
+      operationId: listFriendshipsForSync
+      summary: Every friendship of every game, one page at a time (for the realtime backfill)
+      description: |
+        For other services, not for the SDK: the realtime service reads it at startup (when its
+        backfill is switched on) to create the conversations of friendships it never heard about.
+        Needs `X-Internal-Token` (the value of `SOCIAL_INTERNAL_TOKEN`); a player token is not accepted.
+        While `SOCIAL_INTERNAL_TOKEN` is not set, this route answers 404 `not_found`, like an unknown route.
+
+        Unlike every `/api/v1` endpoint it covers all games, because the caller rebuilds state for all of them.
+        Each friendship names its `gameId`.
+
+        Friendships come in a fixed order (game, then `playerA`, then `playerB`; `playerA` is the smaller ID).
+        Pass `nextCursor` as `after` to get the next page; it is missing on the last page. A cursor is
+        opaque: send it back unchanged. Friendships made while a caller is paging may or may not be included;
+        a friendship is never returned twice.
+      security:
+        - internalToken: []
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page. Leave out for the first page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: How many friendships at most, 1 to 500 (default 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 200
+      responses:
+        "200":
+          description: One page of friendships. An empty list when there are none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendshipSyncPage"
+              example:
+                friendships:
+                  - gameId: a6c1e2f0-1111-4222-8333-944455556666
+                    playerA:
+                      id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                      displayName: Aysel
+                    playerB:
+                      id: 8f1d2c3b-4a5e-4b6c-8d7e-9f0a1b2c3d4e
+                      displayName: Ali
+                    since: "2026-11-10T08:00:00Z"
+                nextCursor: YTZjMWUyZjAtMTExMS00MjIyLTgzMzMtOTQ0NDU1NTU2NjY2
+        "400":
+          description: |
+            Wrong input. `code` is `invalid_cursor` (`after` was not made by a previous page) or
+            `invalid_limit` (not a whole number from 1 to 500).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_cursor
+                  message: after is not a cursor from a previous page
+        "401":
+          description: |
+            `X-Internal-Token` is missing or wrong. Code: `invalid_internal_token`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_internal_token
+                  message: Send the internal token in the X-Internal-Token header
+        "404":
+          $ref: "#/components/responses/NotFound"
 components:
   securitySchemes:
     playerToken:
@@ -996,7 +1077,7 @@ components:
       type: apiKey
       in: header
       name: X-Internal-Token
-      description: Shared secret for the /internal endpoints, used only by the platform service.
+      description: Shared secret for the /internal endpoints (`SOCIAL_INTERNAL_TOKEN`), used only by other services, for now the realtime service.
   schemas:
     Status:
       type: object
@@ -1127,6 +1208,41 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Friend"
+    FriendshipSyncPlayer:
+      type: object
+      required: [id, displayName]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Social's own ID for the player.
+        displayName:
+          type: string
+    FriendshipSync:
+      type: object
+      required: [gameId, playerA, playerB, since]
+      properties:
+        gameId:
+          type: string
+          format: uuid
+        playerA:
+          $ref: "#/components/schemas/FriendshipSyncPlayer"
+        playerB:
+          $ref: "#/components/schemas/FriendshipSyncPlayer"
+        since:
+          type: string
+          format: date-time
+    FriendshipSyncPage:
+      type: object
+      required: [friendships]
+      properties:
+        friendships:
+          type: array
+          items:
+            $ref: "#/components/schemas/FriendshipSync"
+        nextCursor:
+          type: string
+          description: Pass it as `after` to get the next page. Missing on the last page.
     FriendRequest:
       type: object
       required: [id, player, createdAt]
