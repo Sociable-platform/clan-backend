@@ -35,6 +35,9 @@ type Store interface {
 	CancelFriendRequest(ctx context.Context, gameID, requestID, playerID string) (repository.FriendRequest, error)
 	RemoveFriend(ctx context.Context, gameID, playerID, friendID string) (repository.Friendship, error)
 	SearchPlayers(ctx context.Context, gameID, playerID, query string, limit int) ([]repository.PlayerSearchResult, error)
+	Block(ctx context.Context, gameID, blockerID, blockedID string) (repository.BlockResult, error)
+	Unblock(ctx context.Context, gameID, blockerID, blockedID string) (repository.UnblockResult, error)
+	ListBlocks(ctx context.Context, gameID, playerID string) ([]repository.BlockedPlayer, error)
 	ListFriendshipsAfter(ctx context.Context, after repository.FriendshipKey, limit int) ([]repository.SyncFriendship, error)
 }
 
