@@ -81,6 +81,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 |---|---|---|
 | `PLATFORM_JWT_PRIVATE_KEY_FILE` | none (required) | Path to the PEM file. Docker Compose sets it to the mounted `secrets/platform_jwt_private.pem`. |
 | `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
+| `PLATFORM_INTERNAL_TOKEN` | none | Shared secret of platform's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops platform at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
 | `SOCIAL_INTERNAL_TOKEN` | none | Shared secret of social's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops social at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `SOCIAL_PLATFORM_URL` | none (docker compose: `http://platform:8081`) | Where social reads each game's clan rules: `clan.maxMembers` from the game's published config (`GET /api/v1/public/games/{gameID}/widget-config`). Empty: every game gets 10 members. |
@@ -444,8 +445,9 @@ go test -run TestPublishToRealBroker -v ./pkg/events/
 | POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
 | POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
 | GET | `/api/v1/developers/me` | 200 with the developer; 401 unless `Authorization: Bearer <developer token>` |
-| GET | `/api/v1/games` | 200 `{ games: [...] }` with only the logged-in developer's games, newest first; 401 without a developer token |
+| GET | `/api/v1/games` | 200 `{ games: [...] }` with only the logged-in developer's games, newest first (each with its `allowedOrigins`); 401 without a developer token |
 | POST | `/api/v1/games` | 201 with the registered game (registers an existing game, never creates one); 400 `invalid_name` / `invalid_description`; 401 |
+| PUT | `/api/v1/games/{gameID}/allowed-origins` | Body `{ allowedOrigins: [...] }` replaces the list of websites that may open a WebSocket for the game (200 with the game). Each origin is `scheme://host[:port]` as the browser sends it, `http` or `https`, no path or trailing slash, no wildcard; hosts are lower-cased, repeats dropped, at most 20. `[]` clears it. 400 `invalid_origins` (nothing is saved); 404 `game_not_found` unless you own the game |
 | POST | `/api/v1/games/{gameID}/api-keys` | 201 with the new key; **the full `key` is in this response only** (the database stores just a hash). 404 `game_not_found` unless you own the game |
 | GET | `/api/v1/games/{gameID}/api-keys` | 200 `{ apiKeys: [...] }`: prefix, created and revoked time, never the key. 404 unless you own the game |
 | DELETE | `/api/v1/api-keys/{keyID}` | 204; the key stops working at once and stays listed as revoked. 404 `api_key_not_found` unless it is a key of your game |
@@ -456,6 +458,7 @@ go test -run TestPublishToRealBroker -v ./pkg/events/
 | GET | `/api/v1/games/{gameID}/widget/versions/{version}` | 200 with that version and its `config`. 404 `widget_version_not_found` (also for a number that is not a positive whole number) |
 | POST | `/api/v1/games/{gameID}/widget/versions/{version}/rollback` | 201 with a **new** version that has the old version's config; nothing is deleted and the draft is untouched. 404 `widget_version_not_found` |
 | GET | `/api/v1/public/games/{gameID}/widget-config` | **No login, open to every website.** 200 `{ version, config }`: the latest **published** version (never a draft), with a strong `ETag` (`"v3"`) and `Cache-Control: public, max-age=60`. Send `If-None-Match` to get 304. 404 `widget_not_published` (also for an unknown game ID). Not rate-limited in the service: put a CDN or proxy limit in front of `/api/v1/public/` |
+| GET | `/internal/v1/games/{gameID}/config` | **For other services, not browsers.** Needs `X-Internal-Token: <PLATFORM_INTERNAL_TOKEN>` (401 `invalid_internal_token`; 404 `not_found` while the secret is not set). 200 `{ gameId, version, config, allowedOrigins }`: the newest **published** config and the game's allowed origins, never cached. A game never published has `version: 0` and `config: null` but still its origins. 404 `game_not_found` for an unknown game |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |
 
@@ -610,5 +613,6 @@ last message you got. To clear the unread count send, in that player's WebSocket
 There is no reply; `GET /api/v1/conversations` now shows `unread: 0`. A message sent later makes it `1` again. Reading is remembered per player
 and only moves forward. A player who is not in the conversation gets 403 `not_member` (REST) or an `error` frame with `not_member` (WebSocket).
 
-Only the service-wide `REALTIME_CORS_ORIGINS` list is checked for the origin so far. A per-game `allowed_origins` list needs
-Platform to store and serve it, which does not exist yet.
+Only the service-wide `REALTIME_CORS_ORIGINS` list is checked for the origin so far. Platform now stores a per-game
+`allowedOrigins` list (set with `PUT /api/v1/games/{gameID}/allowed-origins`) and serves it, with the active config, on
+`GET /internal/v1/games/{gameID}/config`; realtime does not read it yet (TEAM-142, TEAM-148).

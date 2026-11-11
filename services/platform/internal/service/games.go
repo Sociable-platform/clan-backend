@@ -29,7 +29,9 @@ type Game struct {
 	ID          string
 	Name        string
 	Description string
-	CreatedAt   time.Time
+	// AllowedOrigins are the websites that may open a WebSocket for the game; never nil.
+	AllowedOrigins []string
+	CreatedAt      time.Time
 }
 
 // RegisterGameInput is what a developer sends to register a game.
@@ -97,5 +99,9 @@ func (s *Service) OwnedGame(ctx context.Context, developerID, gameID string) (Ga
 }
 
 func toGame(g repository.Game) Game {
-	return Game{ID: g.ID, Name: g.Name, Description: g.Description, CreatedAt: g.CreatedAt}
+	origins := g.AllowedOrigins
+	if origins == nil {
+		origins = []string{}
+	}
+	return Game{ID: g.ID, Name: g.Name, Description: g.Description, AllowedOrigins: origins, CreatedAt: g.CreatedAt}
 }

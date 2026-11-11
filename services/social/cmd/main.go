@@ -127,7 +127,7 @@ func run() error {
 	mux := http.NewServeMux()
 	// Every /api/v1 route requires a player token signed by platform (checked with verifyKey).
 	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now), log).
-		WithInternal(auth.RequireInternal(internalToken)).
+		WithInternal(httpx.RequireInternal(internalToken)).
 		Register(mux)
 
 	// Browser pages allowed to call this service (the demo game, where the SDK runs).

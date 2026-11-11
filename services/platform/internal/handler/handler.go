@@ -34,19 +34,30 @@ type Service interface {
 	WidgetVersion(ctx context.Context, developerID, gameID string, version int) (service.WidgetVersion, error)
 	RollbackWidget(ctx context.Context, developerID, gameID string, version int) (service.WidgetVersion, error)
 	PublicWidgetConfig(ctx context.Context, gameID string) (service.WidgetVersion, error)
+	SetAllowedOrigins(ctx context.Context, developerID, gameID string, origins []string) (service.Game, error)
+	InternalGameConfig(ctx context.Context, gameID string) (service.InternalGameConfig, error)
 }
 
 // Handler holds the routes of the service.
 type Handler struct {
-	name string
-	svc  Service
-	log  *slog.Logger
+	name            string
+	svc             Service
+	log             *slog.Logger
+	requireInternal httpx.Middleware
 }
 
 // New returns a Handler. name is the service name shown in /health.
 // log receives the details of unexpected errors, which are never sent to the client.
 func New(name string, svc Service, log *slog.Logger) *Handler {
 	return &Handler{name: name, svc: svc, log: log}
+}
+
+// WithInternal sets the guard of the /internal routes, which other services call with a shared
+// secret instead of a token (see httpx.RequireInternal). It returns h, so it can follow New.
+// Without it those routes answer the same JSON 404 as an unknown route.
+func (h *Handler) WithInternal(requireInternal httpx.Middleware) *Handler {
+	h.requireInternal = requireInternal
+	return h
 }
 
 // Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.
@@ -61,6 +72,9 @@ type Route struct {
 // server calls (/players/auth) is wrapped with h.requireAPIKey. For example:
 //
 //	{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
+//
+// Endpoints under /internal/ are for other services: they need the shared secret in
+// X-Internal-Token and are wrapped with h.internal. A browser must never reach them.
 //
 // Endpoints under /api/v1/public/ need no login at all and are open to every website
 // (see the CORS setup in cmd/main.go); they must never return anything secret.
@@ -82,6 +96,7 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.createAPIKey)},
 		{http.MethodGet, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.listAPIKeys)},
 		{http.MethodDelete, "/api/v1/api-keys/{keyID}", h.requireDeveloper(h.revokeAPIKey)},
+		{http.MethodPut, "/api/v1/games/{gameID}/allowed-origins", h.requireDeveloper(h.setAllowedOrigins)},
 		{http.MethodGet, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.getWidgetDraft)},
 		{http.MethodPut, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.saveWidgetDraft)},
 		{http.MethodPost, "/api/v1/games/{gameID}/widget/publish", h.requireDeveloper(h.publishWidget)},
@@ -90,6 +105,7 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPost, "/api/v1/games/{gameID}/widget/versions/{version}/rollback", h.requireDeveloper(h.rollbackWidget)},
 		{http.MethodGet, "/api/v1/public/games/{gameID}/widget-config", h.getPublicWidgetConfig},
 		{http.MethodPost, "/api/v1/players/auth", h.requireAPIKey(h.authPlayer)},
+		{http.MethodGet, "/internal/v1/games/{gameID}/config", h.internal(h.getInternalGameConfig)},
 	}
 }
 
@@ -113,6 +129,16 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready", "service": h.name})
+}
+
+// internal wraps next so only a caller with the internal token reaches it. While no token is
+// configured the guard answers 404, so the route looks like it does not exist.
+func (h *Handler) internal(next http.HandlerFunc) http.HandlerFunc {
+	guard := h.requireInternal
+	if guard == nil {
+		guard = httpx.RequireInternal("")
+	}
+	return guard(next).ServeHTTP
 }
 
 func (h *Handler) notFound(w http.ResponseWriter, _ *http.Request) {

@@ -26,6 +26,8 @@ tags:
     description: Existing games a developer has registered with the toolkit
   - name: api-keys
     description: Secret keys a game's own server uses to get player tokens
+  - name: internal
+    description: Routes for other services (realtime), guarded by a shared secret; never for browsers
   - name: widget
     description: The clan widget's look, edited as a draft in the dashboard
   - name: players
@@ -260,6 +262,7 @@ paths:
                   - id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
                     name: Space Raiders
                     description: Browser shooter, 2 to 4 players
+                    allowedOrigins: ["https://play.example.com"]
                     createdAt: "2026-11-07T09:30:00Z"
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -294,6 +297,7 @@ paths:
                 id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
                 name: Space Raiders
                 description: Browser shooter, 2 to 4 players
+                allowedOrigins: []
                 createdAt: "2026-11-07T09:30:00Z"
         "400":
           description: |
@@ -366,6 +370,63 @@ paths:
                 createdAt: "2026-11-07T10:00:00Z"
                 revokedAt: null
                 key: clk_Ab3xQ0m7w2n5v8k1p4s9d6f3g0h7j2l5z8c1x4b7n0m
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/allowed-origins:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    put:
+      tags: [games]
+      operationId: setAllowedOrigins
+      summary: Set the websites allowed to open a WebSocket for a game
+      description: |
+        Replaces the whole list. Realtime accepts a WebSocket from a browser only when the page's
+        `Origin` is one of these (once realtime uses the list; see the internal config endpoint).
+        Each origin is written as the browser sends it in the `Origin` header: `http` or `https`, then
+        the host and, when it is not the default, the port, for example `https://play.example.com` or
+        `http://localhost:5174`. No path, query, trailing slash or user name, and no wildcard.
+        Hosts are lower-cased and repeats are dropped. At most 20 origins, 255 characters each.
+        An empty list clears the setting. Nothing is saved when one origin is invalid.
+        Only the game's owner can set it; for anyone else the game does not exist (404).
+      security:
+        - developerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetAllowedOriginsRequest"
+            example:
+              allowedOrigins: ["https://play.example.com", "http://localhost:5174"]
+      responses:
+        "200":
+          description: The game with its new list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+              example:
+                id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                name: Space Raiders
+                description: Browser shooter, 2 to 4 players
+                allowedOrigins: ["https://play.example.com", "http://localhost:5174"]
+                createdAt: "2026-11-07T09:30:00Z"
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_origins` (a bad origin, too many, or `allowedOrigins`
+            missing or null) or `invalid_json` (also for unknown fields).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_origins
+                  message: '"*" is not a valid origin: wildcards are not supported. Use scheme://host[:port], like https://play.example.com'
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -809,6 +870,63 @@ paths:
                   message: API key is missing, wrong or revoked
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
+  /internal/v1/games/{gameID}/config:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [internal]
+      operationId: getInternalGameConfig
+      summary: A game's active config and allowed origins (for realtime)
+      description: |
+        For other services, not for browsers or the SDK: realtime reads it to check the `Origin` of a
+        WebSocket against the game's `allowedOrigins` and to know the game's chat rules.
+        Needs `X-Internal-Token` (the value of `PLATFORM_INTERNAL_TOKEN`); a developer or player token
+        is not accepted. While `PLATFORM_INTERNAL_TOKEN` is not set, this route answers 404 `not_found`,
+        like an unknown route.
+
+        `config` is the newest **published** version (never a draft), the same document as
+        `GET /api/v1/public/games/{gameID}/widget-config`. A game that exists but was never published
+        is not an error: `version` is 0 and `config` is null, and `allowedOrigins` is still there.
+        `allowedOrigins` is the list the developer set with `PUT /api/v1/games/{gameID}/allowed-origins`;
+        an empty list means none were set (what that means for a WebSocket is realtime's rule).
+        The answer is never cached.
+      security:
+        - internalToken: []
+      responses:
+        "200":
+          description: The game's active config and allowed origins.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InternalGameConfig"
+              example:
+                gameId: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                version: 3
+                config: *validConfig
+                allowedOrigins: ["https://play.example.com", "http://localhost:5174"]
+        "401":
+          description: |
+            `X-Internal-Token` is missing or wrong. Code: `invalid_internal_token`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_internal_token
+                  message: Send the internal token in the X-Internal-Token header
+        "404":
+          description: |
+            No such game, or a malformed ID (`game_not_found`), or the internal endpoints are switched
+            off (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: game_not_found
+                  message: Game not found
 components:
   parameters:
     GameID:
@@ -837,6 +955,11 @@ components:
       in: header
       name: X-API-Key
       description: Secret API key of a game. Only the game's own server sends it, never a browser.
+    internalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: Shared secret for the /internal endpoints (`PLATFORM_INTERNAL_TOKEN`), used only by other services, for now the realtime service.
   schemas:
     Status:
       type: object
@@ -914,7 +1037,7 @@ components:
           maxLength: 500
     Game:
       type: object
-      required: [id, name, description, createdAt]
+      required: [id, name, description, allowedOrigins, createdAt]
       properties:
         id:
           type: string
@@ -924,9 +1047,48 @@ components:
         description:
           type: string
           description: Empty string when none was given.
+        allowedOrigins:
+          type: array
+          description: |
+            The websites allowed to open a WebSocket for this game (see `PUT .../allowed-origins`).
+            Empty until the developer sets some.
+          items:
+            type: string
+            example: https://play.example.com
         createdAt:
           type: string
           format: date-time
+    SetAllowedOriginsRequest:
+      type: object
+      required: [allowedOrigins]
+      additionalProperties: false
+      properties:
+        allowedOrigins:
+          type: array
+          maxItems: 20
+          description: The whole new list; `[]` clears it. Each item is `scheme://host[:port]`, no wildcard.
+          items:
+            type: string
+            maxLength: 255
+    InternalGameConfig:
+      type: object
+      required: [gameId, version, config, allowedOrigins]
+      properties:
+        gameId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          description: The newest published version, 0 when the game was never published.
+        config:
+          type: object
+          nullable: true
+          description: The config of that version (config v1), null when `version` is 0.
+        allowedOrigins:
+          type: array
+          items:
+            type: string
+          description: Empty when the developer set none.
     GameList:
       type: object
       required: [games]

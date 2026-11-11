@@ -14,10 +14,11 @@ type registerGameRequest struct {
 }
 
 type gameResponse struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Description    string    `json:"description"`
+	AllowedOrigins []string  `json:"allowedOrigins"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 type gameListResponse struct {
@@ -25,7 +26,11 @@ type gameListResponse struct {
 }
 
 func toGameResponse(g service.Game) gameResponse {
-	return gameResponse{ID: g.ID, Name: g.Name, Description: g.Description, CreatedAt: g.CreatedAt.UTC()}
+	origins := g.AllowedOrigins
+	if origins == nil {
+		origins = []string{} // JSON [] and not null
+	}
+	return gameResponse{ID: g.ID, Name: g.Name, Description: g.Description, AllowedOrigins: origins, CreatedAt: g.CreatedAt.UTC()}
 }
 
 // registerGame handles POST /api/v1/games: it records an existing game for the logged-in developer.
