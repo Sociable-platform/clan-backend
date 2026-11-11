@@ -470,7 +470,7 @@ func TestNewRefusesAKeywordItDoesNotUnderstand(t *testing.T) {
 		"format":            `{"type":"string","format":"email"}`,
 		"oneOf":             `{"oneOf":[{"type":"string"}]}`,
 		"patternProperties": `{"patternProperties":{"^a":{}}}`,
-		"nested":            `{"properties":{"a":{"minItems":2}}}`,
+		"nested":            `{"properties":{"a":{"minProperties":2}}}`,
 		"inside defs":       `{"$defs":{"x":{"dependentRequired":{}}}}`,
 		"additional schema": `{"additionalProperties":{"type":"string"}}`,
 		"true additional":   `{"additionalProperties":true}`,
@@ -540,5 +540,42 @@ func TestEmbeddedSchemaIsConfigV1(t *testing.T) {
 	}
 	if len(s.Required) != 8 || s.Props["schemaVersion"] == nil {
 		t.Fatalf("required = %v", s.Required)
+	}
+}
+
+// ---- rules added for the TEAM-118 amendment of config v1
+
+func TestMinItems(t *testing.T) {
+	v, err := New([]byte(`{"properties":{"list":{"type":"array","minItems":2}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIssue(t, v.Validate([]byte(`{"list":["a"]}`)), "/list", "minItems")
+	if issues := v.Validate([]byte(`{"list":["a","b"]}`)); len(issues) != 0 {
+		t.Fatalf("two items are enough, got %+v", issues)
+	}
+	if issues := v.Validate([]byte(`{"list":"ab"}`)); len(issues) != 1 || issues[0].Rule != "type" {
+		t.Fatalf("minItems does not apply to a string, got %+v", issues)
+	}
+}
+
+// Role ids must be unique; JSON Schema cannot say "unique by one field", so the validator
+// checks it after the schema (config-v1 README, Limits). An empty schema shows it on its own.
+func TestRejectsARepeatedRoleID(t *testing.T) {
+	v, err := New([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := v.Validate([]byte(`{"clan":{"roles":[{"id":"member"},{"id":"elder"},{"id":"member"},{"id":"member"}]}}`))
+	wantIssue(t, issues, "/clan/roles/2/id", RuleUniqueRoleIDs)
+	wantIssue(t, issues, "/clan/roles/3/id", RuleUniqueRoleIDs)
+	if len(issues) != 2 {
+		t.Fatalf("want only the two repeats, got %+v", issues)
+	}
+	// odd shapes are the schema's business, not a crash here
+	for _, doc := range []string{`{"clan":{"roles":"x"}}`, `{"clan":[1]}`, `{"clan":{"roles":[1,{"id":2},{}]}}`, `[]`} {
+		if issues := v.Validate([]byte(doc)); len(issues) != 0 {
+			t.Fatalf("%s: %+v", doc, issues)
+		}
 	}
 }
