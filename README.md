@@ -83,6 +83,8 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `SOCIAL_INTERNAL_TOKEN` | none | Shared secret of social's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops social at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
 | `REALTIME_SOCIAL_URL` | `http://localhost:8082` | Where realtime reaches the social service to learn each connecting player's own ID. Docker Compose sets it to `http://social:8082`. |
+| `REALTIME_BACKFILL` | `false` | `true` makes realtime read every friendship from social's `/internal/v1/friendships` once at startup, before it reads events, and store the DM conversation of each pair (see "Realtime backfill"). Needs `REALTIME_INTERNAL_TOKEN`; without it realtime stops at startup. Anything but a boolean is an error. |
+| `REALTIME_INTERNAL_TOKEN` | none | The secret realtime sends to social as `X-Internal-Token`; it must equal social's `SOCIAL_INTERNAL_TOKEN`. Docker Compose passes `SOCIAL_INTERNAL_TOKEN` here. Never logged. |
 | `REALTIME_PLATFORM_URL` | `http://localhost:8081` | Where realtime reaches the platform service to read a game's published config (`GET /api/v1/public/games/{gameID}/widget-config`). Docker Compose sets it to `http://platform:8081`. If platform is down, realtime still runs: `hello` says `configVersion` 0 and a `config.published` event is retried once. |
 | `REALTIME_RABBITMQ_URL` | none | RabbitMQ address (`amqp://user:password@host:5672/`) realtime reads events from, queue `realtime.events`. Empty means: do not read events (the service still runs). Use letters and digits only in the password. Docker Compose builds it from `RABBITMQ_USER` and `RABBITMQ_PASSWORD`. The password is never logged. |
 
@@ -295,7 +297,7 @@ So **Social and Realtime must keep these field names in step**; `TestDispatchRea
 - Service tests use `events.Recorder` to check which events were published.
 
 **Known gap: an event can be lost.** If RabbitMQ is down or does not confirm in time, the database change stays and
-the event is gone (only the log line remains). Realtime then misses it until it is restarted or backfilled.
+the event is gone (only the log line remains). Realtime then misses a friendship until it is backfilled (see "Realtime backfill" in the Realtime section).
 *Future work:* a transactional outbox: write the event to an `outbox` table in the same transaction as the change,
 and let a background worker publish it and mark it sent, retrying until the broker accepts it.
 
@@ -385,7 +387,7 @@ go test ./services/social/internal/repository/ -v
 ```
 
 The realtime repository tests work the same way with `REALTIME_TEST_DATABASE_URL`
-(`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/`.
+(`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/` (the backfill test in `./services/realtime/internal/backfill/` uses the same variable).
 
 Each run uses new random game IDs and deletes its rows afterwards, so it does not disturb other data.
 
@@ -457,6 +459,22 @@ see more than one game.
 | GET | `/internal/v1/friendships?after=&limit=` | 200 `{ friendships: [...], nextCursor }`: every friendship of every game, page by page, in a fixed order. Each has `gameId`, `playerA` and `playerB` (`id`, `displayName`; `playerA` has the smaller ID) and `since`. `limit` 1 to 500, default 200 (400 `invalid_limit`). Pass `nextCursor` as `after` for the next page; it is missing on the last page; `after` must come from a previous page (400 `invalid_cursor`). The realtime backfill (TEAM-151) reads it |
 
 ### Realtime service (port 8083)
+
+**Realtime backfill.** Realtime learns about friendships from events, so it knows nothing about friendships made
+before it ran, or whose event was lost. With `REALTIME_BACKFILL=true` (and `REALTIME_INTERNAL_TOKEN` equal to social's
+`SOCIAL_INTERNAL_TOKEN`) it reads every friendship from social's `GET /internal/v1/friendships`, page by page, and stores
+the DM conversation of each pair. It runs once, after the database is connected and **before** the event consumer and
+the HTTP server start, so events then arrive on top of a complete state. Details:
+- It only adds. A conversation whose friendship Social no longer lists (a lost `friend.removed`) is left as it is.
+- It is safe to leave on and to run again: stored conversations, members and messages are reused, names are updated.
+- No frames are sent; nobody is told anything.
+- A page that social cannot answer is tried again (5 tries, 1 s doubling to 8 s). When it keeps failing realtime logs
+  `backfill failed, starting anyway` and runs without it; restart with the flag on to try again. A wrong token (401 or 404
+  from social) is reported the same way.
+- A friendship with an invalid ID or no name is skipped and counted (`skipped` in the `backfill done` log).
+- Blocks and clans are **not** backfilled yet: social has no blocks, and realtime has no clan chat.
+- State rebuild at startup is not needed: realtime keeps friends, memberships and blocks in its own database and reads
+  them from there, so a restart already keeps chat working for everything it had stored.
 
 The WebSocket endpoint, the chat, the conversation list and the message history are built. The contract is in
 `openapi/realtime.yaml` (REST) and `openapi/realtime-ws.md` (WebSocket). The REST endpoints need

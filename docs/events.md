@@ -520,12 +520,12 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 
 | Gap | Effect | Plan |
 |---|---|---|
-| An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until restart/backfill | Transactional outbox in Social, dead-letter queue and startup backfill (TEAM-151). |
+| An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until it is backfilled | Done for friendships: start Realtime once with `REALTIME_BACKFILL=true` (README "Realtime backfill"). It only adds, so a lost `friend.removed` is not repaired. Still open: transactional outbox in Social and a dead-letter queue. |
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
 | Social does not publish `player.blocked` / `player.unblocked` (no block endpoints yet) | Nobody can be blocked in a real game yet; `blocked` is only reachable with an event put on the exchange by hand | Social block endpoints and events (own task). Realtime already handles them. |
-| A lost `player.blocked` (no outbox yet) | The blocked player can still message the blocker | Transactional outbox in Social and a startup backfill of the blocks (TEAM-151). |
+| A lost `player.blocked` (no outbox yet) | The blocked player can still message the blocker | Transactional outbox in Social, and a backfill of the blocks once Social stores them (the friendships backfill of TEAM-151 does not cover blocks). |
 | Slow mode and the rate limit are in the memory of the one Realtime process | A restart gives everybody a fresh start | Fine while Realtime is one process. |
 | The profanity list is built in and the same for every game | A game can only switch the filter on or off; no spelling tricks are caught | A per-game word list in the config, if developers ask. |
 | Presence ignores the game's "hide online status" | The config v1 schema has no such field, so every game shows online status | Add the field to the schema (Platform and the dashboard), then Realtime reads it from its config cache (TEAM-149 did not build it). |

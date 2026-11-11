@@ -19,6 +19,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/auth"
+	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/backfill"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/consumer"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/gameconfig"
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/handler"
@@ -123,6 +124,33 @@ func run() error {
 	}, log)
 	mux := http.NewServeMux()
 	hdl.Register(mux)
+
+	// Backfill: friendships Social has but Realtime never heard about (made before Realtime ran, or whose event
+	// was lost) are stored once, before the consumer starts, so events then arrive on top of a complete state.
+	// It is off by default; switch it on for the first start after a gap, or after restoring a database.
+	backfillOn, err := config.Bool("REALTIME_BACKFILL", false)
+	if err != nil {
+		return err
+	}
+	if backfillOn {
+		token := config.String("REALTIME_INTERNAL_TOKEN", "")
+		if token == "" {
+			return fmt.Errorf("REALTIME_BACKFILL is true but REALTIME_INTERNAL_TOKEN is not set (it must equal SOCIAL_INTERNAL_TOKEN)")
+		}
+		socialClient.WithInternalToken(token)
+		if pool == nil {
+			log.Warn("REALTIME_BACKFILL is true but there is no database: skipping the backfill")
+		} else {
+			log.Info("backfill started")
+			res, err := backfill.Run(ctx, socialClient, svc, backfill.Options{Log: log})
+			if err != nil {
+				// Chat keeps working with what is stored and with new events; a restart with the flag on tries again.
+				log.Error("backfill failed, starting anyway", "pages", res.Pages, "synced", res.Synced, "skipped", res.Skipped, "error", err)
+			} else {
+				log.Info("backfill done", "pages", res.Pages, "friendships", res.Synced, "skipped", res.Skipped)
+			}
+		}
+	}
 
 	// Events from Social (friends, later clans) arrive through RabbitMQ. Without a broker URL, or while the
 	// broker is down, the service still runs; it just learns nothing new until the broker is back.
