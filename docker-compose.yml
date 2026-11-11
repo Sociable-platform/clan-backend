@@ -156,6 +156,9 @@ services:
       SOCIAL_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       # Secret of the /internal endpoints; empty switches them off (README "Social service")
       SOCIAL_INTERNAL_TOKEN: ${SOCIAL_INTERNAL_TOKEN:-}
+      # Where social reads each game's clan rules (clan.maxMembers from the published config)
+      SOCIAL_PLATFORM_URL: http://platform:8081
+      SOCIAL_CONFIG_CACHE_TTL: ${SOCIAL_CONFIG_CACHE_TTL:-30s}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       # Platform's public key, created by you (see README "JWT signing key"). Never committed (*.pem).

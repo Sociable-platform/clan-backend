@@ -20,6 +20,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/auth"
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/gameconfig"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/handler"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/service"
@@ -88,9 +89,29 @@ func run() error {
 		log.Warn("SOCIAL_RABBITMQ_URL is not set: events for other services are dropped")
 	}
 
+	// The clan rules each game set in Studio (clan.maxMembers), read from platform's published
+	// config and kept for SOCIAL_CONFIG_CACHE_TTL. Without a platform URL every game gets the
+	// default (10 members). Platform being down never fails a request: the last known rules,
+	// or the default, are used.
+	var rules gameconfig.Source = gameconfig.Fixed{}
+	if url := config.String("SOCIAL_PLATFORM_URL", ""); url != "" {
+		ttl, err := config.Duration("SOCIAL_CONFIG_CACHE_TTL", 30*time.Second)
+		if err != nil {
+			return err
+		}
+		client, err := gameconfig.NewClient(url, 3*time.Second, ttl, log)
+		if err != nil {
+			return err
+		}
+		rules = client
+		log.Info("reading clan rules from platform", "url", url, "cache_ttl", ttl)
+	} else {
+		log.Warn("SOCIAL_PLATFORM_URL is not set: every game gets the default clan size", "max_members", gameconfig.DefaultMaxMembers)
+	}
+
 	// Wiring: repository (database) -> service (rules) -> handler (HTTP).
 	repo := repository.New(pool)
-	svc := service.New(repo).WithPublisher(events.Safe(publisher, log))
+	svc := service.New(repo).WithPublisher(events.Safe(publisher, log)).WithRules(rules)
 
 	// The /internal routes (for realtime's backfill) need a shared secret. Without one they answer 404.
 	internalToken := config.String("SOCIAL_INTERNAL_TOKEN", "")
