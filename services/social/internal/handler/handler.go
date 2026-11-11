@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/auth"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/service"
 )
 
@@ -33,6 +34,7 @@ type Service interface {
 	CancelFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) error
 	RemoveFriend(ctx context.Context, gameID, externalID, displayName, playerID string) error
 	SearchPlayers(ctx context.Context, gameID, externalID, displayName string, in service.SearchPlayersInput) ([]service.PlayerSearchResult, error)
+	ListFriendshipsForSync(ctx context.Context, in service.SyncFriendshipsInput) (service.FriendshipPage, error)
 }
 
 // Handler holds the routes of the service.
@@ -40,7 +42,9 @@ type Handler struct {
 	name          string
 	svc           Service
 	requirePlayer httpx.Middleware
-	log           *slog.Logger
+	// requireInternal guards the /internal routes (see WithInternal); nil switches them off.
+	requireInternal httpx.Middleware
+	log             *slog.Logger
 }
 
 // New returns a Handler. name is the service name shown in /health.
@@ -51,6 +55,14 @@ func New(name string, svc Service, requirePlayer httpx.Middleware, log *slog.Log
 		panic("handler: requirePlayer middleware is required")
 	}
 	return &Handler{name: name, svc: svc, requirePlayer: requirePlayer, log: log}
+}
+
+// WithInternal sets the guard of the /internal routes, which other services call with a shared
+// secret instead of a player token (see package auth, RequireInternal). It returns h, so it can
+// follow New. Without it those routes answer the same JSON 404 as an unknown route.
+func (h *Handler) WithInternal(requireInternal httpx.Middleware) *Handler {
+	h.requireInternal = requireInternal
+	return h
 }
 
 // Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.
@@ -87,6 +99,7 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPost, "/api/v1/friends/requests/{requestID}/decline", h.declineFriendRequest},
 		{http.MethodDelete, "/api/v1/friends/requests/{requestID}", h.cancelFriendRequest},
 		{http.MethodDelete, "/api/v1/friends/{playerID}", h.removeFriend},
+		{http.MethodGet, "/internal/v1/friendships", h.listFriendshipsForSync},
 	}
 }
 
@@ -102,8 +115,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 func (h *Handler) register(mux *http.ServeMux, routes []Route) {
 	for _, r := range routes {
 		var handle http.Handler = r.Handle
-		if isPlayerRoute(r.Path) {
+		switch {
+		case isPlayerRoute(r.Path):
 			handle = h.requirePlayer(handle)
+		case isInternalRoute(r.Path):
+			handle = h.internalGuard()(handle)
 		}
 		mux.Handle(r.Method+" "+r.Path, handle)
 	}
@@ -140,6 +156,20 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 // isPlayerRoute reports whether path needs a player token.
 func isPlayerRoute(path string) bool {
 	return strings.HasPrefix(path, "/api/v1/")
+}
+
+// isInternalRoute reports whether path is for other services and needs the internal token.
+func isInternalRoute(path string) bool {
+	return strings.HasPrefix(path, "/internal/")
+}
+
+// internalGuard is the guard of the /internal routes: the one that was set, or one that answers
+// 404 while none was set.
+func (h *Handler) internalGuard() httpx.Middleware {
+	if h.requireInternal == nil {
+		return auth.RequireInternal("")
+	}
+	return h.requireInternal
 }
 
 func (h *Handler) notFound(w http.ResponseWriter, _ *http.Request) {

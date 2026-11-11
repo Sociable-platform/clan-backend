@@ -31,6 +31,7 @@ type Store interface {
 	CancelFriendRequest(ctx context.Context, gameID, requestID, playerID string) (repository.FriendRequest, error)
 	RemoveFriend(ctx context.Context, gameID, playerID, friendID string) (repository.Friendship, error)
 	SearchPlayers(ctx context.Context, gameID, playerID, query string, limit int) ([]repository.PlayerSearchResult, error)
+	ListFriendshipsAfter(ctx context.Context, after repository.FriendshipKey, limit int) ([]repository.SyncFriendship, error)
 }
 
 // Service is the social service's logic.

@@ -129,6 +129,10 @@ func (m *memStore) SearchPlayers(context.Context, string, string, string, int) (
 	return []repository.PlayerSearchResult{}, nil
 }
 
+func (m *memStore) ListFriendshipsAfter(context.Context, repository.FriendshipKey, int) ([]repository.SyncFriendship, error) {
+	return []repository.SyncFriendship{}, nil
+}
+
 // searchStore remembers what SearchPlayers was asked and answers with what the test gave it.
 type searchStore struct {
 	*memStore
