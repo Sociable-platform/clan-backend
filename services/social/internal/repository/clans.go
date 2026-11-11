@@ -11,12 +11,13 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Clan is a row of the clans table, with the fields shown in clan lists.
+// Clan is a row of the clans table, with the fields shown in clan lists. How many members a
+// clan may have is not stored per clan: it is the game's rule (clan.maxMembers in its
+// published config), which the service passes in where it matters.
 type Clan struct {
 	ID          string
 	Name        string
 	MemberCount int
-	MaxMembers  int
 }
 
 // ListClansOptions say how many clans ListClans returns, in which order, and which ones.
@@ -24,6 +25,7 @@ type ListClansOptions struct {
 	Limit         int  // at most this many clans
 	ByMembers     bool // most members first; otherwise sorted by name
 	OnlyWithSpace bool // only clans that still have a free place
+	MaxMembers    int  // the game's clan size; with OnlyWithSpace, a clan with this many members is full
 }
 
 // Two fixed orders. Nothing from the request is put into the SQL text: the options only
@@ -39,7 +41,7 @@ const (
 // When query is not empty, only clans whose name contains it are returned, ignoring
 // upper/lower case. strpos looks for the exact text, so characters like % and _ in the
 // search are not wildcards (as they would be with LIKE).
-// With OnlyWithSpace, full clans are left out.
+// With OnlyWithSpace, full clans (opts.MaxMembers members or more) are left out.
 func (r *Repository) ListClans(ctx context.Context, gameID, query string, opts ListClansOptions) ([]Clan, error) {
 	if r.pool == nil {
 		return nil, ErrNoDatabase
@@ -49,14 +51,14 @@ func (r *Repository) ListClans(ctx context.Context, gameID, query string, opts L
 		order = orderClansByMembers
 	}
 	rows, err := r.pool.Query(ctx,
-		`select id::text, name, member_count, max_members
+		`select id::text, name, member_count
 		 from clans
 		 where game_id = $1
 		   and ($2 = '' or strpos(lower(name), lower($2)) > 0)
-		   and (not $3 or member_count < max_members)
+		   and (not $3 or member_count < $5)
 		 order by `+order+`
 		 limit $4`,
-		gameID, query, opts.OnlyWithSpace, opts.Limit,
+		gameID, query, opts.OnlyWithSpace, opts.Limit, opts.MaxMembers,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list clans: %w", err)
@@ -66,7 +68,7 @@ func (r *Repository) ListClans(ctx context.Context, gameID, query string, opts L
 	clans := make([]Clan, 0)
 	for rows.Next() {
 		var c Clan
-		if err := rows.Scan(&c.ID, &c.Name, &c.MemberCount, &c.MaxMembers); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.MemberCount); err != nil {
 			return nil, fmt.Errorf("list clans: %w", err)
 		}
 		clans = append(clans, c)
@@ -124,8 +126,8 @@ func (r *Repository) CreateClan(ctx context.Context, gameID, ownerID, name strin
 	err = tx.QueryRow(ctx,
 		`insert into clans (game_id, name, owner_id)
 		 values ($1, $2, $3)
-		 returning id::text, member_count, max_members`,
-		gameID, name, ownerID).Scan(&c.ID, &c.MemberCount, &c.MaxMembers)
+		 returning id::text, member_count`,
+		gameID, name, ownerID).Scan(&c.ID, &c.MemberCount)
 	if err != nil {
 		return Clan{}, createClanError(err)
 	}
@@ -161,19 +163,21 @@ var (
 	// ErrClanNotFound means there is no clan with this ID in the player's game.
 	// A clan of another game is "not found" too, so players cannot see other games' clans.
 	ErrClanNotFound = errors.New("clan not found")
-	// ErrClanFull means the clan already has max_members members.
+	// ErrClanFull means the clan already has as many members as the game allows.
 	ErrClanFull = errors.New("clan is full")
 )
 
 // JoinClan adds playerID to clan clanID of gameID with role "member" and returns the
-// clan with its new member count. Everything happens in one transaction.
+// clan with its new member count. maxMembers is the game's clan size (clan.maxMembers):
+// a clan with that many members or more is full. A clan over a lowered limit keeps its
+// members; it just takes no one new. Everything happens in one transaction.
 //
 // The clan row is locked first (SELECT ... FOR UPDATE). Other joins of the same clan
 // wait at that line until this transaction ends, so two players can never both take
 // the last free place.
 //
 // Errors: ErrClanNotFound, ErrAlreadyInClan, ErrClanFull.
-func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID string) (Clan, error) {
+func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID string, maxMembers int) (Clan, error) {
 	if r.pool == nil {
 		return Clan{}, ErrNoDatabase
 	}
@@ -186,11 +190,11 @@ func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID stri
 	// 1. Lock the clan. "and game_id = $2" makes another game's clan look like it does not exist.
 	c := Clan{ID: clanID}
 	err = tx.QueryRow(ctx,
-		`select name, member_count, max_members
+		`select name, member_count
 		 from clans
 		 where id = $1 and game_id = $2
 		 for update`,
-		clanID, gameID).Scan(&c.Name, &c.MemberCount, &c.MaxMembers)
+		clanID, gameID).Scan(&c.Name, &c.MemberCount)
 	if err != nil {
 		return Clan{}, joinClanError(err)
 	}
@@ -208,7 +212,7 @@ func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID stri
 	}
 
 	// 3. Room left? Safe to trust member_count here because we hold the lock.
-	if c.MemberCount >= c.MaxMembers {
+	if c.MemberCount >= maxMembers {
 		return Clan{}, ErrClanFull
 	}
 
@@ -267,13 +271,13 @@ func (r *Repository) MyClan(ctx context.Context, gameID, externalID string) (Pla
 	}
 	var pc PlayerClan
 	err := r.pool.QueryRow(ctx,
-		`select c.id::text, c.name, c.member_count, c.max_members, m.role
+		`select c.id::text, c.name, c.member_count, m.role
 		 from players p
 		 join clan_members m on m.player_id = p.id and m.game_id = p.game_id
 		 join clans c        on c.id = m.clan_id
 		 where p.game_id = $1 and p.external_id = $2`,
 		gameID, externalID,
-	).Scan(&pc.Clan.ID, &pc.Clan.Name, &pc.Clan.MemberCount, &pc.Clan.MaxMembers, &pc.Role)
+	).Scan(&pc.Clan.ID, &pc.Clan.Name, &pc.Clan.MemberCount, &pc.Role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PlayerClan{}, ErrNotInClan
 	}
@@ -589,9 +593,9 @@ func (r *Repository) RenameClan(ctx context.Context, gameID, clanID, ownerExtern
 	var res RenameResult
 	c := &res.Clan
 	err = tx.QueryRow(ctx,
-		`select id::text, name, member_count, max_members from clans
+		`select id::text, name, member_count from clans
 		 where id = $1 and game_id = $2 for update`,
-		clanID, gameID).Scan(&c.ID, &c.Name, &c.MemberCount, &c.MaxMembers)
+		clanID, gameID).Scan(&c.ID, &c.Name, &c.MemberCount)
 	if err != nil {
 		return RenameResult{}, leaveClanError(err)
 	}

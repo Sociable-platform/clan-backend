@@ -35,7 +35,7 @@ func newRenamingStore(changed bool) *renamingStore {
 		prev = "Grey Wolves"
 	}
 	return &renamingStore{memStore: newMemStore(), result: repository.RenameResult{
-		Clan:         repository.Clan{ID: someClan, Name: "Grey Wolves", MemberCount: 4, MaxMembers: 10},
+		Clan:         repository.Clan{ID: someClan, Name: "Grey Wolves", MemberCount: 4},
 		PreviousName: prev, Changed: changed,
 	}}
 }

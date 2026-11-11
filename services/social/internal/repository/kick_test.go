@@ -39,7 +39,7 @@ func TestKickMemberRemovesThePlayer(t *testing.T) {
 	checkClanIsConsistent(t, r, clan)
 
 	// the kicked player is free: they can join again (there is no ban)
-	if _, err := r.JoinClan(ctx, game, clan, kicked); err != nil {
+	if _, err := r.JoinClan(ctx, game, clan, kicked, testMaxMembers); err != nil {
 		t.Fatalf("joining again after a kick: %v", err)
 	}
 	checkClanIsConsistent(t, r, clan)

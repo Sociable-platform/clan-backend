@@ -213,7 +213,8 @@ paths:
           through **all** clans of the game, full ones too.
         - `limit`: at most this many clans (1 to 100, default 100).
         - `sort`: `name` (default) or `members` (most members first; equal sizes by name).
-        - `hasSpace`: `true` keeps only clans that still have a free place.
+        - `hasSpace`: `true` keeps only clans that still have a free place, by the game's
+          `clan.maxMembers`.
 
         **Featured clans.** The server has no separate "featured" list. A page that shows a few
         suggested clans asks for the biggest ones that still have room:
@@ -480,7 +481,9 @@ paths:
                   code: clan_not_found
                   message: Clan not found
         "409":
-          description: The caller is already in a clan (already_in_clan), or the clan has no free place (clan_full).
+          description: |
+            The caller is already in a clan (already_in_clan), or the clan has no free place
+            (clan_full): it has as many members as the game's clan.maxMembers allows, or more.
           content:
             application/json:
               schema:
@@ -1124,7 +1127,11 @@ components:
           description: How many players are in the clan now.
         maxMembers:
           type: integer
-          description: How many players the clan can have.
+          description: |
+            How many players a clan of this game can have: the game's `clan.maxMembers` from its
+            published widget config (10 before the first publish). The same for every clan of
+            the game. After the developer lowers it, a clan can show `memberCount` above
+            `maxMembers`: nobody is removed, the clan just takes no one new.
     CreateClanRequest:
       type: object
       required: [name]
