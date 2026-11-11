@@ -196,7 +196,7 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 	}
 
 	limit := s.maxMembers(ctx, gameID)
-	row, err := s.store.JoinClan(ctx, gameID, strings.ToLower(clanID), player.ID, limit)
+	row, err := s.store.JoinClan(ctx, gameID, strings.ToLower(clanID), player.ID, limit, "member")
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return Clan{}, errClanNotFound()
@@ -256,11 +256,12 @@ func (s *Service) KickMember(ctx context.Context, gameID, externalID, clanID, pl
 	if !uuidPattern.MatchString(playerID) {
 		return errMemberNotFound()
 	}
-	res, err := s.store.KickMember(ctx, gameID, strings.ToLower(clanID), externalID, strings.ToLower(playerID))
+	res, err := s.store.KickMember(ctx, gameID, strings.ToLower(clanID), externalID, strings.ToLower(playerID),
+		func(actor, _ repository.MemberRole) bool { return actor.IsOwner }) // the roles come in the next step
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return errClanNotFound()
-	case errors.Is(err, repository.ErrNotClanOwner):
+	case errors.Is(err, repository.ErrNotAllowed):
 		return httpx.NewError(http.StatusForbidden, "not_clan_owner", "Only the clan owner can remove members")
 	case errors.Is(err, repository.ErrKickSelf):
 		return httpx.NewError(http.StatusBadRequest, "cannot_kick_self", "You cannot remove yourself; leave the clan instead")

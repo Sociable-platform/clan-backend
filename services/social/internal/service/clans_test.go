@@ -21,7 +21,7 @@ func (m *memStore) CreateClan(context.Context, string, string, string) (reposito
 	return repository.Clan{}, errors.New("memStore has no clans")
 }
 
-func (m *memStore) JoinClan(context.Context, string, string, string, int) (repository.Clan, error) {
+func (m *memStore) JoinClan(context.Context, string, string, string, int, string) (repository.Clan, error) {
 	return repository.Clan{}, errors.New("memStore has no clans")
 }
 
@@ -29,7 +29,8 @@ func (m *memStore) LeaveClan(context.Context, string, string, string) (repositor
 	return repository.LeaveResult{}, errors.New("memStore has no clans")
 }
 
-func (m *memStore) KickMember(context.Context, string, string, string, string) (repository.LeaveResult, error) {
+func (m *memStore) KickMember(context.Context, string, string, string, string,
+	func(repository.MemberRole, repository.MemberRole) bool) (repository.LeaveResult, error) {
 	return repository.LeaveResult{}, errors.New("memStore has no clans")
 }
 
@@ -240,7 +241,7 @@ type joiningStore struct {
 	limit   int // the maxMembers the service passed
 }
 
-func (j *joiningStore) JoinClan(_ context.Context, gameID, clanID, playerID string, maxMembers int) (repository.Clan, error) {
+func (j *joiningStore) JoinClan(_ context.Context, gameID, clanID, playerID string, maxMembers int, _ string) (repository.Clan, error) {
 	j.joins++
 	j.game, j.clan, j.player, j.limit = gameID, clanID, playerID, maxMembers
 	if j.joinErr != nil {

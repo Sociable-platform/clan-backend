@@ -22,7 +22,8 @@ type kickingStore struct {
 	game, clan, external, playerID string
 }
 
-func (k *kickingStore) KickMember(_ context.Context, gameID, clanID, ownerExternalID, playerID string) (repository.LeaveResult, error) {
+func (k *kickingStore) KickMember(_ context.Context, gameID, clanID, ownerExternalID, playerID string,
+	_ func(repository.MemberRole, repository.MemberRole) bool) (repository.LeaveResult, error) {
 	k.kicks++
 	k.game, k.clan, k.external, k.playerID = gameID, clanID, ownerExternalID, playerID
 	if k.kickErr != nil {
@@ -69,7 +70,7 @@ func TestKickMemberErrors(t *testing.T) {
 		code   string
 	}{
 		{repository.ErrClanNotFound, http.StatusNotFound, "clan_not_found"},
-		{repository.ErrNotClanOwner, http.StatusForbidden, "not_clan_owner"},
+		{repository.ErrNotAllowed, http.StatusForbidden, "not_clan_owner"},
 		{repository.ErrKickSelf, http.StatusBadRequest, "cannot_kick_self"},
 		{repository.ErrMemberNotFound, http.StatusNotFound, "member_not_found"},
 	}

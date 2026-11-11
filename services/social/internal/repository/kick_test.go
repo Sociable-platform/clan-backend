@@ -9,6 +9,9 @@ import (
 	"testing"
 )
 
+// ownerOnly is the kick rule before roles: only the clan's owner may kick.
+func ownerOnly(actor, _ MemberRole) bool { return actor.IsOwner }
+
 func TestKickMemberRemovesThePlayer(t *testing.T) {
 	r, cleanup := testRepo(t)
 	game := newGameID(t)
@@ -19,7 +22,7 @@ func TestKickMemberRemovesThePlayer(t *testing.T) {
 	stay := joinAs(t, r, game, clan, "u_stay")
 	kicked := joinAs(t, r, game, clan, "u_kicked")
 
-	got, err := r.KickMember(ctx, game, clan, "owner_Wolves", kicked)
+	got, err := r.KickMember(ctx, game, clan, "owner_Wolves", kicked, ownerOnly)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +42,7 @@ func TestKickMemberRemovesThePlayer(t *testing.T) {
 	checkClanIsConsistent(t, r, clan)
 
 	// the kicked player is free: they can join again (there is no ban)
-	if _, err := r.JoinClan(ctx, game, clan, kicked, testMaxMembers); err != nil {
+	if _, err := r.JoinClan(ctx, game, clan, kicked, testMaxMembers, "member"); err != nil {
 		t.Fatalf("joining again after a kick: %v", err)
 	}
 	checkClanIsConsistent(t, r, clan)
@@ -69,9 +72,9 @@ func TestKickMemberRefusals(t *testing.T) {
 		{"unknown clan", game, "00000000-0000-4000-8000-000000000000", "owner_Wolves", member, ErrClanNotFound},
 		{"clan ID is not a UUID", game, "not-a-uuid", "owner_Wolves", member, ErrClanNotFound},
 		{"clan of another game", game, foreign, "owner_Wolves", member, ErrClanNotFound},
-		{"a member is not the owner", game, clan, "u_member2", member, ErrNotClanOwner},
-		{"an outsider is not the owner", game, clan, "u_nobody", member, ErrNotClanOwner},
-		{"another clan's owner is not the owner", game, clan, "owner_Bears", member, ErrNotClanOwner},
+		{"the roles say no", game, clan, "u_member2", member, ErrNotAllowed},
+		{"an outsider", game, clan, "u_nobody", member, ErrNotAllowed},
+		{"another clan's owner", game, clan, "owner_Bears", member, ErrNotAllowed},
 		{"the owner kicks themselves", game, clan, "owner_Wolves", owner, ErrKickSelf},
 		{"the player is in another clan", game, clan, "owner_Wolves", bear, ErrMemberNotFound},
 		{"unknown player", game, clan, "owner_Wolves", "00000000-0000-4000-8000-000000000000", ErrMemberNotFound},
@@ -79,7 +82,7 @@ func TestKickMemberRefusals(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if _, err := r.KickMember(ctx, c.game, c.clan, c.caller, c.player); !errors.Is(err, c.want) {
+			if _, err := r.KickMember(ctx, c.game, c.clan, c.caller, c.player, ownerOnly); !errors.Is(err, c.want) {
 				t.Fatalf("err = %v, want %v", err, c.want)
 			}
 		})
@@ -112,7 +115,7 @@ func TestKickMemberWhileThePlayerLeaves(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, kickErr = r.KickMember(ctx, game, clan, fmt.Sprintf("owner_Race%d", round), player)
+			_, kickErr = r.KickMember(ctx, game, clan, fmt.Sprintf("owner_Race%d", round), player, ownerOnly)
 		}()
 		go func() { defer wg.Done(); _, leaveErr = r.LeaveClan(ctx, game, clan, ext) }()
 		wg.Wait()
@@ -149,7 +152,7 @@ func TestKickMemberWhileTheOwnerLeaves(t *testing.T) {
 		var wg sync.WaitGroup
 		var kickErr, leaveErr error
 		wg.Add(2)
-		go func() { defer wg.Done(); _, kickErr = r.KickMember(ctx, game, clan, "owner_"+name, target) }()
+		go func() { defer wg.Done(); _, kickErr = r.KickMember(ctx, game, clan, "owner_"+name, target, ownerOnly) }()
 		go func() { defer wg.Done(); _, leaveErr = r.LeaveClan(ctx, game, clan, "owner_"+name) }()
 		wg.Wait()
 
@@ -158,8 +161,8 @@ func TestKickMemberWhileTheOwnerLeaves(t *testing.T) {
 		}
 		want := 1 // kick first: heir is alone
 		if kickErr != nil {
-			if !errors.Is(kickErr, ErrNotClanOwner) {
-				t.Fatalf("round %d: kick = %v, want nil or ErrNotClanOwner", round, kickErr)
+			if !errors.Is(kickErr, ErrNotAllowed) { // the old owner is no longer in the clan
+				t.Fatalf("round %d: kick = %v, want nil or ErrNotAllowed", round, kickErr)
 			}
 			want = 2 // leave first: heir and target remain
 		}

@@ -283,7 +283,7 @@ func TestJoinClanAddsMember(t *testing.T) {
 	clan := ownClan(t, r, game, "Wolves")
 	player := newPlayer(t, r, game, "u_2")
 
-	c, err := r.JoinClan(ctx, game, clan, player, testMaxMembers)
+	c, err := r.JoinClan(ctx, game, clan, player, testMaxMembers, "member")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestJoinClanNotFound(t *testing.T) {
 		"unknown clan":         newGameID(t), // any random UUID
 		"not a UUID":           "abc",
 	} {
-		if _, err := r.JoinClan(ctx, gameB, clanID, playerOfB, testMaxMembers); !errors.Is(err, ErrClanNotFound) {
+		if _, err := r.JoinClan(ctx, gameB, clanID, playerOfB, testMaxMembers, "member"); !errors.Is(err, ErrClanNotFound) {
 			t.Errorf("%s: err = %v, want ErrClanNotFound", name, err)
 		}
 	}
@@ -329,14 +329,14 @@ func TestJoinClanAlreadyInClan(t *testing.T) {
 	ctx := context.Background()
 	wolves, bears := ownClan(t, r, game, "Wolves"), ownClan(t, r, game, "Bears")
 	player := newPlayer(t, r, game, "u_2")
-	if _, err := r.JoinClan(ctx, game, wolves, player, testMaxMembers); err != nil {
+	if _, err := r.JoinClan(ctx, game, wolves, player, testMaxMembers, "member"); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := r.JoinClan(ctx, game, wolves, player, testMaxMembers); !errors.Is(err, ErrAlreadyInClan) {
+	if _, err := r.JoinClan(ctx, game, wolves, player, testMaxMembers, "member"); !errors.Is(err, ErrAlreadyInClan) {
 		t.Errorf("same clan again: err = %v, want ErrAlreadyInClan", err)
 	}
-	if _, err := r.JoinClan(ctx, game, bears, player, testMaxMembers); !errors.Is(err, ErrAlreadyInClan) {
+	if _, err := r.JoinClan(ctx, game, bears, player, testMaxMembers, "member"); !errors.Is(err, ErrAlreadyInClan) {
 		t.Errorf("second clan: err = %v, want ErrAlreadyInClan", err)
 	}
 	var count int
@@ -353,10 +353,10 @@ func TestJoinClanFull(t *testing.T) {
 	ctx := context.Background()
 	clan := ownClan(t, r, game, "Duo")
 	// the game allows 2 members: the owner and one more
-	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_2"), 2); err != nil {
+	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_2"), 2, "member"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_3"), 2); !errors.Is(err, ErrClanFull) {
+	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_3"), 2, "member"); !errors.Is(err, ErrClanFull) {
 		t.Fatalf("err = %v, want ErrClanFull", err)
 	}
 	if n := countRows(t, r, "clan_members", game); n != 2 {
@@ -377,7 +377,7 @@ func TestJoinClanAtTheSameTimeNeverOverfills(t *testing.T) {
 	}
 
 	ok, full := race(t, len(players), func(i int) error {
-		_, err := r.JoinClan(context.Background(), game, clan, players[i], testMaxMembers)
+		_, err := r.JoinClan(context.Background(), game, clan, players[i], testMaxMembers, "member")
 		return err
 	}, ErrClanFull)
 	if ok != 9 || full != 6 {
@@ -399,7 +399,7 @@ func TestJoinTwoClansAtTheSameTime(t *testing.T) {
 	player := newPlayer(t, r, game, "u_2")
 
 	ok, inClan := race(t, 2, func(i int) error {
-		_, err := r.JoinClan(context.Background(), game, clans[i], player, testMaxMembers)
+		_, err := r.JoinClan(context.Background(), game, clans[i], player, testMaxMembers, "member")
 		return err
 	}, ErrAlreadyInClan)
 	if ok != 1 || inClan != 1 {
@@ -437,7 +437,7 @@ func TestMyClan(t *testing.T) {
 		t.Fatalf("owner: got %+v, %v; want %+v as owner", got, err, created)
 	}
 
-	if _, err := r.JoinClan(ctx, game, created.ID, newPlayer(t, r, game, "u_leyla"), testMaxMembers); err != nil {
+	if _, err := r.JoinClan(ctx, game, created.ID, newPlayer(t, r, game, "u_leyla"), testMaxMembers, "member"); err != nil {
 		t.Fatal(err)
 	}
 	got, err = r.MyClan(ctx, game, "u_leyla")
@@ -464,7 +464,7 @@ func TestListMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range []string{"u_b", "u_a", "u_c"} { // joined in this order
-		if _, err := r.JoinClan(ctx, game, c.ID, newPlayer(t, r, game, p), testMaxMembers); err != nil {
+		if _, err := r.JoinClan(ctx, game, c.ID, newPlayer(t, r, game, p), testMaxMembers, "member"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -527,7 +527,7 @@ func TestJoinLastFreePlaceAtTheSameTime(t *testing.T) {
 		}
 
 		ok, full := race(t, len(players), func(i int) error {
-			_, err := r.JoinClan(ctx, game, clan, players[i], 2)
+			_, err := r.JoinClan(ctx, game, clan, players[i], 2, "member")
 			return err
 		}, ErrClanFull)
 		if ok != 1 || full != 1 {
@@ -612,7 +612,7 @@ func setJoinedAt(t *testing.T, r *Repository, clanID, playerID string, hoursAgo 
 func joinAs(t *testing.T, r *Repository, game, clanID, ext string) string {
 	t.Helper()
 	id := newPlayer(t, r, game, ext)
-	if _, err := r.JoinClan(context.Background(), game, clanID, id, testMaxMembers); err != nil {
+	if _, err := r.JoinClan(context.Background(), game, clanID, id, testMaxMembers, "member"); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -646,13 +646,13 @@ func TestLeaveClanNormalMember(t *testing.T) {
 
 	// the player can join another clan afterwards, and can come back to the same one
 	other := ownClan(t, r, game, "Bears")
-	if _, err := r.JoinClan(ctx, game, other, leaver, testMaxMembers); err != nil {
+	if _, err := r.JoinClan(ctx, game, other, leaver, testMaxMembers, "member"); err != nil {
 		t.Fatalf("joining another clan after leaving: %v", err)
 	}
 	if _, err := r.LeaveClan(ctx, game, other, "u_2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.JoinClan(ctx, game, clan, leaver, testMaxMembers); err != nil {
+	if _, err := r.JoinClan(ctx, game, clan, leaver, testMaxMembers, "member"); err != nil {
 		t.Fatalf("joining the old clan again: %v", err)
 	}
 	checkClanIsConsistent(t, r, clan)
@@ -973,7 +973,7 @@ func TestLeaveClanOwnerLeavesWhileSomeoneJoins(t *testing.T) {
 		errs := make([]error, 2)
 		wg.Add(2)
 		go func() { defer wg.Done(); _, errs[0] = r.LeaveClan(ctx, game, clan, fmt.Sprintf("owner_Race%d", round)) }()
-		go func() { defer wg.Done(); _, errs[1] = r.JoinClan(ctx, game, clan, joiner, testMaxMembers) }()
+		go func() { defer wg.Done(); _, errs[1] = r.JoinClan(ctx, game, clan, joiner, testMaxMembers, "member") }()
 		wg.Wait()
 		if errs[0] != nil || errs[1] != nil {
 			t.Fatalf("round %d: leave: %v, join: %v", round, errs[0], errs[1])
@@ -1010,7 +1010,7 @@ func TestLeaveClanAloneOwnerLeavesWhileSomeoneJoins(t *testing.T) {
 			defer wg.Done()
 			_, leaveErr = r.LeaveClan(ctx, game, clan, fmt.Sprintf("owner_Solo%d", round))
 		}()
-		go func() { defer wg.Done(); _, joinErr = r.JoinClan(ctx, game, clan, joiner, testMaxMembers) }()
+		go func() { defer wg.Done(); _, joinErr = r.JoinClan(ctx, game, clan, joiner, testMaxMembers, "member") }()
 		wg.Wait()
 		if leaveErr != nil {
 			t.Fatalf("round %d: leave: %v", round, leaveErr)
@@ -1044,7 +1044,7 @@ func clanWith(t *testing.T, r *Repository, game, name string, members int) strin
 	ctx := context.Background()
 	clan := ownClan(t, r, game, name)
 	for i := 1; i < members; i++ {
-		if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, fmt.Sprintf("%s_%d", name, i)), testMaxMembers); err != nil {
+		if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, fmt.Sprintf("%s_%d", name, i)), testMaxMembers, "member"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1123,14 +1123,14 @@ func TestJoinClanUsesTheLimitItIsGiven(t *testing.T) {
 	ctx := context.Background()
 	clan := clanWith(t, r, game, "Wolves", 3)
 
-	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_a"), 3); !errors.Is(err, ErrClanFull) {
+	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_a"), 3, "member"); !errors.Is(err, ErrClanFull) {
 		t.Fatalf("3 members, limit 3: err = %v, want ErrClanFull", err)
 	}
-	if c, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_b"), 30); err != nil || c.MemberCount != 4 {
+	if c, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_b"), 30, "member"); err != nil || c.MemberCount != 4 {
 		t.Fatalf("limit raised to 30: %+v, %v; want 4 members", c, err)
 	}
 	// lowered to 2: all 4 stay, no one new gets in, and the clan does not count as having space
-	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_c"), 2); !errors.Is(err, ErrClanFull) {
+	if _, err := r.JoinClan(ctx, game, clan, newPlayer(t, r, game, "u_c"), 2, "member"); !errors.Is(err, ErrClanFull) {
 		t.Fatalf("over a lowered limit: err = %v, want ErrClanFull", err)
 	}
 	if n := countRows(t, r, "clan_members", game); n != 4 {
