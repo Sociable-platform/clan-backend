@@ -43,8 +43,8 @@ func TestSharedFixtures(t *testing.T) {
 	if err := json.Unmarshal(readFile(t, "manifest.json"), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Cases) < 5 {
-		t.Fatalf("the manifest should have its 5 rows, got %d", len(manifest.Cases))
+	if len(manifest.Cases) < 10 {
+		t.Fatalf("the manifest should have its 10 rows, got %d", len(manifest.Cases))
 	}
 	for _, row := range manifest.Cases {
 		t.Run(row.File, func(t *testing.T) {
@@ -179,20 +179,23 @@ func TestRejectsAFontOutsideTheList(t *testing.T) {
 func TestRejectsATextureThatIsAURL(t *testing.T) {
 	m := arena(t)
 	obj(m, "theme", "textures", "panel")["asset"] = "https://example.com/tex.png"
-	wantIssue(t, issuesOf(t, m), "/theme/textures/panel/asset", "enum")
+	// neither a built-in texture nor a custom-... name
+	wantIssue(t, issuesOf(t, m), "/theme/textures/panel/asset", "anyOf")
 }
 
 func TestRejectsAnUnknownOrRepeatedBadge(t *testing.T) {
 	unknown := arena(t)
 	obj(unknown, "clan", "badges")["allowed"] = []any{"star", "skull"}
-	wantIssue(t, issuesOf(t, unknown), "/clan/badges/allowed/1", "enum")
+	// neither a built-in badge nor a custom-... name
+	wantIssue(t, issuesOf(t, unknown), "/clan/badges/allowed/1", "anyOf")
 
 	repeated := arena(t)
 	obj(repeated, "clan", "badges")["allowed"] = []any{"star", "star"}
 	wantIssue(t, issuesOf(t, repeated), "/clan/badges/allowed", "uniqueItems")
 
 	tooMany := arena(t)
-	obj(tooMany, "clan", "badges")["allowed"] = []any{"star", "diamond", "peak", "spark", "moon", "cross", "star"}
+	obj(tooMany, "clan", "badges")["allowed"] = []any{"star", "diamond", "peak", "spark", "moon", "cross",
+		"custom-a", "custom-b", "custom-c", "custom-d", "custom-e", "custom-f", "custom-g"} // 13, the limit is 12
 	wantIssue(t, issuesOf(t, tooMany), "/clan/badges/allowed", "maxItems")
 }
 
@@ -578,4 +581,18 @@ func TestRejectsARepeatedRoleID(t *testing.T) {
 			t.Fatalf("%s: %+v", doc, issues)
 		}
 	}
+}
+
+func TestArenaRolesNeedAtLeastTwo(t *testing.T) {
+	m := arena(t)
+	clan := obj(m, "clan")
+	clan["roles"] = clan["roles"].([]any)[:1]
+	wantIssue(t, issuesOf(t, m), "/clan/roles", "minItems")
+}
+
+func TestArenaRejectsARepeatedRoleID(t *testing.T) {
+	m := arena(t)
+	roles := obj(m, "clan")["roles"].([]any)
+	roles[1].(map[string]any)["id"] = roles[0].(map[string]any)["id"]
+	wantIssue(t, issuesOf(t, m), "/clan/roles/1/id", RuleUniqueRoleIDs)
 }
