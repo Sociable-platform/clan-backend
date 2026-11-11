@@ -33,8 +33,9 @@ type Player struct {
 
 // Client talks to the social service.
 type Client struct {
-	base string
-	http *http.Client
+	base          string
+	http          *http.Client
+	internalToken string // for Friendships only; see WithInternalToken
 }
 
 // NewClient returns a Client for the social service at baseURL (for example http://social:8082).
