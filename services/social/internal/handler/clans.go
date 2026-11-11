@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -170,6 +171,39 @@ func (h *Handler) getMyClan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, myClanResponse{Clan: toClanResponse(pc.Clan), Role: pc.Role})
+}
+
+// memberRoleResponse is a member's role after a promote or demote.
+type memberRoleResponse struct {
+	PlayerID    string `json:"playerId"`
+	DisplayName string `json:"displayName"`
+	Role        string `json:"role"`
+}
+
+// promoteMember handles POST /api/v1/clans/{clanID}/members/{playerID}/promote: one role up,
+// as the game's clan roles allow. 200 with the member's new role. No body.
+func (h *Handler) promoteMember(w http.ResponseWriter, r *http.Request) {
+	h.changeRole(w, r, h.svc.PromoteMember)
+}
+
+// demoteMember handles POST /api/v1/clans/{clanID}/members/{playerID}/demote: one role down.
+func (h *Handler) demoteMember(w http.ResponseWriter, r *http.Request) {
+	h.changeRole(w, r, h.svc.DemoteMember)
+}
+
+func (h *Handler) changeRole(w http.ResponseWriter, r *http.Request,
+	change func(ctx context.Context, gameID, externalID, clanID, playerID string) (service.MemberRole, error)) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	m, err := change(r.Context(), caller.GameID, caller.ExternalID, r.PathValue("clanID"), r.PathValue("playerID"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, memberRoleResponse{PlayerID: m.PlayerID, DisplayName: m.DisplayName, Role: m.Role})
 }
 
 type memberResponse struct {

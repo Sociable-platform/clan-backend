@@ -48,6 +48,14 @@ func (f fakeService) LeaveClan(context.Context, string, string, string) error { 
 
 func (f fakeService) KickMember(context.Context, string, string, string, string) error { return f.err }
 
+func (f fakeService) PromoteMember(context.Context, string, string, string, string) (service.MemberRole, error) {
+	return service.MemberRole{}, f.err
+}
+
+func (f fakeService) DemoteMember(context.Context, string, string, string, string) (service.MemberRole, error) {
+	return service.MemberRole{}, f.err
+}
+
 func (f fakeService) RenameClan(context.Context, string, string, string, string) (service.Clan, error) {
 	return service.Clan{}, f.err
 }
@@ -56,6 +64,14 @@ func (s *recordingService) LeaveClan(context.Context, string, string, string) er
 
 func (s *recordingService) KickMember(context.Context, string, string, string, string) error {
 	return s.err
+}
+
+func (s *recordingService) PromoteMember(context.Context, string, string, string, string) (service.MemberRole, error) {
+	return service.MemberRole{}, s.err
+}
+
+func (s *recordingService) DemoteMember(context.Context, string, string, string, string) (service.MemberRole, error) {
+	return service.MemberRole{}, s.err
 }
 
 func (s *recordingService) RenameClan(context.Context, string, string, string, string) (service.Clan, error) {

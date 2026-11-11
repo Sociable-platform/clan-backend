@@ -167,7 +167,8 @@ var (
 	ErrClanFull = errors.New("clan is full")
 )
 
-// JoinClan adds playerID to clan clanID of gameID with role "member" and returns the
+// JoinClan adds playerID to clan clanID of gameID with role roleID (the first role of the
+// game's config: what a new member gets) and returns the
 // clan with its new member count. maxMembers is the game's clan size (clan.maxMembers):
 // a clan with that many members or more is full. A clan over a lowered limit keeps its
 // members; it just takes no one new. Everything happens in one transaction.
@@ -177,7 +178,7 @@ var (
 // the last free place.
 //
 // Errors: ErrClanNotFound, ErrAlreadyInClan, ErrClanFull.
-func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID string, maxMembers int) (Clan, error) {
+func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID string, maxMembers int, roleID string) (Clan, error) {
 	if r.pool == nil {
 		return Clan{}, ErrNoDatabase
 	}
@@ -218,8 +219,8 @@ func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID stri
 
 	// 4. Add the member and count them.
 	_, err = tx.Exec(ctx,
-		`insert into clan_members (clan_id, player_id, game_id, role) values ($1, $2, $3, 'member')`,
-		clanID, playerID, gameID)
+		`insert into clan_members (clan_id, player_id, game_id, role) values ($1, $2, $3, $4)`,
+		clanID, playerID, gameID, roleID)
 	if err != nil {
 		return Clan{}, joinClanError(err)
 	}
@@ -291,7 +292,7 @@ func (r *Repository) MyClan(ctx context.Context, gameID, externalID string) (Pla
 type Member struct {
 	PlayerID    string // social's own player ID (not the game's ID such as "u_42")
 	DisplayName string
-	Role        string // "owner" or "member"
+	Role        string // the stored role id: "owner" for the owner, else a role id of the game's config (or "member")
 	JoinedAt    time.Time
 }
 
@@ -478,15 +479,100 @@ var (
 	ErrMemberNotFound = errors.New("member not found")
 )
 
-// KickMember removes player playerID from clan clanID; only the clan's owner, the player
-// (gameID, ownerExternalID), may do it. Like LeaveClan it runs in one transaction and locks
-// the clan row first, so a kick and a leave or join at the same time cannot get member_count
-// or the owner out of step. The owner cannot kick themselves, so the owner never changes and
-// the clan is never disbanded by a kick.
+// MemberRole is a clan member as the role rules see them.
+type MemberRole struct {
+	Player  ClanPlayer
+	RoleID  string // as stored in clan_members.role
+	IsOwner bool   // the clan's owner (clans.owner_id)
+}
+
+// ErrNotAllowed means the clan roles do not let the caller do this (or the caller is not a
+// member of the clan at all).
+var ErrNotAllowed = errors.New("not allowed by the clan roles")
+
+// The two ways a member is looked up. Fixed texts: nothing from the request goes into the SQL.
+const (
+	memberByExternalID = "p.external_id = $3"
+	memberByPlayerID   = "m.player_id = $3"
+)
+
+// clanMember reads one member of clan clanID with their stored role and whether they own it.
+// pgx.ErrNoRows when there is no such member. Call it inside a transaction that has locked
+// the clan row, so the answer stays true until the commit.
+func clanMember(ctx context.Context, tx pgx.Tx, gameID, clanID, by, value string) (MemberRole, error) {
+	var m MemberRole
+	err := tx.QueryRow(ctx,
+		`select m.player_id::text, p.display_name, m.role, c.owner_id = m.player_id
+		 from clan_members m
+		 join players p on p.id = m.player_id and p.game_id = m.game_id
+		 join clans c   on c.id = m.clan_id
+		 where m.clan_id = $1 and m.game_id = $2 and `+by,
+		clanID, gameID, value).Scan(&m.Player.ID, &m.Player.DisplayName, &m.RoleID, &m.IsOwner)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "22P02" { // the player ID is not a UUID
+		return MemberRole{}, pgx.ErrNoRows
+	}
+	return m, err
+}
+
+// lockClanAndMembers locks clan clanID of gameID and reads the acting member (by their
+// game's player ID) and the target member (by social's player ID). Shared by kick and role
+// changes, which check the same things in the same order:
+// ErrClanNotFound, ErrNotAllowed (the actor is not in the clan), errSelf (the same player),
+// ErrMemberNotFound.
+func lockClanAndMembers(ctx context.Context, tx pgx.Tx, gameID, clanID, actorExternalID, playerID string) (ClanRef, MemberRole, MemberRole, error) {
+	var clan ClanRef
+	err := tx.QueryRow(ctx,
+		`select id::text, name from clans where id = $1 and game_id = $2 for update`,
+		clanID, gameID).Scan(&clan.ID, &clan.Name)
+	if err != nil {
+		return ClanRef{}, MemberRole{}, MemberRole{}, leaveClanError(err)
+	}
+	actor, err := clanMember(ctx, tx, gameID, clanID, memberByExternalID, actorExternalID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ClanRef{}, MemberRole{}, MemberRole{}, ErrNotAllowed
+	}
+	if err != nil {
+		return ClanRef{}, MemberRole{}, MemberRole{}, fmt.Errorf("find the acting member: %w", err)
+	}
+	if strings.EqualFold(playerID, actor.Player.ID) {
+		return ClanRef{}, MemberRole{}, MemberRole{}, errSelf
+	}
+	target, err := clanMember(ctx, tx, gameID, clanID, memberByPlayerID, playerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ClanRef{}, MemberRole{}, MemberRole{}, ErrMemberNotFound
+	}
+	if err != nil {
+		return ClanRef{}, MemberRole{}, MemberRole{}, fmt.Errorf("find the member: %w", err)
+	}
+	return clan, actor, target, nil
+}
+
+// ownerRole is the role stored for the clan's owner. Who owns the clan is clans.owner_id;
+// the owner always has the last role of the game's config, whatever its id.
+const ownerRole = "owner"
+
+// errSelf is the caller naming themselves; each action turns it into its own error.
+var errSelf = errors.New("the caller named themselves")
+
+// ClanRef is a clan as events name it.
+type ClanRef struct {
+	ID   string
+	Name string
+}
+
+// KickMember removes player playerID from clan clanID; the player (gameID, actorExternalID)
+// does it, and allowed decides, by the clan roles, whether they may (see package roles). It
+// runs in one transaction with the clan row locked, like join and leave, so a kick and a
+// leave, a join or a role change at the same moment cannot get the clan out of step. Nobody
+// can kick the owner (no role is above the owner's), so the owner never changes and the clan
+// is never disbanded by a kick.
 //
 // Errors, checked in this order: ErrClanNotFound (also another game's clan or an ID that is
-// not a UUID), ErrNotClanOwner, ErrKickSelf, ErrMemberNotFound (also an ID that is not a UUID).
-func (r *Repository) KickMember(ctx context.Context, gameID, clanID, ownerExternalID, playerID string) (LeaveResult, error) {
+// not a UUID), ErrNotAllowed (the caller is not in the clan), ErrKickSelf, ErrMemberNotFound
+// (also an ID that is not a UUID), ErrNotAllowed (the roles say no).
+func (r *Repository) KickMember(ctx context.Context, gameID, clanID, actorExternalID, playerID string,
+	allowed func(actor, target MemberRole) bool) (LeaveResult, error) {
 	if r.pool == nil {
 		return LeaveResult{}, ErrNoDatabase
 	}
@@ -496,51 +582,85 @@ func (r *Repository) KickMember(ctx context.Context, gameID, clanID, ownerExtern
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 1. Lock the clan, as LeaveClan and JoinClan do.
-	var res LeaveResult
-	err = tx.QueryRow(ctx,
-		`select id::text, name from clans where id = $1 and game_id = $2 for update`,
-		clanID, gameID).Scan(&res.ClanID, &res.ClanName)
-	if err != nil {
-		return LeaveResult{}, leaveClanError(err)
+	clan, actor, target, err := lockClanAndMembers(ctx, tx, gameID, clanID, actorExternalID, playerID)
+	if errors.Is(err, errSelf) {
+		return LeaveResult{}, ErrKickSelf
 	}
-
-	// 2. The caller must be this clan's owner.
-	owner, err := clanOwner(ctx, tx, gameID, clanID, ownerExternalID)
 	if err != nil {
 		return LeaveResult{}, err
 	}
-	if strings.EqualFold(playerID, owner.ID) {
-		return LeaveResult{}, ErrKickSelf
+	if !allowed(actor, target) {
+		return LeaveResult{}, ErrNotAllowed
 	}
 
-	// 3. Delete the membership. No row means the player is not in this clan.
-	err = tx.QueryRow(ctx,
-		`delete from clan_members m
-		 using players p
-		 where m.clan_id = $1 and m.game_id = $2 and m.player_id = $3
-		   and p.id = m.player_id and p.game_id = m.game_id
-		 returning m.player_id::text, p.display_name`,
-		clanID, gameID, playerID).Scan(&res.Player.ID, &res.Player.DisplayName)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.Is(err, pgx.ErrNoRows) || (errors.As(err, &pgErr) && pgErr.Code == "22P02") {
-			return LeaveResult{}, ErrMemberNotFound
-		}
+	if _, err := tx.Exec(ctx,
+		`delete from clan_members where clan_id = $1 and player_id = $2`, clanID, target.Player.ID); err != nil {
 		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
 	}
-
-	// 4. Count down. The owner is still a member, so the clan is never empty here.
+	// Count down. The owner is still a member, so the clan is never empty here.
 	if _, err := tx.Exec(ctx,
 		`update clans set member_count = member_count - 1 where id = $1`, clanID); err != nil {
 		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
 	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
 	}
-	res.KickedBy = &owner
-	return res, nil
+	kickedBy := actor.Player
+	return LeaveResult{ClanID: clan.ID, ClanName: clan.Name, Player: target.Player, KickedBy: &kickedBy}, nil
+}
+
+// RoleChange is what ChangeRole did.
+type RoleChange struct {
+	Clan           ClanRef
+	Player         ClanPlayer // whose role changed
+	PreviousRoleID string     // as it was stored
+	NewRoleID      string
+	ChangedBy      ClanPlayer
+}
+
+// ChangeRole gives player playerID of clan clanID a new role; the player (gameID,
+// actorExternalID) does it. decide gets both members as they are now (inside the lock) and
+// returns the new role id, or an error that ChangeRole returns as it is (see package roles:
+// promote and demote). One transaction with the clan row locked, like join, leave and kick.
+//
+// Errors: ErrClanNotFound, ErrNotAllowed (the caller is not in the clan, or names
+// themselves), ErrMemberNotFound, or decide's error.
+func (r *Repository) ChangeRole(ctx context.Context, gameID, clanID, actorExternalID, playerID string,
+	decide func(actor, target MemberRole) (string, error)) (RoleChange, error) {
+	if r.pool == nil {
+		return RoleChange{}, ErrNoDatabase
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return RoleChange{}, fmt.Errorf("change role: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	clan, actor, target, err := lockClanAndMembers(ctx, tx, gameID, clanID, actorExternalID, playerID)
+	if errors.Is(err, errSelf) {
+		return RoleChange{}, ErrNotAllowed
+	}
+	if err != nil {
+		return RoleChange{}, err
+	}
+	newRole, err := decide(actor, target)
+	if err != nil {
+		return RoleChange{}, err
+	}
+	// "owner" marks the owner's row; nobody else may get it, even if a game names a role so.
+	if newRole == ownerRole || target.IsOwner {
+		return RoleChange{}, ErrNotAllowed
+	}
+	if _, err := tx.Exec(ctx,
+		`update clan_members set role = $3 where clan_id = $1 and player_id = $2`,
+		clanID, target.Player.ID, newRole); err != nil {
+		return RoleChange{}, fmt.Errorf("change role: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return RoleChange{}, fmt.Errorf("change role: %w", err)
+	}
+	return RoleChange{Clan: clan, Player: target.Player, PreviousRoleID: target.RoleID, NewRoleID: newRole,
+		ChangedBy: actor.Player}, nil
 }
 
 // clanOwner returns the owner of clan clanID if that is the player (gameID, externalID), and
@@ -552,7 +672,8 @@ func clanOwner(ctx context.Context, tx pgx.Tx, gameID, clanID, externalID string
 		`select m.player_id::text, p.display_name
 		 from clan_members m
 		 join players p on p.id = m.player_id and p.game_id = m.game_id
-		 where m.clan_id = $1 and m.game_id = $2 and p.external_id = $3 and m.role = 'owner'`,
+		 join clans c   on c.id = m.clan_id and c.owner_id = m.player_id
+		 where m.clan_id = $1 and m.game_id = $2 and p.external_id = $3`,
 		clanID, gameID, externalID).Scan(&owner.ID, &owner.DisplayName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ClanPlayer{}, ErrNotClanOwner

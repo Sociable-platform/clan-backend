@@ -250,7 +250,8 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `clan.created` | social, `POST /api/v1/clans` (201) | `{ "clan": { "id", "name" }, "player": { "id", "name" } }`; `player` is the owner |
 | `clan.member_joined` | social, `POST /api/v1/clans/{clanID}/join` (200) | `{ "clan", "player" }` |
 | `clan.member_left` | social, `POST /api/v1/clans/{clanID}/leave` (204) while others remain | `{ "clan", "player", "reason": "left", "kicked_by": null, "new_owner" }`; `new_owner` is the member who took over when the owner left, otherwise `null` |
-| `clan.member_left` (kick) | social, `DELETE /api/v1/clans/{clanID}/members/{playerID}` (204) | the same fields with `"reason": "kicked"`, `kicked_by` = the owner `{ "id", "name" }`, `new_owner` always `null` |
+| `clan.member_left` (kick) | social, `DELETE /api/v1/clans/{clanID}/members/{playerID}` (204) | the same fields with `"reason": "kicked"`, `kicked_by` = the member who kicked `{ "id", "name" }`, `new_owner` always `null` |
+| `clan.member_role_changed` | social, `POST /api/v1/clans/{clanID}/members/{playerID}/promote` or `/demote` (200) | `{ "clan", "player", "role", "previous_role", "changed_by" }`; `role` and `previous_role` are role ids of the game's `clan.roles` |
 | `clan.disbanded` | social, the last member leaves (204) | `{ "clan" }`; only this event, no `clan.member_left` |
 | `clan.renamed` | social, `PATCH /api/v1/clans/{clanID}` (200) when the name changed | `{ "clan": { "id", "name" }, "previous_name" }`; `clan.name` is the new name. Sending the same name publishes nothing |
 | `player.blocked`, `player.unblocked` | social (block task) | `{ "blocker_id", "blocked_id" }` |
@@ -442,8 +443,10 @@ always come from the token, never from the URL or the body.
 | PATCH | `/api/v1/clans/{clanID}` | body `{ "name": "Grey Wolves" }`. 200 with the clan. Only the **owner**; the name is checked like on create. The same name changes nothing (200, no event); a change of upper/lower case only is a rename. 400 `invalid_json` / `invalid_clan_name`; 403 `not_clan_owner`; 404 `clan_not_found`; 409 `clan_name_taken`. Publishes `clan.renamed` |
 | POST | `/api/v1/clans/{clanID}/join` | no body. 200 with the clan and its new `memberCount`, the caller joins as a member. 404 `clan_not_found` (also for another game's clan); 409 `already_in_clan` / `clan_full`: the clan has as many members as the game allows (`clan.maxMembers` from the published config, 10 before the first publish). Lowering the limit removes nobody; a clan over it just takes no one new |
 | POST | `/api/v1/clans/{clanID}/leave` | no body. 204: the caller left the clan and can join another one. A normal member is just removed. If the **owner** leaves and others remain, the member who joined first becomes the owner; if the owner is the only member, the clan is deleted. 404 `clan_not_found` (also for another game's clan); 409 `not_in_clan` (the caller is not a member of this clan) |
-| GET | `/api/v1/clans/{clanID}/members` | 200 `{ members: [...] }` with `playerId`, `displayName`, `role`, `joinedAt`; owner first, then by join time. 404 `clan_not_found` (also for another game's clan) |
-| DELETE | `/api/v1/clans/{clanID}/members/{playerID}` | no body. 204: the **owner** removed that member (`playerId` from the member list); the player can join a clan again at once. 403 `not_clan_owner`; 400 `cannot_kick_self` (the owner leaves instead); 404 `clan_not_found` / `member_not_found`. Publishes `clan.member_left` with `reason` `kicked` |
+| GET | `/api/v1/clans/{clanID}/members` | 200 `{ members: [...] }` with `playerId`, `displayName`, `role`, `joinedAt`; owner first, then by join time. `role` is a role id of the game's `clan.roles` (see "Clan roles" below). 404 `clan_not_found` (also for another game's clan) |
+| DELETE | `/api/v1/clans/{clanID}/members/{playerID}` | no body. 204: the caller removed that member (`playerId` from the member list): their role needs `canKick` and the member must have a lower role (the owner may remove anyone). The player can join a clan again at once. 403 `not_allowed`; 400 `cannot_kick_self` (leave instead); 404 `clan_not_found` / `member_not_found`. Publishes `clan.member_left` with `reason` `kicked` |
+| POST | `/api/v1/clans/{clanID}/members/{playerID}/promote` | no body. 200 `{ playerId, displayName, role }`: the member is one role up. The caller's role needs `canPromote`, the member must be lower, and the new role stays below the caller's own (nobody becomes owner). 403 `not_allowed`; 404 `clan_not_found` / `member_not_found`. Publishes `clan.member_role_changed` |
+| POST | `/api/v1/clans/{clanID}/members/{playerID}/demote` | no body. 200 `{ playerId, displayName, role }`: one role down, same rules. 409 `already_lowest_role`; 403 `not_allowed`; 404 `clan_not_found` / `member_not_found`. Publishes `clan.member_role_changed` |
 | GET | `/api/v1/friends` | 200 `{ friends: [...] }` with `id`, `displayName`, `since`, sorted by name |
 | GET | `/api/v1/friends/requests` | 200 `{ incoming: [...], outgoing: [...] }`, newest first; each has `id`, `player` (the other player: `id`, `displayName`) and `createdAt` |
 | POST | `/api/v1/friends/requests` | body `{ "playerId": "<social player ID>" }`. 201 with the new request. If that player had already asked the caller, it is accepted instead: 200 with the new friend. 400 `invalid_json` / `invalid_player_id` / `cannot_friend_yourself`; 404 `player_not_found` (also for another game's player); 409 `already_friends` / `friend_request_exists`. Publishes `friend.request_sent` or `friend.accepted` |
@@ -451,6 +454,17 @@ always come from the token, never from the URL or the body.
 | DELETE | `/api/v1/friends/requests/{requestID}` | 204: the caller's own request is cancelled. 403 `not_request_sender` (the caller received it; decline instead); 404 `friend_request_not_found`. Publishes `friend.request_cancelled` |
 | DELETE | `/api/v1/friends/{playerID}` | 204: the friendship ends for both players; either may send a new request afterwards. 404 `not_friends` (also for another game's player). Publishes `friend.removed` |
 | POST | `/api/v1/friends/requests/{requestID}/accept` | no body. 200 with the new friend. 403 `not_request_receiver` (the caller sent it); 404 `friend_request_not_found`. Publishes `friend.accepted` |
+
+**Clan roles.** Each game sets its clan roles in Studio (`clan.roles` in its published config, lowest power first,
+2 to 12). Social reads them with the clan size (`SOCIAL_PLATFORM_URL`, cached `SOCIAL_CONFIG_CACHE_TTL`) and decides every
+kick, promote and demote by them, inside the clan's row lock (package `internal/roles`):
+
+- A new member gets the first role. The owner (`clans.owner_id`) always has the last role; their row stores `owner`.
+- A member acts only on someone with a lower role, never on an equal, a higher one or themselves. Kick needs `canKick`;
+  promote and demote need `canPromote`. A promote stays below the caller's own role, so nobody becomes owner.
+- A role id the developer removed or renamed reads as the first role: nobody is removed. Before a game publishes
+  roles there are two, `member` and `owner`, and only the owner may kick (as before roles).
+- `clan_members.role` stores the role id; the database only checks its form (migration `000005`).
 
 **Internal endpoints** are for other services, not for the SDK. They need `X-Internal-Token: <SOCIAL_INTERNAL_TOKEN>`
 (401 `invalid_internal_token` otherwise; a player token is not accepted). They are the only routes that

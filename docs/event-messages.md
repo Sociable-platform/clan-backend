@@ -232,6 +232,33 @@
 }
 ```
 
+## clan.member_role_changed
+
+```json
+{
+  "event_id": "5d1e9c42-8a7b-4f36-9c21-3e4f5a6b7c8d",
+  "type": "clan.member_role_changed",
+  "occurred_at": "2026-11-11T18:20:05.114Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "clan": {
+      "id": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "name": "Wolves"
+    },
+    "player": {
+      "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "name": "Bob"
+    },
+    "role": "elder",
+    "previous_role": "member",
+    "changed_by": {
+      "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+      "name": "Alice"
+    }
+  }
+}
+```
+
 ## player.blocked
 
 ```json

@@ -601,10 +601,12 @@ paths:
     delete:
       tags: [clans]
       operationId: kickClanMember
-      summary: Remove a member from the clan (owner only)
+      summary: Remove a member from the clan (by clan role)
       description: |
-        The clan's owner removes a member. The owner cannot remove themselves (they leave
-        instead), so the owner never changes and the clan is never deleted by this call.
+        A member removes someone of a lower role, if their role has `canKick` in the game's
+        `clan.roles` (the owner may remove anyone). Without published roles only the owner can.
+        Nobody removes themselves (they leave instead), and nobody is above the owner, so the
+        owner never changes and the clan is never deleted by this call.
         The removed player is free at once: they can join this or another clan again (there
         is no ban). The clan must belong to the caller's game; a clan of another game
         answers 404 like a clan that does not exist.
@@ -634,7 +636,7 @@ paths:
         "204":
           description: The member was removed. No body.
         "400":
-          description: The owner named themselves (cannot_kick_self).
+          description: The caller named themselves (cannot_kick_self); they leave instead.
           content:
             application/json:
               schema:
@@ -647,16 +649,17 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: |
-            The caller is not this clan's owner (not_clan_owner), or the request came from a
-            website that is not in the allowed origins (origin_not_allowed).
+            The caller's clan role does not allow it, or the caller is not in the clan
+            (not_allowed), or the request came from a website that is not in the allowed
+            origins (origin_not_allowed).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
               example:
                 error:
-                  code: not_clan_owner
-                  message: Only the clan owner can remove members
+                  code: not_allowed
+                  message: Your clan role does not allow this
         "404":
           description: |
             No such clan in the caller's game (clan_not_found), or the player is not a member
@@ -669,6 +672,150 @@ paths:
                 error:
                   code: member_not_found
                   message: This player is not a member of the clan
+  /api/v1/clans/{clanID}/members/{playerID}/promote:
+    post:
+      tags: [clans]
+      operationId: promoteClanMember
+      summary: Move a member one role up
+      description: |
+        One step up the game's `clan.roles`. The caller's role needs `canPromote` (the owner
+        always has it), the member must have a lower role than the caller, and the new role
+        must still be below the caller's own: nobody can make someone their equal, and nobody
+        is promoted to owner. Without published roles there is nothing between member and
+        owner, so this answers 403.
+
+        Decided in one transaction with the clan row locked, like join, leave and kick. Social
+        then publishes `clan.member_role_changed` (docs/event-messages.md). No request body.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: playerID
+          in: path
+          required: true
+          description: The member (`playerId` from the clan's member list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The member's new role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberRole"
+              example:
+                playerId: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                displayName: Leyla
+                role: elder
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller's clan role does not allow this step, the caller names themselves or is
+            not in the clan (not_allowed), or the request came from a website that is not in
+            the allowed origins (origin_not_allowed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_allowed
+                  message: Your clan role does not allow this
+        "404":
+          description: |
+            No such clan in the caller's game (clan_not_found), or the player is not a member
+            of this clan (member_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: member_not_found
+                  message: This player is not a member of the clan
+  /api/v1/clans/{clanID}/members/{playerID}/demote:
+    post:
+      tags: [clans]
+      operationId: demoteClanMember
+      summary: Move a member one role down
+      description: |
+        One step down the game's `clan.roles`. The caller's role needs `canPromote` (the owner
+        always has it) and the member must have a lower role than the caller. A member at the
+        first role answers 409 already_lowest_role.
+
+        Decided in one transaction with the clan row locked, like join, leave and kick. Social
+        then publishes `clan.member_role_changed` (docs/event-messages.md). No request body.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: playerID
+          in: path
+          required: true
+          description: The member (`playerId` from the clan's member list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The member's new role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberRole"
+              example:
+                playerId: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                displayName: Leyla
+                role: member
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller's clan role does not allow this step, the caller names themselves or is
+            not in the clan (not_allowed), or the request came from a website that is not in
+            the allowed origins (origin_not_allowed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_allowed
+                  message: Your clan role does not allow this
+        "404":
+          description: |
+            No such clan in the caller's game (clan_not_found), or the player is not a member
+            of this clan (member_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: member_not_found
+                  message: This player is not a member of the clan
+        "409":
+          description: The member already has the first (lowest) role (already_lowest_role).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: already_lowest_role
+                  message: This member already has the lowest role
   /api/v1/friends:
     get:
       tags: [friends]
@@ -1149,8 +1296,28 @@ components:
         clan:
           $ref: "#/components/schemas/Clan"
         role:
+          $ref: "#/components/schemas/RoleId"
+    RoleId:
+      type: string
+      pattern: "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+      maxLength: 24
+      description: |
+        A role id of the game's `clan.roles` (config v1), such as `member`, `elder`,
+        `co-leader`. The SDK shows the role's name from the config. The owner always has the
+        last role; a role the developer removed reads as the first one. Before the game
+        publishes roles there are two: `member` and `owner`.
+      example: co-leader
+    MemberRole:
+      type: object
+      required: [playerId, displayName, role]
+      properties:
+        playerId:
           type: string
-          enum: [owner, member]
+          format: uuid
+        displayName:
+          type: string
+        role:
+          $ref: "#/components/schemas/RoleId"
     Member:
       type: object
       required: [playerId, displayName, role, joinedAt]
@@ -1162,8 +1329,7 @@ components:
         displayName:
           type: string
         role:
-          type: string
-          enum: [owner, member]
+          $ref: "#/components/schemas/RoleId"
         joinedAt:
           type: string
           format: date-time

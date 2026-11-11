@@ -60,7 +60,7 @@ What each hop guarantees:
 | RabbitMQ publisher (confirms, lazy connect, reconnect) | `pkg/events/rabbitmq.go` |
 | Where Social publishes friend events | `services/social/internal/service/friends.go` |
 | Where Social publishes `player.renamed` | `services/social/internal/service/players.go` (`EnsurePlayer`) |
-| Where Social publishes clan events | `services/social/internal/service/clans.go` (leave and kick both go through `publishLeave`; `clan.renamed` from `RenameClan`) |
+| Where Social publishes clan events | `services/social/internal/service/clans.go` (leave and kick both go through `publishLeave`; `clan.renamed` from `RenameClan`); `clan.member_role_changed` in `services/social/internal/service/roles.go` |
 | Where Platform publishes `config.published` | `services/platform/internal/service/widget.go` (`addWidgetVersion`), wired in `services/platform/cmd/main.go` |
 | Social wiring (`SOCIAL_RABBITMQ_URL`) | `services/social/cmd/main.go` |
 | Exchange, queue and bindings | `deploy/rabbitmq/definitions.json`, applied by the `rabbitmq-setup` job in `docker-compose.yml` |
@@ -70,7 +70,7 @@ What each hop guarantees:
 | Realtime wiring (`REALTIME_RABBITMQ_URL`, shared hub) | `services/realtime/cmd/main.go` |
 | What the player's browser receives | `openapi/realtime-ws.md` |
 | Every message, without explanation (events, then the clan chat frames) | `docs/event-messages.md` |
-| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile`, and in `clan_events_test.go`: `TestClanEventsHaveTheFieldsOfTheEventMessagesFile`, and in `player_events_test.go`: `TestPlayerRenamedHasTheFieldsOfTheEventMessagesFile`. Platform, in `services/platform/internal/service/config_events_test.go`: `TestConfigPublishedHasTheFieldsOfTheEventMessagesFile` |
+| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile`, and in `clan_events_test.go`: `TestClanEventsHaveTheFieldsOfTheEventMessagesFile`, in `member_roles_test.go`: `TestClanMemberRoleChangedHasTheFieldsOfTheEventMessagesFile`, and in `player_events_test.go`: `TestPlayerRenamedHasTheFieldsOfTheEventMessagesFile`. Platform, in `services/platform/internal/service/config_events_test.go`: `TestConfigPublishedHasTheFieldsOfTheEventMessagesFile` |
 
 Realtime decodes the same `events.Event` struct that Social encodes, so a renamed envelope field breaks both sides at
 compile time. The `data` fields are plain maps and are **not** checked by the compiler: that is what the two tests above are for.
@@ -376,6 +376,7 @@ handler for (it logs them at debug level), so they never block the queue. The fu
 | `clan.member_left` | `clan`, `player`, `reason` (`left` or `kicked`), `kicked_by` (player or `null`), `new_owner` (player or `null`) | clan chat rooms (TEAM-147) |
 | `clan.renamed` | `clan` (the new name), `previous_name` | clan chat rooms (TEAM-147) |
 | `clan.disbanded` | `clan` (only this event is published when the last member leaves) | clan chat rooms (TEAM-147) |
+| `clan.member_role_changed` | `clan`, `player`, `role`, `previous_role` (role ids of the game's `clan.roles`), `changed_by` | not handled yet: a member list frame, if the SDK needs roles live (published by Social since TEAM-169) |
 | `player.blocked` | `blocker_id`, `blocked_id` | Realtime stores the block in its own `blocks` table (idempotent); nothing is sent to anybody (TEAM-150). Social does not publish it yet. |
 | `player.unblocked` | `blocker_id`, `blocked_id` | Realtime deletes the block (idempotent); nothing is sent (TEAM-150). Social does not publish it yet. |
 

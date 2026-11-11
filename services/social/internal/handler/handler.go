@@ -23,6 +23,8 @@ type Service interface {
 	JoinClan(ctx context.Context, gameID, externalID, displayName, clanID string) (service.Clan, error)
 	LeaveClan(ctx context.Context, gameID, externalID, clanID string) error
 	KickMember(ctx context.Context, gameID, externalID, clanID, playerID string) error
+	PromoteMember(ctx context.Context, gameID, externalID, clanID, playerID string) (service.MemberRole, error)
+	DemoteMember(ctx context.Context, gameID, externalID, clanID, playerID string) (service.MemberRole, error)
 	RenameClan(ctx context.Context, gameID, externalID, clanID, name string) (service.Clan, error)
 	MyClan(ctx context.Context, gameID, externalID string) (service.PlayerClan, error)
 	ListMembers(ctx context.Context, gameID, clanID string) ([]service.Member, error)
@@ -92,6 +94,8 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPost, "/api/v1/clans/{clanID}/leave", h.leaveClan},
 		{http.MethodGet, "/api/v1/clans/{clanID}/members", h.listMembers},
 		{http.MethodDelete, "/api/v1/clans/{clanID}/members/{playerID}", h.kickMember},
+		{http.MethodPost, "/api/v1/clans/{clanID}/members/{playerID}/promote", h.promoteMember},
+		{http.MethodPost, "/api/v1/clans/{clanID}/members/{playerID}/demote", h.demoteMember},
 		{http.MethodGet, "/api/v1/friends", h.listFriends},
 		{http.MethodGet, "/api/v1/friends/requests", h.listFriendRequests},
 		{http.MethodPost, "/api/v1/friends/requests", h.sendFriendRequest},

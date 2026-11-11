@@ -18,9 +18,12 @@ type Store interface {
 	UpsertPlayer(ctx context.Context, gameID, externalID, displayName string) (repository.Player, error)
 	ListClans(ctx context.Context, gameID, query string, opts repository.ListClansOptions) ([]repository.Clan, error)
 	CreateClan(ctx context.Context, gameID, ownerID, name string) (repository.Clan, error)
-	JoinClan(ctx context.Context, gameID, clanID, playerID string, maxMembers int) (repository.Clan, error)
+	JoinClan(ctx context.Context, gameID, clanID, playerID string, maxMembers int, roleID string) (repository.Clan, error)
 	LeaveClan(ctx context.Context, gameID, clanID, externalID string) (repository.LeaveResult, error)
-	KickMember(ctx context.Context, gameID, clanID, ownerExternalID, playerID string) (repository.LeaveResult, error)
+	KickMember(ctx context.Context, gameID, clanID, actorExternalID, playerID string,
+		allowed func(actor, target repository.MemberRole) bool) (repository.LeaveResult, error)
+	ChangeRole(ctx context.Context, gameID, clanID, actorExternalID, playerID string,
+		decide func(actor, target repository.MemberRole) (string, error)) (repository.RoleChange, error)
 	RenameClan(ctx context.Context, gameID, clanID, ownerExternalID, name string) (repository.RenameResult, error)
 	MyClan(ctx context.Context, gameID, externalID string) (repository.PlayerClan, error)
 	ListMembers(ctx context.Context, gameID, clanID string) ([]repository.Member, error)

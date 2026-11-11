@@ -328,6 +328,7 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 		"friend.removed":           "removed " + emma + " " + oliver + " by " + emma,
 		"player.renamed":           "renamed " + alice + "/Alice Brown",
 		"clan.created":             "", "clan.member_joined": "", "clan.member_left": "", "clan.renamed": "", "clan.disbanded": "",
+		"clan.member_role_changed": "", // published by social (TEAM-169); realtime does not handle it yet
 		"player.blocked": "blocked " + alice + " -> " + bob, "player.unblocked": "unblocked " + alice + " -> " + bob, "config.published": "",
 	}
 
