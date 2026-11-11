@@ -98,6 +98,7 @@ type Conn struct {
 	code      websocket.StatusCode // set once, before done is closed
 	reason    string
 	flush     bool // set once, before done is closed: write the queued frames before the close frame
+	dead      bool // set once, before done is closed: the client is gone, so the writer must not try a close handshake
 }
 
 // NewConn wraps an accepted WebSocket. Call Serve to run it.
@@ -139,6 +140,19 @@ func (c *Conn) Close(code websocket.StatusCode, reason string) {
 		c.code, c.reason = code, reason
 		close(c.done)
 	})
+}
+
+// closeDead is Close for a client that stopped answering. It also tells the writer not to send a
+// close frame and wait up to 5 s for a reply that will never come: the caller closes the socket at
+// once instead (CloseNow), but only when closeDead reports true. It reports false when another close
+// came first; that close then ends the connection politely.
+func (c *Conn) closeDead(code websocket.StatusCode, reason string) (won bool) {
+	c.closeOnce.Do(func() {
+		c.code, c.reason, c.dead = code, reason, true
+		won = true
+		close(c.done)
+	})
+	return won
 }
 
 // CloseAfterFlush is Close, but the writer first sends the frames that are already queued (for at most
@@ -213,6 +227,9 @@ func (c *Conn) writeLoop() {
 		case <-c.opts.Shutdown.Done():
 			c.Close(websocket.StatusGoingAway, "server shutting down")
 		case <-c.done:
+			if c.dead {
+				return // the client is gone; whoever marked it dead closes the socket
+			}
 			if c.flush {
 				c.flushQueue()
 			}
@@ -258,8 +275,12 @@ func (c *Conn) pingLoop() {
 			select {
 			case <-c.done: // closing anyway; the failed ping is a result of that
 			default:
-				c.Close(websocket.StatusGoingAway, "no pong")
-				_ = c.ws.CloseNow() // the client is gone, a close frame would not arrive
+				// The writer must not start the close handshake: it would wait 5 s for the reply, and
+				// CloseNow would only wait behind it. Either this close wins and the socket is closed at
+				// once, or another close came first and ends the connection politely.
+				if c.closeDead(websocket.StatusGoingAway, "no pong") {
+					_ = c.ws.CloseNow() // the client is gone, a close frame would not arrive
+				}
 			}
 			return
 		}
