@@ -84,7 +84,7 @@ type SearchPlayersInput struct {
 type PlayerSearchResult struct {
 	ID          string
 	DisplayName string
-	Relation    string // none, friend, request_sent or request_received
+	Relation    string // none, friend, request_sent, request_received or blocked
 	RequestID   string // the pending request's ID for request_sent and request_received, otherwise ""
 }
 

@@ -64,6 +64,8 @@ type SendFriendRequestResult struct {
 //   - 400 cannot_friend_yourself: playerID is the caller
 //   - 404 player_not_found: no such player in the caller's game (a player of another game,
 //     or an ID that is not a UUID, counts as not found)
+//   - 409 player_blocked: the caller blocked this player (unblock first). A player who
+//     blocked the caller answers 404 player_not_found, so the block stays hidden.
 //   - 409 already_friends: the two are friends already
 //   - 409 friend_request_exists: the caller already sent this player a request
 func (s *Service) SendFriendRequest(ctx context.Context, gameID, externalID, displayName, playerID string) (SendFriendRequestResult, error) {
@@ -87,6 +89,9 @@ func (s *Service) SendFriendRequest(ctx context.Context, gameID, externalID, dis
 			"You cannot send a friend request to yourself")
 	case errors.Is(err, repository.ErrPlayerNotFound):
 		return SendFriendRequestResult{}, errPlayerNotFound()
+	case errors.Is(err, repository.ErrPlayerBlocked):
+		return SendFriendRequestResult{}, httpx.NewError(http.StatusConflict, "player_blocked",
+			"You blocked this player; unblock them first")
 	case errors.Is(err, repository.ErrAlreadyFriends):
 		return SendFriendRequestResult{}, httpx.NewError(http.StatusConflict, "already_friends", "You are already friends")
 	case errors.Is(err, repository.ErrFriendRequestExists):

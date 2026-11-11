@@ -59,6 +59,7 @@ What each hop guarantees:
 | Envelope, `Publisher` interface, `Noop`, `Safe`, `Recorder` (test fake) | `pkg/events/events.go` |
 | RabbitMQ publisher (confirms, lazy connect, reconnect) | `pkg/events/rabbitmq.go` |
 | Where Social publishes friend events | `services/social/internal/service/friends.go` |
+| Where Social publishes `player.blocked` / `player.unblocked` | `services/social/internal/service/blocks.go` (`BlockPlayer` also publishes the friend events a block causes; `UnblockPlayer`) |
 | Where Social publishes `player.renamed` | `services/social/internal/service/players.go` (`EnsurePlayer`) |
 | Where Social publishes clan events | `services/social/internal/service/clans.go` (leave and kick both go through `publishLeave`; `clan.renamed` from `RenameClan`); `clan.member_role_changed` in `services/social/internal/service/roles.go` |
 | Where Platform publishes `config.published` | `services/platform/internal/service/widget.go` (`addWidgetVersion`), wired in `services/platform/cmd/main.go` |
@@ -70,7 +71,7 @@ What each hop guarantees:
 | Realtime wiring (`REALTIME_RABBITMQ_URL`, shared hub) | `services/realtime/cmd/main.go` |
 | What the player's browser receives | `openapi/realtime-ws.md` |
 | Every message, without explanation (events, then the clan chat frames) | `docs/event-messages.md` |
-| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile`, and in `clan_events_test.go`: `TestClanEventsHaveTheFieldsOfTheEventMessagesFile`, in `member_roles_test.go`: `TestClanMemberRoleChangedHasTheFieldsOfTheEventMessagesFile`, and in `player_events_test.go`: `TestPlayerRenamedHasTheFieldsOfTheEventMessagesFile`. Platform, in `services/platform/internal/service/config_events_test.go`: `TestConfigPublishedHasTheFieldsOfTheEventMessagesFile` |
+| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile`, and in `clan_events_test.go`: `TestClanEventsHaveTheFieldsOfTheEventMessagesFile`, in `member_roles_test.go`: `TestClanMemberRoleChangedHasTheFieldsOfTheEventMessagesFile`, in `player_events_test.go`: `TestPlayerRenamedHasTheFieldsOfTheEventMessagesFile`, and in `blocks_test.go`: `TestBlockEventsHaveTheFieldsOfTheEventMessagesFile`. Platform, in `services/platform/internal/service/config_events_test.go`: `TestConfigPublishedHasTheFieldsOfTheEventMessagesFile` |
 
 Realtime decodes the same `events.Event` struct that Social encodes, so a renamed envelope field breaks both sides at
 compile time. The `data` fields are plain maps and are **not** checked by the compiler: that is what the two tests above are for.
@@ -174,7 +175,8 @@ Rules for `data`:
 
 ### `friend.request_cancelled`
 
-- **Published by Social** when the sender takes the request back (`DELETE /api/v1/friends/requests/{id}`, 204). Published today.
+- **Published by Social** when the sender takes the request back (`DELETE /api/v1/friends/requests/{id}`, 204), or when the
+  sender blocks the receiver (`POST /api/v1/players/{playerID}/block`). Published today.
 - **`data`:** the same as `friend.request_sent`, but `request_id` is **required** (an event without it is dropped).
 
 ```json
@@ -202,7 +204,8 @@ Rules for `data`:
 
 ### `friend.request_declined`
 
-- **Published by Social** when the receiver declines (`POST /api/v1/friends/requests/{id}/decline`, 204). Published today.
+- **Published by Social** when the receiver declines (`POST /api/v1/friends/requests/{id}/decline`, 204), or when the
+  receiver blocks the sender (`POST /api/v1/players/{playerID}/block`). Published today.
 - **`data`:** the same as `friend.request_cancelled`.
 
 ```json
@@ -275,7 +278,8 @@ Cancel and decline are two event types because they have different recipients; a
 
 ### `friend.removed`
 
-- **Published by Social** after `DELETE /api/v1/friends/{playerID}` (either friend, 204). Published today (TEAM-133).
+- **Published by Social** after `DELETE /api/v1/friends/{playerID}` (either friend, 204), or when one friend blocks the other
+  (`POST /api/v1/players/{playerID}/block`; `removed_by` is the blocker). Published today (TEAM-133).
 
 | `data` field | Type | Meaning |
 |---|---|---|
@@ -377,8 +381,8 @@ handler for (it logs them at debug level), so they never block the queue. The fu
 | `clan.renamed` | `clan` (the new name), `previous_name` | clan chat rooms (TEAM-147) |
 | `clan.disbanded` | `clan` (only this event is published when the last member leaves) | clan chat rooms (TEAM-147) |
 | `clan.member_role_changed` | `clan`, `player`, `role`, `previous_role` (role ids of the game's `clan.roles`), `changed_by` | not handled yet: a member list frame, if the SDK needs roles live (published by Social since TEAM-169) |
-| `player.blocked` | `blocker_id`, `blocked_id` | Realtime stores the block in its own `blocks` table (idempotent); nothing is sent to anybody (TEAM-150). Social does not publish it yet. |
-| `player.unblocked` | `blocker_id`, `blocked_id` | Realtime deletes the block (idempotent); nothing is sent (TEAM-150). Social does not publish it yet. |
+| `player.blocked` | `blocker_id`, `blocked_id` | Realtime stores the block in its own `blocks` table (idempotent); nothing is sent to anybody (TEAM-150). Social publishes it after `POST /api/v1/players/{playerID}/block`, only for a new block (TEAM-154). |
+| `player.unblocked` | `blocker_id`, `blocked_id` | Realtime deletes the block (idempotent); nothing is sent (TEAM-150). Social publishes it after `DELETE /api/v1/players/{playerID}/block`, only when a block was removed (TEAM-154). |
 
 ## 7. What the player's browser receives
 
@@ -525,8 +529,7 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
-| Social does not publish `player.blocked` / `player.unblocked` (no block endpoints yet) | Nobody can be blocked in a real game yet; `blocked` is only reachable with an event put on the exchange by hand | Social block endpoints and events (own task). Realtime already handles them. |
-| A lost `player.blocked` (no outbox yet) | The blocked player can still message the blocker | Transactional outbox in Social, and a backfill of the blocks once Social stores them (the friendships backfill of TEAM-151 does not cover blocks). |
+| A lost `player.blocked` (no outbox yet) | The blocked player can still message the blocker | Transactional outbox in Social, and a backfill of the blocks: Social stores them now (TEAM-154) but has no internal endpoint that lists them, like `/internal/v1/friendships` (the friendships backfill of TEAM-151 does not cover blocks). |
 | Slow mode and the rate limit are in the memory of the one Realtime process | A restart gives everybody a fresh start | Fine while Realtime is one process. |
 | The profanity list is built in and the same for every game | A game can only switch the filter on or off; no spelling tricks are caught | A per-game word list in the config, if developers ask. |
 | Presence ignores the game's "hide online status" | The config v1 schema has no such field, so every game shows online status | Add the field to the schema (Platform and the dashboard), then Realtime reads it from its config cache (TEAM-149 did not build it). |

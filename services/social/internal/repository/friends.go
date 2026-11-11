@@ -30,6 +30,8 @@ var (
 	ErrNotFriendRequestSender = errors.New("only the sender can cancel a friend request")
 	// ErrNotFriends means the two players are not friends (or the other one does not exist in the game).
 	ErrNotFriends = errors.New("not friends")
+	// ErrPlayerBlocked means the sender blocked the receiver: they unblock first.
+	ErrPlayerBlocked = errors.New("you blocked this player")
 )
 
 // FriendPlayer is a player as the friends feature shows them.
@@ -80,8 +82,12 @@ const lockPairSQL = `select pg_advisory_xact_lock(hashtextextended(
 // (Request is set). Everything happens in one transaction, with the pair locked, so requests
 // sent by both players at the same moment end as one request or as friends, never as two rows.
 //
-// Errors: ErrPlayerNotFound (receiver missing, in another game, or not a UUID),
-// ErrFriendRequestToSelf, ErrAlreadyFriends, ErrFriendRequestExists.
+// A block stops it: if the receiver blocked the sender, the answer is ErrPlayerNotFound, as if
+// the receiver did not exist (the block stays hidden); if the sender blocked the receiver, it
+// is ErrPlayerBlocked (they unblock first).
+//
+// Errors: ErrPlayerNotFound (receiver missing, in another game, not a UUID, or has blocked the
+// sender), ErrFriendRequestToSelf, ErrPlayerBlocked, ErrAlreadyFriends, ErrFriendRequestExists.
 func (r *Repository) SendFriendRequest(ctx context.Context, gameID, senderID, receiverID string) (SendFriendRequestResult, error) {
 	if r.pool == nil {
 		return SendFriendRequestResult{}, ErrNoDatabase
@@ -115,7 +121,23 @@ func (r *Repository) SendFriendRequest(ctx context.Context, gameID, senderID, re
 		return SendFriendRequestResult{}, sendFriendRequestError(err)
 	}
 
-	// 3. Already friends? No table rule can check this across the two tables; the lock makes it safe.
+	// 3. A block either way? Checked under the lock, so a block at the same moment cannot slip by.
+	var receiverBlocked, senderBlocked bool
+	err = tx.QueryRow(ctx,
+		`select exists (select 1 from blocks where game_id = $1 and blocker_id = $3 and blocked_id = $2),
+		        exists (select 1 from blocks where game_id = $1 and blocker_id = $2 and blocked_id = $3)`,
+		gameID, senderID, receiverID).Scan(&receiverBlocked, &senderBlocked)
+	if err != nil {
+		return SendFriendRequestResult{}, sendFriendRequestError(err)
+	}
+	if receiverBlocked {
+		return SendFriendRequestResult{}, ErrPlayerNotFound
+	}
+	if senderBlocked {
+		return SendFriendRequestResult{}, ErrPlayerBlocked
+	}
+
+	// 4. Already friends? No table rule can check this across the two tables; the lock makes it safe.
 	var friends bool
 	err = tx.QueryRow(ctx,
 		`select exists (select 1 from friendships
@@ -128,7 +150,7 @@ func (r *Repository) SendFriendRequest(ctx context.Context, gameID, senderID, re
 		return SendFriendRequestResult{}, ErrAlreadyFriends
 	}
 
-	// 4. A pending request between the two, in either direction?
+	// 5. A pending request between the two, in either direction?
 	var existingID, existingSender string
 	err = tx.QueryRow(ctx,
 		`select id::text, sender_id::text from friend_requests
@@ -140,7 +162,7 @@ func (r *Repository) SendFriendRequest(ctx context.Context, gameID, senderID, re
 	case err == nil && existingSender == senderID:
 		return SendFriendRequestResult{}, ErrFriendRequestExists
 	case err == nil:
-		// 5a. The receiver asked first: accept their request.
+		// 6a. The receiver asked first: accept their request.
 		f, err := acceptLocked(ctx, tx, gameID, existingID, receiver, sender)
 		if err != nil {
 			return SendFriendRequestResult{}, sendFriendRequestError(err)
@@ -153,7 +175,7 @@ func (r *Repository) SendFriendRequest(ctx context.Context, gameID, senderID, re
 		return SendFriendRequestResult{}, sendFriendRequestError(err)
 	}
 
-	// 5b. No request yet: create one.
+	// 6b. No request yet: create one.
 	req := FriendRequest{Sender: sender, Receiver: receiver}
 	err = tx.QueryRow(ctx,
 		`insert into friend_requests (game_id, sender_id, receiver_id) values ($1, $2, $3)

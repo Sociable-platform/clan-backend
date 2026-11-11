@@ -215,6 +215,7 @@ func TestSendFriendRequestErrors(t *testing.T) {
 		{"unknown player", otherID, repository.ErrPlayerNotFound, http.StatusNotFound, "player_not_found", true},
 		{"already friends", otherID, repository.ErrAlreadyFriends, http.StatusConflict, "already_friends", true},
 		{"request exists", otherID, repository.ErrFriendRequestExists, http.StatusConflict, "friend_request_exists", true},
+		{"the caller blocked them", otherID, repository.ErrPlayerBlocked, http.StatusConflict, "player_blocked", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -75,9 +75,10 @@ paths:
         in the list, and neither is any other game's player. `%` and `_` are normal characters.
 
         Each player comes with `relation`, so the friends tab can show the right button:
-        `none` (Add), `request_sent` (Pending / Cancel), `request_received` (Accept / Decline) or
-        `friend`. For the two pending relations, `requestId` is the request to accept, decline
-        or cancel.
+        `none` (Add), `request_sent` (Pending / Cancel), `request_received` (Accept / Decline),
+        `friend`, or `blocked` (the caller blocked this player: Unblock). For the two pending
+        relations, `requestId` is the request to accept, decline or cancel. A player who blocked
+        the caller is not in the list.
 
         `q` is required, so the whole game can never be listed.
       security:
@@ -200,6 +201,111 @@ paths:
                 error:
                   code: not_in_clan
                   message: You are not in a clan
+  /api/v1/players/me/blocks:
+    get:
+      tags: [players]
+      operationId: listBlocks
+      summary: The players the caller blocked
+      description: |
+        Returns the players the caller blocked in their game, newest block first.
+        An empty list when the caller has blocked nobody.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The blocked players.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockList"
+              example:
+                blocks:
+                  - id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                    displayName: Aysel
+                    since: "2026-11-11T09:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/players/{playerID}/block:
+    parameters:
+      - name: playerID
+        in: path
+        required: true
+        description: The player's ID in the social service (from search, the friends list or the block list).
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [players]
+      operationId: blockPlayer
+      summary: Block a player
+      description: |
+        The caller blocks this player of the same game. Blocking is one-way: the other player is
+        not told and can still block, or not block, the caller.
+
+        In one transaction, with the pair locked, it also ends what a block does not allow:
+        - their friendship, which publishes `friend.removed` (`removed_by` is the caller);
+        - their pending friend request, in either direction: `friend.request_cancelled` when the
+          caller had sent it, `friend.request_declined` when the other player had.
+
+        Afterwards the blocked player's friend requests to the caller answer 404
+        `player_not_found`, and the caller no longer appears in their search. The caller's own
+        request to them answers 409 `player_blocked`; in the caller's search they have
+        `relation: blocked`.
+
+        Publishes `player.blocked`. Blocking a player who is already blocked changes nothing,
+        publishes nothing and still answers 204. No request body is needed.
+      security:
+        - playerToken: []
+      responses:
+        "204":
+          description: Blocked (or already blocked). No body.
+        "400":
+          description: The caller tried to block themselves (cannot_block_self).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: cannot_block_self
+                  message: You cannot block yourself
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/BlockPlayerNotFound"
+    delete:
+      tags: [players]
+      operationId: unblockPlayer
+      summary: Unblock a player
+      description: |
+        Removes the caller's block of this player. A friendship or request that the block ended
+        does not come back. Publishes `player.unblocked`. Unblocking a player who is not blocked
+        changes nothing, publishes nothing and still answers 204.
+      security:
+        - playerToken: []
+      responses:
+        "204":
+          description: Unblocked (or was not blocked). No body.
+        "400":
+          description: The caller named themselves (cannot_block_self).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: cannot_block_self
+                  message: You cannot block yourself
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/BlockPlayerNotFound"
   /api/v1/clans:
     get:
       tags: [clans]
@@ -947,7 +1053,11 @@ paths:
                   code: player_not_found
                   message: Player not found
         "409":
-          description: The two are friends already (already_friends), or the caller already sent this player a request (friend_request_exists).
+          description: |
+            The two are friends already (already_friends), the caller already sent this player a
+            request (friend_request_exists), or the caller blocked this player (player_blocked:
+            unblock first). A player who blocked the caller answers 404 player_not_found instead,
+            so the block stays hidden.
           content:
             application/json:
               schema:
@@ -1381,6 +1491,28 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Friend"
+    BlockedPlayer:
+      type: object
+      required: [id, displayName, since]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The blocked player's ID in the social service.
+        displayName:
+          type: string
+        since:
+          type: string
+          format: date-time
+          description: When the caller blocked this player.
+    BlockList:
+      type: object
+      required: [blocks]
+      properties:
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlockedPlayer"
     FriendshipSyncPlayer:
       type: object
       required: [id, displayName]
@@ -1463,7 +1595,7 @@ components:
           type: string
         relation:
           type: string
-          enum: [none, friend, request_sent, request_received]
+          enum: [none, friend, request_sent, request_received, blocked]
           description: How the player relates to the caller.
         requestId:
           type: string
@@ -1510,6 +1642,18 @@ components:
             error:
               code: token_expired
               message: The player token has expired; get a new one from the game
+    BlockPlayerNotFound:
+      description: |
+        No such player in the caller's game (player_not_found). Also for a player of another
+        game, or an ID that is not a UUID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: player_not_found
+              message: Player not found
     NotFound:
       description: No such route.
       content:
