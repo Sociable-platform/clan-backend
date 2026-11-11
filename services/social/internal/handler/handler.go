@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
-	"gitlab.com/clan-platform/clan-backend/services/social/internal/auth"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/service"
 )
 
@@ -60,7 +59,7 @@ func New(name string, svc Service, requirePlayer httpx.Middleware, log *slog.Log
 }
 
 // WithInternal sets the guard of the /internal routes, which other services call with a shared
-// secret instead of a player token (see package auth, RequireInternal). It returns h, so it can
+// secret instead of a player token (see package httpx, RequireInternal). It returns h, so it can
 // follow New. Without it those routes answer the same JSON 404 as an unknown route.
 func (h *Handler) WithInternal(requireInternal httpx.Middleware) *Handler {
 	h.requireInternal = requireInternal
@@ -171,7 +170,7 @@ func isInternalRoute(path string) bool {
 // 404 while none was set.
 func (h *Handler) internalGuard() httpx.Middleware {
 	if h.requireInternal == nil {
-		return auth.RequireInternal("")
+		return httpx.RequireInternal("")
 	}
 	return h.requireInternal
 }

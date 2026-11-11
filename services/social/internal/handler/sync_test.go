@@ -49,7 +49,7 @@ func serveSync(t *testing.T, svc Service, guard httpx.Middleware, target, token 
 	h.Register(mux)
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	if token != "" {
-		req.Header.Set(auth.InternalTokenHeader, token)
+		req.Header.Set(httpx.InternalTokenHeader, token)
 	}
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -67,7 +67,7 @@ func TestSyncFriendshipsHandler(t *testing.T) {
 		}},
 		NextCursor: "abc",
 	}}
-	rec := serveSync(t, svc, auth.RequireInternal(syncToken), syncPath+"?after=xyz&limit=50", syncToken)
+	rec := serveSync(t, svc, httpx.RequireInternal(syncToken), syncPath+"?after=xyz&limit=50", syncToken)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
@@ -83,7 +83,7 @@ func TestSyncFriendshipsHandler(t *testing.T) {
 }
 
 func TestSyncFriendshipsHandlerLastPageHasNoCursor(t *testing.T) {
-	rec := serveSync(t, &syncService{}, auth.RequireInternal(syncToken), syncPath, syncToken)
+	rec := serveSync(t, &syncService{}, httpx.RequireInternal(syncToken), syncPath, syncToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -94,12 +94,12 @@ func TestSyncFriendshipsHandlerLastPageHasNoCursor(t *testing.T) {
 
 func TestSyncFriendshipsHandlerPassesErrorsOn(t *testing.T) {
 	bad := httpx.NewError(http.StatusBadRequest, "invalid_cursor", "after is not a cursor from a previous page")
-	rec := serveSync(t, &syncService{fakeService: fakeService{err: bad}}, auth.RequireInternal(syncToken), syncPath+"?after=zz", syncToken)
+	rec := serveSync(t, &syncService{fakeService: fakeService{err: bad}}, httpx.RequireInternal(syncToken), syncPath+"?after=zz", syncToken)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"invalid_cursor"`) {
 		t.Errorf("got %d %s, want 400 invalid_cursor", rec.Code, rec.Body)
 	}
 
-	rec = serveSync(t, &syncService{fakeService: fakeService{err: errors.New("pq: password=secret")}}, auth.RequireInternal(syncToken), syncPath, syncToken)
+	rec = serveSync(t, &syncService{fakeService: fakeService{err: errors.New("pq: password=secret")}}, httpx.RequireInternal(syncToken), syncPath, syncToken)
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), `"internal_error"`) || strings.Contains(rec.Body.String(), "secret") {
 		t.Errorf("got %d %s, want a generic 500 internal_error", rec.Code, rec.Body)
 	}
@@ -112,9 +112,9 @@ func TestSyncFriendshipsNeedsTheInternalToken(t *testing.T) {
 		token string
 		want  int
 	}{
-		{"no token", auth.RequireInternal(syncToken), "", http.StatusUnauthorized},
-		{"wrong token", auth.RequireInternal(syncToken), "wrong", http.StatusUnauthorized},
-		{"right token", auth.RequireInternal(syncToken), syncToken, http.StatusOK},
+		{"no token", httpx.RequireInternal(syncToken), "", http.StatusUnauthorized},
+		{"wrong token", httpx.RequireInternal(syncToken), "wrong", http.StatusUnauthorized},
+		{"right token", httpx.RequireInternal(syncToken), syncToken, http.StatusOK},
 		{"not configured, no token", nil, "", http.StatusNotFound},
 		{"not configured, any token", nil, syncToken, http.StatusNotFound},
 	}
@@ -139,7 +139,7 @@ func TestSyncFriendshipsIsNotReachableWithAPlayerToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	New("test", &syncService{}, auth.RequirePlayer(pub, time.Now), testLog()).WithInternal(auth.RequireInternal(syncToken)).Register(mux)
+	New("test", &syncService{}, auth.RequirePlayer(pub, time.Now), testLog()).WithInternal(httpx.RequireInternal(syncToken)).Register(mux)
 
 	req := httptest.NewRequest(http.MethodGet, syncPath, nil)
 	req.Header.Set("Authorization", "Bearer some.player.token")
@@ -150,7 +150,7 @@ func TestSyncFriendshipsIsNotReachableWithAPlayerToken(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/friends", nil)
-	req.Header.Set(auth.InternalTokenHeader, syncToken)
+	req.Header.Set(httpx.InternalTokenHeader, syncToken)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
