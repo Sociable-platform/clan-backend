@@ -86,6 +86,7 @@ const (
 	RelationFriend          = "friend"           // already friends
 	RelationRequestSent     = "request_sent"     // the caller asked; waiting for the other player
 	RelationRequestReceived = "request_received" // the other player asked; the caller can accept
+	RelationBlocked         = "blocked"          // the caller blocked this player; they can unblock
 )
 
 // PlayerSearchResult is a player found by SearchPlayers, with how they relate to the caller.
@@ -101,15 +102,17 @@ type PlayerSearchResult struct {
 // is never in the list, and neither is any other game's player. strpos looks for the exact text,
 // so % and _ in the search are normal characters.
 //
-// Each result says whether the two are friends, have a pending request (and which way), or
-// neither. A pair has at most one request and is never friends and pending at the same time.
+// Each result says whether the caller blocked the player, the two are friends, have a pending
+// request (and which way), or neither. A pair has at most one request and is never friends and
+// pending at the same time; a block removes both. A player who blocked the caller is left out.
 func (r *Repository) SearchPlayers(ctx context.Context, gameID, playerID, query string, limit int) ([]PlayerSearchResult, error) {
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
 	rows, err := r.pool.Query(ctx,
 		`select p.id::text, p.display_name,
-		        case when f.game_id is not null then 'friend'
+		        case when mine.blocker_id is not null then 'blocked'
+		             when f.game_id is not null then 'friend'
 		             when fr.sender_id = $2::uuid then 'request_sent'
 		             when fr.receiver_id = $2::uuid then 'request_received'
 		             else 'none' end,
@@ -122,8 +125,13 @@ func (r *Repository) SearchPlayers(ctx context.Context, gameID, playerID, query 
 		        on fr.game_id = p.game_id
 		       and least(fr.sender_id, fr.receiver_id) = least(p.id, $2::uuid)
 		       and greatest(fr.sender_id, fr.receiver_id) = greatest(p.id, $2::uuid)
+		 left join blocks mine
+		        on mine.game_id = p.game_id and mine.blocker_id = $2::uuid and mine.blocked_id = p.id
 		 where p.game_id = $1 and p.id <> $2::uuid
 		   and strpos(lower(p.display_name), lower($3)) > 0
+		   -- a player who blocked the caller is not shown to them: the block stays hidden
+		   and not exists (select 1 from blocks theirs
+		                   where theirs.game_id = p.game_id and theirs.blocker_id = p.id and theirs.blocked_id = $2::uuid)
 		 order by lower(p.display_name), p.id
 		 limit $4`,
 		gameID, playerID, query, limit)

@@ -75,9 +75,10 @@ paths:
         in the list, and neither is any other game's player. `%` and `_` are normal characters.
 
         Each player comes with `relation`, so the friends tab can show the right button:
-        `none` (Add), `request_sent` (Pending / Cancel), `request_received` (Accept / Decline) or
-        `friend`. For the two pending relations, `requestId` is the request to accept, decline
-        or cancel.
+        `none` (Add), `request_sent` (Pending / Cancel), `request_received` (Accept / Decline),
+        `friend`, or `blocked` (the caller blocked this player: Unblock). For the two pending
+        relations, `requestId` is the request to accept, decline or cancel. A player who blocked
+        the caller is not in the list.
 
         `q` is required, so the whole game can never be listed.
       security:
@@ -947,7 +948,11 @@ paths:
                   code: player_not_found
                   message: Player not found
         "409":
-          description: The two are friends already (already_friends), or the caller already sent this player a request (friend_request_exists).
+          description: |
+            The two are friends already (already_friends), the caller already sent this player a
+            request (friend_request_exists), or the caller blocked this player (player_blocked:
+            unblock first). A player who blocked the caller answers 404 player_not_found instead,
+            so the block stays hidden.
           content:
             application/json:
               schema:
@@ -1463,7 +1468,7 @@ components:
           type: string
         relation:
           type: string
-          enum: [none, friend, request_sent, request_received]
+          enum: [none, friend, request_sent, request_received, blocked]
           description: How the player relates to the caller.
         requestId:
           type: string
