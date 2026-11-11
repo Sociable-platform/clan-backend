@@ -70,7 +70,7 @@ func TestKickMemberErrors(t *testing.T) {
 		code   string
 	}{
 		{repository.ErrClanNotFound, http.StatusNotFound, "clan_not_found"},
-		{repository.ErrNotAllowed, http.StatusForbidden, "not_clan_owner"},
+		{repository.ErrNotAllowed, http.StatusForbidden, "not_allowed"},
 		{repository.ErrKickSelf, http.StatusBadRequest, "cannot_kick_self"},
 		{repository.ErrMemberNotFound, http.StatusNotFound, "member_not_found"},
 	}

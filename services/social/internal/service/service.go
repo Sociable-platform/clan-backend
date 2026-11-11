@@ -22,6 +22,8 @@ type Store interface {
 	LeaveClan(ctx context.Context, gameID, clanID, externalID string) (repository.LeaveResult, error)
 	KickMember(ctx context.Context, gameID, clanID, actorExternalID, playerID string,
 		allowed func(actor, target repository.MemberRole) bool) (repository.LeaveResult, error)
+	ChangeRole(ctx context.Context, gameID, clanID, actorExternalID, playerID string,
+		decide func(actor, target repository.MemberRole) (string, error)) (repository.RoleChange, error)
 	RenameClan(ctx context.Context, gameID, clanID, ownerExternalID, name string) (repository.RenameResult, error)
 	MyClan(ctx context.Context, gameID, externalID string) (repository.PlayerClan, error)
 	ListMembers(ctx context.Context, gameID, clanID string) ([]repository.Member, error)

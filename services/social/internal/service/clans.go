@@ -176,7 +176,8 @@ func cleanClanName(name string) (string, error) {
 // uuidPattern matches a UUID such as 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69.
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// JoinClan adds the calling player to clan clanID of their game with role "member" and
+// JoinClan adds the calling player to clan clanID of their game with the first role of the
+// game's clan.roles (what a new member gets; "member" before the game publishes roles) and
 // returns the clan with its new member count. Every clan is open for now (no invite-only
 // clans yet). The player record is created first if this is the player's first request.
 //
@@ -195,8 +196,9 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 		return Clan{}, fmt.Errorf("join clan: %w", err)
 	}
 
-	limit := s.maxMembers(ctx, gameID)
-	row, err := s.store.JoinClan(ctx, gameID, strings.ToLower(clanID), player.ID, limit, "member")
+	rules, ladder := s.clanRules(ctx, gameID)
+	limit := rules.MaxMembers
+	row, err := s.store.JoinClan(ctx, gameID, strings.ToLower(clanID), player.ID, limit, ladder.NewMemberRole())
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return Clan{}, errClanNotFound()
@@ -240,14 +242,15 @@ func (s *Service) LeaveClan(ctx context.Context, gameID, externalID, clanID stri
 	return nil
 }
 
-// KickMember removes player playerID from clan clanID of the caller's game. Only the clan's
-// owner may do it, and not to themselves (they leave instead). The kicked player can join a
-// clan again at once; there is no ban.
+// KickMember removes player playerID from clan clanID of the caller's game. The game's clan
+// roles decide who may: a member whose role has canKick, on someone of a lower role (the
+// owner may kick anyone). Nobody kicks themselves (they leave instead). The kicked player
+// can join a clan again at once; there is no ban.
 //
 // Errors the client can act on:
 //   - 404 clan_not_found: no such clan in the caller's game
-//   - 403 not_clan_owner: the caller is not this clan's owner
-//   - 400 cannot_kick_self: the owner named themselves
+//   - 403 not_allowed: the caller's role does not allow it, or the caller is not in the clan
+//   - 400 cannot_kick_self: the caller named themselves
 //   - 404 member_not_found: the player is not a member of this clan
 func (s *Service) KickMember(ctx context.Context, gameID, externalID, clanID, playerID string) error {
 	if !uuidPattern.MatchString(clanID) {
@@ -256,13 +259,16 @@ func (s *Service) KickMember(ctx context.Context, gameID, externalID, clanID, pl
 	if !uuidPattern.MatchString(playerID) {
 		return errMemberNotFound()
 	}
+	_, ladder := s.clanRules(ctx, gameID)
 	res, err := s.store.KickMember(ctx, gameID, strings.ToLower(clanID), externalID, strings.ToLower(playerID),
-		func(actor, _ repository.MemberRole) bool { return actor.IsOwner }) // the roles come in the next step
+		func(actor, target repository.MemberRole) bool {
+			return ladder.CanKick(toRoleMember(actor), toRoleMember(target))
+		})
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return errClanNotFound()
 	case errors.Is(err, repository.ErrNotAllowed):
-		return httpx.NewError(http.StatusForbidden, "not_clan_owner", "Only the clan owner can remove members")
+		return errNotAllowed()
 	case errors.Is(err, repository.ErrKickSelf):
 		return httpx.NewError(http.StatusBadRequest, "cannot_kick_self", "You cannot remove yourself; leave the clan instead")
 	case errors.Is(err, repository.ErrMemberNotFound):
@@ -350,7 +356,7 @@ func errClanNotFound() error {
 // PlayerClan is the clan a player is in, and their role in it ("owner" or "member").
 type PlayerClan struct {
 	Clan Clan
-	Role string
+	Role string // a role id of the game's clan.roles; the owner has the last one
 }
 
 // MyClan returns the calling player's clan and role, or 404 not_in_clan.
@@ -364,9 +370,10 @@ func (s *Service) MyClan(ctx context.Context, gameID, externalID string) (Player
 		return PlayerClan{}, fmt.Errorf("my clan: %w", err)
 	}
 	c := row.Clan
+	rules, ladder := s.clanRules(ctx, gameID)
 	return PlayerClan{
-		Clan: toClan(c, s.maxMembers(ctx, gameID)),
-		Role: row.Role,
+		Clan: toClan(c, rules.MaxMembers),
+		Role: ladder.Of(storedRole(row.Role)).ID,
 	}, nil
 }
 
@@ -374,7 +381,7 @@ func (s *Service) MyClan(ctx context.Context, gameID, externalID string) (Player
 type Member struct {
 	PlayerID    string // social's own player ID
 	DisplayName string
-	Role        string // "owner" or "member"
+	Role        string // a role id of the game's clan.roles; the owner has the last one
 	JoinedAt    time.Time
 }
 
@@ -392,9 +399,11 @@ func (s *Service) ListMembers(ctx context.Context, gameID, clanID string) ([]Mem
 	if err != nil {
 		return nil, fmt.Errorf("list members: %w", err)
 	}
+	_, ladder := s.clanRules(ctx, gameID)
 	members := make([]Member, 0, len(rows))
 	for _, m := range rows {
-		members = append(members, Member{PlayerID: m.PlayerID, DisplayName: m.DisplayName, Role: m.Role, JoinedAt: m.JoinedAt})
+		role := ladder.Of(storedRole(m.Role)).ID
+		members = append(members, Member{PlayerID: m.PlayerID, DisplayName: m.DisplayName, Role: role, JoinedAt: m.JoinedAt})
 	}
 	return members, nil
 }

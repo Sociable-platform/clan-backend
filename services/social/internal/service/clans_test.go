@@ -38,6 +38,11 @@ func (m *memStore) RenameClan(context.Context, string, string, string, string) (
 	return repository.RenameResult{}, errors.New("memStore has no clans")
 }
 
+func (m *memStore) ChangeRole(context.Context, string, string, string, string,
+	func(repository.MemberRole, repository.MemberRole) (string, error)) (repository.RoleChange, error) {
+	return repository.RoleChange{}, errors.New("memStore has no clans")
+}
+
 func (m *memStore) MyClan(context.Context, string, string) (repository.PlayerClan, error) {
 	return repository.PlayerClan{}, repository.ErrNotInClan
 }
@@ -238,12 +243,13 @@ type joiningStore struct {
 	game    string
 	clan    string
 	player  string
-	limit   int // the maxMembers the service passed
+	limit   int    // the maxMembers the service passed
+	role    string // the role the new member got
 }
 
-func (j *joiningStore) JoinClan(_ context.Context, gameID, clanID, playerID string, maxMembers int, _ string) (repository.Clan, error) {
+func (j *joiningStore) JoinClan(_ context.Context, gameID, clanID, playerID string, maxMembers int, role string) (repository.Clan, error) {
 	j.joins++
-	j.game, j.clan, j.player, j.limit = gameID, clanID, playerID, maxMembers
+	j.game, j.clan, j.player, j.limit, j.role = gameID, clanID, playerID, maxMembers, role
 	if j.joinErr != nil {
 		return repository.Clan{}, j.joinErr
 	}
