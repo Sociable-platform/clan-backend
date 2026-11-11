@@ -3,6 +3,7 @@
 *.pem
 
 # Build output
+.cache/
 bin/
 *.exe
 *.test
