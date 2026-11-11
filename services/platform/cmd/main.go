@@ -27,6 +27,9 @@ import (
 
 const serviceName = "platform"
 
+// minInternalTokenLen keeps the shared secret of the /internal endpoints from being guessable.
+const minInternalTokenLen = 32
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, serviceName+":", err)
@@ -97,8 +100,19 @@ func run() error {
 	}
 	svc.WithPublisher(events.Safe(publisher, log))
 
+	// The /internal routes (for realtime) need a shared secret. Without one they answer 404.
+	internalToken := config.String("PLATFORM_INTERNAL_TOKEN", "")
+	switch {
+	case internalToken == "":
+		log.Warn("PLATFORM_INTERNAL_TOKEN is not set: the /internal endpoints are switched off")
+	case len(internalToken) < minInternalTokenLen:
+		return fmt.Errorf("PLATFORM_INTERNAL_TOKEN must be at least %d characters (try: openssl rand -hex 32)", minInternalTokenLen)
+	default:
+		log.Info("internal endpoints enabled") // never log the token itself
+	}
+
 	mux := http.NewServeMux()
-	handler.New(serviceName, svc, log).Register(mux)
+	handler.New(serviceName, svc, log).WithInternal(httpx.RequireInternal(internalToken)).Register(mux)
 
 	// Browser pages allowed to call this service (the developer dashboard).
 	origins := config.List("PLATFORM_CORS_ORIGINS", []string{"http://localhost:5173"})

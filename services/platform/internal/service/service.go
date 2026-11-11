@@ -25,6 +25,8 @@ type Store interface {
 	CreateGame(ctx context.Context, developerID, name, description string) (repository.Game, error)
 	GamesByDeveloper(ctx context.Context, developerID string) ([]repository.Game, error)
 	GameOfDeveloper(ctx context.Context, gameID, developerID string) (repository.Game, error)
+	GameByID(ctx context.Context, gameID string) (repository.Game, error)
+	SetAllowedOrigins(ctx context.Context, gameID, developerID string, origins []string) (repository.Game, error)
 	CreateAPIKey(ctx context.Context, gameID, keyPrefix, keyHash string) (repository.APIKey, error)
 	APIKeysByGame(ctx context.Context, gameID string) ([]repository.APIKey, error)
 	RevokeAPIKey(ctx context.Context, keyID, developerID string) error

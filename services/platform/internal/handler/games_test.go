@@ -44,7 +44,7 @@ func TestRegisterGame_Created(t *testing.T) {
 	if gotIn != (service.RegisterGameInput{Name: "Space Raiders", Description: "Browser shooter"}) {
 		t.Fatalf("service got %+v", gotIn)
 	}
-	want := `{"id":"g1","name":"Space Raiders","description":"Browser shooter","createdAt":"2026-11-07T09:30:00Z"}` + "\n"
+	want := `{"id":"g1","name":"Space Raiders","description":"Browser shooter","allowedOrigins":[],"createdAt":"2026-11-07T09:30:00Z"}` + "\n"
 	if rec.Body.String() != want {
 		t.Fatalf("body %s", rec.Body.String())
 	}

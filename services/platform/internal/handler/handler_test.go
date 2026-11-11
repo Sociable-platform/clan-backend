@@ -37,6 +37,9 @@ type fakeService struct {
 
 	publicWidgetConfig func(gameID string) (service.WidgetVersion, error)
 
+	setAllowedOrigins  func(developerID, gameID string, origins []string) (service.Game, error)
+	internalGameConfig func(gameID string) (service.InternalGameConfig, error)
+
 	gameForAPIKey    func(key string) (string, error)
 	issuePlayerToken func(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)
 }
