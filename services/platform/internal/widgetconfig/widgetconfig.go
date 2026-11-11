@@ -73,7 +73,7 @@ type Validator struct {
 var supportedKeywords = map[string]bool{
 	"type": true, "const": true, "enum": true, "pattern": true, "not": true,
 	"minLength": true, "maxLength": true, "minimum": true, "maximum": true,
-	"uniqueItems": true, "maxItems": true, "items": true, "properties": true,
+	"uniqueItems": true, "minItems": true, "maxItems": true, "items": true, "properties": true,
 	"required": true, "additionalProperties": true, "anyOf": true, "$ref": true,
 }
 
@@ -219,7 +219,32 @@ func (v *Validator) Validate(raw []byte) []Issue {
 	}
 	c := &collector{}
 	v.check(v.root, doc, "", c)
+	checkRoleIDs(doc, c)
 	return c.issues
+}
+
+// RuleUniqueRoleIDs reports a role id used twice in clan.roles. JSON Schema cannot say
+// "unique by one field", so the contract leaves it to the validator (config-v1 README, Limits).
+const RuleUniqueRoleIDs = "uniqueRoleIds"
+
+// checkRoleIDs reports every role in clan.roles whose id an earlier role already has.
+// Anything that is not the expected shape is skipped: the schema reports that already.
+func checkRoleIDs(doc any, c *collector) {
+	root, _ := doc.(map[string]any)
+	clan, _ := root["clan"].(map[string]any)
+	roles, _ := clan["roles"].([]any)
+	seen := map[string]bool{}
+	for i, r := range roles {
+		role, _ := r.(map[string]any)
+		id, ok := role["id"].(string)
+		if !ok {
+			continue
+		}
+		if seen[id] {
+			c.add(fmt.Sprintf("/clan/roles/%d/id", i), RuleUniqueRoleIDs, "repeats the id of another role")
+		}
+		seen[id] = true
+	}
 }
 
 // decode reads exactly one JSON value. Numbers stay as json.Number so that 0.5 and 1e2 are
@@ -320,6 +345,10 @@ func (v *Validator) check(schema map[string]any, inst any, path string, c *colle
 			if list, ok := inst.([]any); ok && val == true && hasDuplicates(list) {
 				c.add(path, "uniqueItems", "must not repeat a value")
 			}
+		case "minItems":
+			if list, ok := inst.([]any); ok && float64(len(list)) < toFloat(val) {
+				c.add(path, "minItems", fmt.Sprintf("must have at least %s items", showNumber(val)))
+			}
 		case "maxItems":
 			if list, ok := inst.([]any); ok && float64(len(list)) > toFloat(val) {
 				c.add(path, "maxItems", fmt.Sprintf("must have at most %s items", showNumber(val)))
@@ -389,7 +418,7 @@ func (v *Validator) check(schema map[string]any, inst any, path string, c *colle
 				}
 			}
 			if !matched {
-				c.add(path, "anyOf", "does not match any of the allowed forms (for example, at least one of friends, clan or chat must be enabled)")
+				c.add(path, "anyOf", "does not match any of the allowed forms")
 			}
 		}
 	}

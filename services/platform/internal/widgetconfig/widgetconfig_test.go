@@ -43,8 +43,8 @@ func TestSharedFixtures(t *testing.T) {
 	if err := json.Unmarshal(readFile(t, "manifest.json"), &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Cases) < 5 {
-		t.Fatalf("the manifest should have its 5 rows, got %d", len(manifest.Cases))
+	if len(manifest.Cases) < 10 {
+		t.Fatalf("the manifest should have its 10 rows, got %d", len(manifest.Cases))
 	}
 	for _, row := range manifest.Cases {
 		t.Run(row.File, func(t *testing.T) {
@@ -179,20 +179,23 @@ func TestRejectsAFontOutsideTheList(t *testing.T) {
 func TestRejectsATextureThatIsAURL(t *testing.T) {
 	m := arena(t)
 	obj(m, "theme", "textures", "panel")["asset"] = "https://example.com/tex.png"
-	wantIssue(t, issuesOf(t, m), "/theme/textures/panel/asset", "enum")
+	// neither a built-in texture nor a custom-... name
+	wantIssue(t, issuesOf(t, m), "/theme/textures/panel/asset", "anyOf")
 }
 
 func TestRejectsAnUnknownOrRepeatedBadge(t *testing.T) {
 	unknown := arena(t)
 	obj(unknown, "clan", "badges")["allowed"] = []any{"star", "skull"}
-	wantIssue(t, issuesOf(t, unknown), "/clan/badges/allowed/1", "enum")
+	// neither a built-in badge nor a custom-... name
+	wantIssue(t, issuesOf(t, unknown), "/clan/badges/allowed/1", "anyOf")
 
 	repeated := arena(t)
 	obj(repeated, "clan", "badges")["allowed"] = []any{"star", "star"}
 	wantIssue(t, issuesOf(t, repeated), "/clan/badges/allowed", "uniqueItems")
 
 	tooMany := arena(t)
-	obj(tooMany, "clan", "badges")["allowed"] = []any{"star", "diamond", "peak", "spark", "moon", "cross", "star"}
+	obj(tooMany, "clan", "badges")["allowed"] = []any{"star", "diamond", "peak", "spark", "moon", "cross",
+		"custom-a", "custom-b", "custom-c", "custom-d", "custom-e", "custom-f", "custom-g"} // 13, the limit is 12
 	wantIssue(t, issuesOf(t, tooMany), "/clan/badges/allowed", "maxItems")
 }
 
@@ -470,7 +473,7 @@ func TestNewRefusesAKeywordItDoesNotUnderstand(t *testing.T) {
 		"format":            `{"type":"string","format":"email"}`,
 		"oneOf":             `{"oneOf":[{"type":"string"}]}`,
 		"patternProperties": `{"patternProperties":{"^a":{}}}`,
-		"nested":            `{"properties":{"a":{"minItems":2}}}`,
+		"nested":            `{"properties":{"a":{"minProperties":2}}}`,
 		"inside defs":       `{"$defs":{"x":{"dependentRequired":{}}}}`,
 		"additional schema": `{"additionalProperties":{"type":"string"}}`,
 		"true additional":   `{"additionalProperties":true}`,
@@ -541,4 +544,55 @@ func TestEmbeddedSchemaIsConfigV1(t *testing.T) {
 	if len(s.Required) != 8 || s.Props["schemaVersion"] == nil {
 		t.Fatalf("required = %v", s.Required)
 	}
+}
+
+// ---- rules added for the TEAM-118 amendment of config v1
+
+func TestMinItems(t *testing.T) {
+	v, err := New([]byte(`{"properties":{"list":{"type":"array","minItems":2}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIssue(t, v.Validate([]byte(`{"list":["a"]}`)), "/list", "minItems")
+	if issues := v.Validate([]byte(`{"list":["a","b"]}`)); len(issues) != 0 {
+		t.Fatalf("two items are enough, got %+v", issues)
+	}
+	if issues := v.Validate([]byte(`{"list":"ab"}`)); len(issues) != 1 || issues[0].Rule != "type" {
+		t.Fatalf("minItems does not apply to a string, got %+v", issues)
+	}
+}
+
+// Role ids must be unique; JSON Schema cannot say "unique by one field", so the validator
+// checks it after the schema (config-v1 README, Limits). An empty schema shows it on its own.
+func TestRejectsARepeatedRoleID(t *testing.T) {
+	v, err := New([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := v.Validate([]byte(`{"clan":{"roles":[{"id":"member"},{"id":"elder"},{"id":"member"},{"id":"member"}]}}`))
+	wantIssue(t, issues, "/clan/roles/2/id", RuleUniqueRoleIDs)
+	wantIssue(t, issues, "/clan/roles/3/id", RuleUniqueRoleIDs)
+	if len(issues) != 2 {
+		t.Fatalf("want only the two repeats, got %+v", issues)
+	}
+	// odd shapes are the schema's business, not a crash here
+	for _, doc := range []string{`{"clan":{"roles":"x"}}`, `{"clan":[1]}`, `{"clan":{"roles":[1,{"id":2},{}]}}`, `[]`} {
+		if issues := v.Validate([]byte(doc)); len(issues) != 0 {
+			t.Fatalf("%s: %+v", doc, issues)
+		}
+	}
+}
+
+func TestArenaRolesNeedAtLeastTwo(t *testing.T) {
+	m := arena(t)
+	clan := obj(m, "clan")
+	clan["roles"] = clan["roles"].([]any)[:1]
+	wantIssue(t, issuesOf(t, m), "/clan/roles", "minItems")
+}
+
+func TestArenaRejectsARepeatedRoleID(t *testing.T) {
+	m := arena(t)
+	roles := obj(m, "clan")["roles"].([]any)
+	roles[1].(map[string]any)["id"] = roles[0].(map[string]any)["id"]
+	wantIssue(t, issuesOf(t, m), "/clan/roles/1/id", RuleUniqueRoleIDs)
 }
