@@ -1,0 +1,33 @@
+# CI: build, vet and test every package with the race detector.
+# The e2e script (tools/e2e) needs the whole Docker stack, so it runs locally, see README.
+
+stages:
+  - test
+
+variables:
+  GOFLAGS: -mod=readonly
+  GOCACHE: $CI_PROJECT_DIR/.cache/go-build
+  GOPATH: $CI_PROJECT_DIR/.cache/go
+
+default:
+  cache:
+    key:
+      files:
+        - go.sum
+    paths:
+      - .cache/go
+      - .cache/go-build
+
+test:
+  stage: test
+  # The golang image includes gcc, which -race needs (cgo).
+  image: golang:1.25
+  variables:
+    CGO_ENABLED: "1"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main"
+  script:
+    - go build ./...
+    - go vet ./...
+    - go test -race -count=1 ./...
