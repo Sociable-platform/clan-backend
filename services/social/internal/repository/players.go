@@ -2,8 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Player is a row of the players table.
@@ -13,32 +16,68 @@ type Player struct {
 	ExternalID  string    // the game's own player ID, e.g. "u_42"
 	DisplayName string    // name shown to other players
 	CreatedAt   time.Time // when we first saw this player
+	// Renamed is set by UpsertPlayer when that call changed the name of an existing player.
+	Renamed bool
 }
 
 // UpsertPlayer returns the player (gameID, externalID), creating the row the first time
 // that pair appears. For an existing player it updates the display name, so a rename
-// in the game shows up here on the next call.
+// in the game shows up here on the next call. Renamed is true only for the call that
+// changed the name of an existing player: not for the first insert, and not when the
+// name was already the same.
 //
-// It is one SQL statement on purpose: if a game sends two requests at the same moment
-// for a brand-new player, the unique key (game_id, external_id) and ON CONFLICT make sure
-// only one row is created and both requests get it back.
+// Most calls change nothing, so it first only reads the row. Only a new player or a new
+// name runs the upsert, which is one SQL statement on purpose:
+//   - two requests for a brand-new player at the same moment: the unique key
+//     (game_id, external_id) and ON CONFLICT make sure only one row is created;
+//   - two requests with the same new name at the same moment: "where the name differs"
+//     lets only the first one update the row, so only one call reports Renamed.
 func (r *Repository) UpsertPlayer(ctx context.Context, gameID, externalID, displayName string) (Player, error) {
 	if r.pool == nil {
 		return Player{}, ErrNoDatabase
 	}
-	p := Player{GameID: gameID, ExternalID: externalID}
-	err := r.pool.QueryRow(ctx,
+	p, err := r.playerByExternalID(ctx, gameID, externalID)
+	switch {
+	case err == nil && p.DisplayName == displayName:
+		return p, nil // the usual case: nothing to write
+	case err != nil && !errors.Is(err, pgx.ErrNoRows):
+		return Player{}, fmt.Errorf("upsert player: %w", err)
+	}
+
+	p = Player{GameID: gameID, ExternalID: externalID}
+	var inserted bool
+	err = r.pool.QueryRow(ctx,
 		`insert into players (game_id, external_id, display_name)
 		 values ($1, $2, $3)
 		 on conflict (game_id, external_id)
 		 do update set display_name = excluded.display_name
-		 returning id::text, display_name, created_at`,
+		   where players.display_name <> excluded.display_name
+		 returning id::text, display_name, created_at, xmax = 0`, // xmax = 0: the row was inserted, not updated
 		gameID, externalID, displayName,
-	).Scan(&p.ID, &p.DisplayName, &p.CreatedAt)
+	).Scan(&p.ID, &p.DisplayName, &p.CreatedAt, &inserted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Another request saved this very name a moment ago; it reports the rename, not us.
+		p, err = r.playerByExternalID(ctx, gameID, externalID)
+		if err != nil {
+			return Player{}, fmt.Errorf("upsert player: %w", err)
+		}
+		return p, nil
+	}
 	if err != nil {
 		return Player{}, fmt.Errorf("upsert player: %w", err)
 	}
+	p.Renamed = !inserted
 	return p, nil
+}
+
+// playerByExternalID reads the player (gameID, externalID); pgx.ErrNoRows if there is none.
+func (r *Repository) playerByExternalID(ctx context.Context, gameID, externalID string) (Player, error) {
+	p := Player{GameID: gameID, ExternalID: externalID}
+	err := r.pool.QueryRow(ctx,
+		`select id::text, display_name, created_at from players where game_id = $1 and external_id = $2`,
+		gameID, externalID,
+	).Scan(&p.ID, &p.DisplayName, &p.CreatedAt)
+	return p, err
 }
 
 // Relations between the caller and a player in search results.

@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 )
 
@@ -24,13 +25,24 @@ type Player struct {
 	CreatedAt   time.Time // when social first saw the player
 }
 
+// EventPlayerRenamed is published when a player's display name changed: {player} with the
+// new name (docs/event-messages.md). Realtime uses it to refresh the names it stores.
+const EventPlayerRenamed = "player.renamed"
+
 // EnsurePlayer returns the calling player's record. The first call for a (gameID, externalID)
 // pair creates it; later calls return the same record with the display name updated.
 // gameID and externalID come from the verified player token, never from the request.
+// When the name in the token differs from the saved one, it publishes player.renamed once
+// (the repository makes sure only one of several requests at the same moment reports it).
 func (s *Service) EnsurePlayer(ctx context.Context, gameID, externalID, displayName string) (Player, error) {
 	row, err := s.store.UpsertPlayer(ctx, gameID, externalID, cleanDisplayName(displayName, externalID))
 	if err != nil {
 		return Player{}, fmt.Errorf("ensure player: %w", err)
+	}
+	if row.Renamed {
+		_ = s.events.Publish(ctx, events.New(EventPlayerRenamed, gameID, map[string]any{
+			"player": ref(row.ID, row.DisplayName),
+		}))
 	}
 	return Player{
 		ID:          row.ID,

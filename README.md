@@ -241,7 +241,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `friend.request_declined` | social, `POST /api/v1/friends/requests/{requestID}/decline` (204) | the same as `friend.request_cancelled` |
 | `friend.accepted` | social, accept, or a request sent back (200) | `{ "request_id", "players": [ { "id", "name" }, { "id", "name" } ] }`, the smaller ID first; `request_id` is the request that was accepted (for a request sent back: the older one) |
 | `friend.removed` | social, `DELETE /api/v1/friends/{playerID}` (204) | `{ "players": [ { "id", "name" }, { "id", "name" } ], "removed_by" }`, the smaller ID first; `removed_by` is the ID of the player who removed the other |
-| `player.renamed` | social (**not published yet**) | `{ "player": { "id", "name" } }` |
+| `player.renamed` | social, the first request whose player token carries a new display name (any endpoint) | `{ "player": { "id", "name" } }` with the new name; once per rename, not on the first request |
 | `clan.created` | social, `POST /api/v1/clans` (201) | `{ "clan": { "id", "name" }, "player": { "id", "name" } }`; `player` is the owner |
 | `clan.member_joined` | social, `POST /api/v1/clans/{clanID}/join` (200) | `{ "clan", "player" }` |
 | `clan.member_left` | social, `POST /api/v1/clans/{clanID}/leave` (204) while others remain | `{ "clan", "player", "reason": "left", "kicked_by": null, "new_owner" }`; `new_owner` is the member who took over when the owner left, otherwise `null` |

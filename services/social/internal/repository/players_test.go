@@ -83,6 +83,80 @@ func TestUpsertPlayerFirstAndRepeatedCalls(t *testing.T) {
 	}
 }
 
+// Renamed is true only for the call that changed the name of an existing player.
+func TestUpsertPlayerReportsARename(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	steps := []struct {
+		name        string
+		wantRenamed bool
+	}{
+		{"Ali", false},           // first insert
+		{"Ali", false},           // same name again
+		{"Ali the Great", true},  // a new name
+		{"Ali the Great", false}, // the same new name again
+		{"ali the great", true},  // upper/lower case counts as a change
+		{"Ali", true},            // back to an older name
+	}
+	var id string
+	for i, st := range steps {
+		p, err := r.UpsertPlayer(ctx, game, "u_42", st.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			id = p.ID
+		}
+		if p.ID != id || p.DisplayName != st.name || p.Renamed != st.wantRenamed {
+			t.Fatalf("step %d (%q): got %+v, want name %q renamed=%v", i, st.name, p, st.name, st.wantRenamed)
+		}
+	}
+}
+
+// Many requests with the same new name at the same moment: exactly one reports the rename.
+func TestUpsertPlayerConcurrentRenameIsReportedOnce(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	for round := 0; round < 10; round++ {
+		ext := fmt.Sprintf("u_%d", round)
+		if _, err := r.UpsertPlayer(ctx, game, ext, "Old"); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		renamed := 0
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				p, err := r.UpsertPlayer(ctx, game, ext, "New")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if p.DisplayName != "New" {
+					t.Errorf("name = %q, want New", p.DisplayName)
+				}
+				if p.Renamed {
+					mu.Lock()
+					renamed++
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+		if renamed != 1 {
+			t.Fatalf("round %d: %d calls reported the rename, want exactly 1", round, renamed)
+		}
+	}
+}
+
 // Two requests for a brand-new player at the same moment must still give one player.
 func TestUpsertPlayerConcurrentFirstCalls(t *testing.T) {
 	r, cleanup := testRepo(t)

@@ -40,6 +40,7 @@ func (m *memStore) UpsertPlayer(_ context.Context, gameID, externalID, displayNa
 			CreatedAt:  time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC),
 		}
 	}
+	p.Renamed = ok && p.DisplayName != displayName
 	p.DisplayName = displayName
 	m.rows[key] = p
 	return p, nil
