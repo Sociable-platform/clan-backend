@@ -19,6 +19,8 @@ clan-backend/
 ├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
 ├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
+├── tools/                     # devtoken: test tokens; e2e: end-to-end check of the realtime flow
+├── .gitlab-ci.yml             # CI: build, vet and test with the race detector
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
@@ -376,7 +378,36 @@ To browse a file, paste it into https://editor.swagger.io or open it with the Op
 go build ./...
 go vet ./...
 go test ./...
+go test -race ./...     # the same, with the race detector (needs gcc; CI runs this one)
 ```
+
+CI (`.gitlab-ci.yml`) runs `go build`, `go vet` and `go test -race` on every merge request and on `develop` and `main`.
+It needs no database or broker: the unit tests use fakes, and the tests that need a real database or RabbitMQ skip themselves.
+
+### End-to-end test (realtime)
+
+`tools/e2e` plays a developer and two players against the **running** stack, with real HTTP and real WebSockets:
+the developer registers, creates a game and an API key and publishes config version 1; two players get tokens and
+connect, and each gets `hello`; player A asks B to be friends and B accepts (both get `conversation.added`); A sends a
+direct message (A gets `message.ack`, both get `message.new`); the developer publishes config version 2 (both get
+`config.updated`). Every frame must arrive within 2 seconds of the action that causes it.
+
+```bash
+docker compose up -d --build
+go run ./tools/e2e          # prints one PASS line per step; exit code 1 on the first failure
+```
+
+| Flag | Environment variable | Default |
+|---|---|---|
+| `-platform` | `E2E_PLATFORM_URL` | `http://localhost:8081` |
+| `-social` | `E2E_SOCIAL_URL` | `http://localhost:8082` |
+| `-realtime` | `E2E_REALTIME_URL` | `http://localhost:8083` |
+| `-deadline` | | `2s` |
+
+Each run leaves one developer, one game and two players in the development database (the emails and names are unique per
+run, so runs do not collide). It is for local use, not CI: CI has no Docker stack. `tools/e2e/config.json` is a complete,
+valid widget config (a copy of `services/platform/internal/widgetconfig/testdata/examples/valid/farm-minimal.json`); change it
+if the config contract changes.
 
 ### Integration tests (real database)
 
