@@ -36,6 +36,9 @@ type Service interface {
 	CancelFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) error
 	RemoveFriend(ctx context.Context, gameID, externalID, displayName, playerID string) error
 	SearchPlayers(ctx context.Context, gameID, externalID, displayName string, in service.SearchPlayersInput) ([]service.PlayerSearchResult, error)
+	BlockPlayer(ctx context.Context, gameID, externalID, displayName, playerID string) error
+	UnblockPlayer(ctx context.Context, gameID, externalID, displayName, playerID string) error
+	ListBlocks(ctx context.Context, gameID, externalID, displayName string) ([]service.BlockedPlayer, error)
 	ListFriendshipsForSync(ctx context.Context, in service.SyncFriendshipsInput) (service.FriendshipPage, error)
 }
 
@@ -87,6 +90,9 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/players/me", h.getMe},
 		{http.MethodGet, "/api/v1/players/me/clan", h.getMyClan},
 		{http.MethodGet, "/api/v1/players", h.searchPlayers},
+		{http.MethodGet, "/api/v1/players/me/blocks", h.listBlocks},
+		{http.MethodPost, "/api/v1/players/{playerID}/block", h.blockPlayer},
+		{http.MethodDelete, "/api/v1/players/{playerID}/block", h.unblockPlayer},
 		{http.MethodGet, "/api/v1/clans", h.listClans},
 		{http.MethodPost, "/api/v1/clans", h.createClan},
 		{http.MethodPatch, "/api/v1/clans/{clanID}", h.renameClan},
