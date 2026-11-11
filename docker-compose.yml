@@ -124,6 +124,8 @@ services:
       PLATFORM_CORS_ORIGINS: ${PLATFORM_CORS_ORIGINS:-http://localhost:5173}
       PLATFORM_JWT_PRIVATE_KEY_FILE: /run/secrets/platform_jwt_private.pem
       PLATFORM_DEVELOPER_TOKEN_TTL: ${PLATFORM_DEVELOPER_TOKEN_TTL:-24h}
+      # Shared secret of platform's /internal endpoints (realtime reads each game's allowed origins there). Empty: switched off.
+      PLATFORM_INTERNAL_TOKEN: ${PLATFORM_INTERNAL_TOKEN:-}
       # Events for the other services: config.published after a publish or rollback (README "RabbitMQ events")
       PLATFORM_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       LOG_LEVEL: ${LOG_LEVEL:-info}
