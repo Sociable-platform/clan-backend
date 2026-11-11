@@ -254,7 +254,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `clan.member_role_changed` | social, `POST /api/v1/clans/{clanID}/members/{playerID}/promote` or `/demote` (200) | `{ "clan", "player", "role", "previous_role", "changed_by" }`; `role` and `previous_role` are role ids of the game's `clan.roles` |
 | `clan.disbanded` | social, the last member leaves (204) | `{ "clan" }`; only this event, no `clan.member_left` |
 | `clan.renamed` | social, `PATCH /api/v1/clans/{clanID}` (200) when the name changed | `{ "clan": { "id", "name" }, "previous_name" }`; `clan.name` is the new name. Sending the same name publishes nothing |
-| `player.blocked`, `player.unblocked` | social (block task) | `{ "blocker_id", "blocked_id" }` |
+| `player.blocked`, `player.unblocked` | social, `POST` / `DELETE /api/v1/players/{playerID}/block` (204), only when a block was really added or removed | `{ "blocker_id", "blocked_id" }`. A block also publishes `friend.removed` (`removed_by` = the blocker) when the two were friends, and `friend.request_cancelled` or `friend.request_declined` when one had a pending request to the other |
 | `config.published` | platform, `POST /api/v1/games/{gameID}/widget/publish` and `.../widget/versions/{version}/rollback` (200); realtime then sends `config.updated` to the game's connections | `{ "version" }`, the new version number (a rollback saves a new version, so it is that number) |
 
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
@@ -436,8 +436,11 @@ always come from the token, never from the URL or the body.
 | Method | Path | Answer |
 |---|---|---|
 | GET | `/api/v1/players/me` | 200 with the calling player; the record is created on the first call |
-| GET | `/api/v1/players?q=&limit=` | 200 `{ players: [...] }`: players of the caller's game whose name contains `q` (ignoring upper/lower case; `%` and `_` are normal characters), sorted by name, never the caller. Each has `id`, `displayName`, `relation` (`none` / `friend` / `request_sent` / `request_received`) and, for the two pending ones, `requestId`. `q` is required: 400 `invalid_query` (missing, empty or over 50 characters); `limit` 1 to 100, default 100 (400 `invalid_limit`) |
+| GET | `/api/v1/players?q=&limit=` | 200 `{ players: [...] }`: players of the caller's game whose name contains `q` (ignoring upper/lower case; `%` and `_` are normal characters), sorted by name, never the caller. Each has `id`, `displayName`, `relation` (`none` / `friend` / `request_sent` / `request_received` / `blocked`, a player the caller blocked) and, for the two pending ones, `requestId`. Players who blocked the caller are left out. `q` is required: 400 `invalid_query` (missing, empty or over 50 characters); `limit` 1 to 100, default 100 (400 `invalid_limit`) |
 | GET | `/api/v1/players/me/clan` | 200 `{ clan, role }` with the caller's clan and role (`owner` / `member`); 404 `not_in_clan` |
+| GET | `/api/v1/players/me/blocks` | 200 `{ blocks: [...] }` with `id`, `displayName`, `since` (when the caller blocked them), newest first |
+| POST | `/api/v1/players/{playerID}/block` | no body. 204: the caller blocked that player (see "Blocks" below); blocking again changes nothing (204, no event). 400 `cannot_block_self`; 404 `player_not_found` (also for another game's player). Publishes `player.blocked` |
+| DELETE | `/api/v1/players/{playerID}/block` | 204: the block is removed; a friendship or request it ended does not come back. Not blocked: 204, no event. 400 `cannot_block_self`; 404 `player_not_found`. Publishes `player.unblocked` |
 | GET | `/api/v1/clans?q=&limit=&sort=&hasSpace=` | 200 `{ clans: [...] }` of the caller's game, by default sorted by name, at most 100. `q` keeps clans whose name contains it (ignoring upper/lower case, over 50 characters gives 400 `invalid_query`) and searches **all** clans, full ones too. `limit` 1 to 100 (400 `invalid_limit`); `sort` `name` or `members`, biggest first (400 `invalid_sort`); `hasSpace=true` leaves out full clans (400 `invalid_has_space`). Featured clans = `?hasSpace=true&sort=members&limit=3` |
 | POST | `/api/v1/clans` | body `{ "name": "Wolves" }`. 201 with the new clan, the caller becomes its owner. 400 `invalid_json` / `invalid_clan_name` (3 to 20 characters); 409 `clan_name_taken` / `already_in_clan` |
 | PATCH | `/api/v1/clans/{clanID}` | body `{ "name": "Grey Wolves" }`. 200 with the clan. Only the **owner**; the name is checked like on create. The same name changes nothing (200, no event); a change of upper/lower case only is a rename. 400 `invalid_json` / `invalid_clan_name`; 403 `not_clan_owner`; 404 `clan_not_found`; 409 `clan_name_taken`. Publishes `clan.renamed` |
@@ -449,7 +452,7 @@ always come from the token, never from the URL or the body.
 | POST | `/api/v1/clans/{clanID}/members/{playerID}/demote` | no body. 200 `{ playerId, displayName, role }`: one role down, same rules. 409 `already_lowest_role`; 403 `not_allowed`; 404 `clan_not_found` / `member_not_found`. Publishes `clan.member_role_changed` |
 | GET | `/api/v1/friends` | 200 `{ friends: [...] }` with `id`, `displayName`, `since`, sorted by name |
 | GET | `/api/v1/friends/requests` | 200 `{ incoming: [...], outgoing: [...] }`, newest first; each has `id`, `player` (the other player: `id`, `displayName`) and `createdAt` |
-| POST | `/api/v1/friends/requests` | body `{ "playerId": "<social player ID>" }`. 201 with the new request. If that player had already asked the caller, it is accepted instead: 200 with the new friend. 400 `invalid_json` / `invalid_player_id` / `cannot_friend_yourself`; 404 `player_not_found` (also for another game's player); 409 `already_friends` / `friend_request_exists`. Publishes `friend.request_sent` or `friend.accepted` |
+| POST | `/api/v1/friends/requests` | body `{ "playerId": "<social player ID>" }`. 201 with the new request. If that player had already asked the caller, it is accepted instead: 200 with the new friend. 400 `invalid_json` / `invalid_player_id` / `cannot_friend_yourself`; 404 `player_not_found` (also for another game's player, or a player who blocked the caller); 409 `already_friends` / `friend_request_exists` / `player_blocked` (the caller blocked that player). Publishes `friend.request_sent` or `friend.accepted` |
 | POST | `/api/v1/friends/requests/{requestID}/decline` | no body. 204: the request sent to the caller is deleted. 403 `not_request_receiver` (the caller sent it; cancel instead); 404 `friend_request_not_found`. Publishes `friend.request_declined` |
 | DELETE | `/api/v1/friends/requests/{requestID}` | 204: the caller's own request is cancelled. 403 `not_request_sender` (the caller received it; decline instead); 404 `friend_request_not_found`. Publishes `friend.request_cancelled` |
 | DELETE | `/api/v1/friends/{playerID}` | 204: the friendship ends for both players; either may send a new request afterwards. 404 `not_friends` (also for another game's player). Publishes `friend.removed` |
@@ -465,6 +468,17 @@ kick, promote and demote by them, inside the clan's row lock (package `internal/
 - A role id the developer removed or renamed reads as the first role: nobody is removed. Before a game publishes
   roles there are two, `member` and `owner`, and only the owner may kick (as before roles).
 - `clan_members.role` stores the role id; the database only checks its form (migration `000005`).
+
+**Blocks.** A player can block another player of the same game (table `blocks`, migration `000006`). Blocking is
+one-way and the blocked player is not told:
+
+- In one transaction, under the same pair lock as every friend change, the block ends the two players' friendship and
+  their pending friend request in either direction. Social publishes `player.blocked` and then `friend.removed`,
+  `friend.request_cancelled` (the blocker had asked) or `friend.request_declined` (the blocked player had asked).
+- The blocked player's friend requests to the blocker answer 404 `player_not_found`, and the blocker is left out of
+  their search, so the block stays hidden. The blocker's own request answers 409 `player_blocked` until they unblock.
+- Realtime keeps its own copy of the blocks from the two events and refuses direct messages between the pair.
+- Unblocking brings nothing back: the two have to become friends again.
 
 **Internal endpoints** are for other services, not for the SDK. They need `X-Internal-Token: <SOCIAL_INTERNAL_TOKEN>`
 (401 `invalid_internal_token` otherwise; a player token is not accepted). They are the only routes that
@@ -488,7 +502,7 @@ the HTTP server start, so events then arrive on top of a complete state. Details
   `backfill failed, starting anyway` and runs without it; restart with the flag on to try again. A wrong token (401 or 404
   from social) is reported the same way.
 - A friendship with an invalid ID or no name is skipped and counted (`skipped` in the `backfill done` log).
-- Blocks and clans are **not** backfilled yet: social has no blocks, and realtime has no clan chat.
+- Blocks and clans are **not** backfilled yet: social has no internal endpoint that lists blocks, and realtime has no clan chat.
 - State rebuild at startup is not needed: realtime keeps friends, memberships and blocks in its own database and reads
   them from there, so a restart already keeps chat working for everything it had stored.
 
@@ -540,7 +554,7 @@ The sender gets `message.ack` (`replyTo: "c-1"`, `messageId`, `createdAt`) and t
 Errors come back as `error` frames with `replyTo` and nothing is stored or sent: `not_member` (not in the conversation, or an unknown id),
 `rate_limited`, `feature_disabled`, `blocked`, `empty`, `too_long`, `slow_mode` (with `retryAfterMs`), `bad_frame` (missing or wrong-type field),
 `internal` (for example the database is down).
-**Message rules.** `message.send` is checked in this order, and the first failure answers (full table in `openapi/realtime-ws.md`): rate limit of the connection (5 in 5 s; three refused in a row close it with `1008`), not empty, member, the game's chat switches (`chat.enabled`, `directMessages`, `clanChat`), not blocked (DMs), `chat.maxMessageLength` in characters, slow mode (`chat.slowModeSeconds` per player across all tabs), then the profanity filter (`chat.profanityFilter`, whole words, replaced with `***`; the list is `services/realtime/internal/profanity/words.txt`). The game's rules come from its published config (kept in memory, updated on `config.published`); a game without a published config has the permissive defaults. Blocks come from the `player.blocked` and `player.unblocked` events into Realtime's own `blocks` table (Social does not publish them yet).
+**Message rules.** `message.send` is checked in this order, and the first failure answers (full table in `openapi/realtime-ws.md`): rate limit of the connection (5 in 5 s; three refused in a row close it with `1008`), not empty, member, the game's chat switches (`chat.enabled`, `directMessages`, `clanChat`), not blocked (DMs), `chat.maxMessageLength` in characters, slow mode (`chat.slowModeSeconds` per player across all tabs), then the profanity filter (`chat.profanityFilter`, whole words, replaced with `***`; the list is `services/realtime/internal/profanity/words.txt`). The game's rules come from its published config (kept in memory, updated on `config.published`); a game without a published config has the permissive defaults. Blocks come from the `player.blocked` and `player.unblocked` events into Realtime's own `blocks` table (Social publishes them on block and unblock).
 Presence: a player is online while one of their WebSockets is open. When the last one closes, realtime waits 10 s; if the player did not connect again, the friends who are connected get `presence.update { playerId, status: "offline" }`, so a page refresh never shows as offline. Connecting sends friends nothing (they read `hello.onlineFriends`), and a new friendship between two online players gives each a `presence.update` `online` for the other. The 10 s timers are in memory of the one process: if realtime restarts during them, nobody is told that player went offline.
 Slow mode and the rate limit live in the memory of the one Realtime process (a restart forgets them).
 
