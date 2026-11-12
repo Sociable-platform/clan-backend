@@ -46,6 +46,21 @@ func Int(key string, def int) (int, error) {
 	return n, nil
 }
 
+// Bool returns key as a bool, or def when it is unset or empty. It accepts what strconv.ParseBool
+// accepts (true, false, 1, 0, t, f, in any case); anything else is an error, so a typo such as
+// "ture" never silently switches a feature off.
+func Bool(key string, def bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("config: %s must be true or false, got %q", key, v)
+	}
+	return b, nil
+}
+
 // Duration returns key parsed with time.ParseDuration (for example "5s"), or def when it is unset.
 func Duration(key string, def time.Duration) (time.Duration, error) {
 	v := os.Getenv(key)

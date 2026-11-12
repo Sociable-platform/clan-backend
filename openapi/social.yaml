@@ -3,7 +3,7 @@ info:
   title: Social service
   version: 0.1.0
   description: |
-    Players, clans and clan members.
+    Players, clans, clan members and friends.
 
     Conventions for every endpoint:
     - Errors always use the `Error` shape: `{ "error": { "code": "...", "message": "..." } }`.
@@ -19,6 +19,14 @@ servers:
 tags:
   - name: system
     description: Health checks
+  - name: players
+    description: The calling player
+  - name: clans
+    description: Clans of the player's game
+  - name: friends
+    description: Friend requests and friends inside the player's game
+  - name: internal
+    description: Endpoints for other services (they send a shared secret, never a player token)
 paths:
   /health:
     get:
@@ -56,6 +64,1268 @@ paths:
           $ref: "#/components/responses/OriginNotAllowed"
         "503":
           $ref: "#/components/responses/NotReady"
+  /api/v1/players:
+    get:
+      tags: [players]
+      operationId: searchPlayers
+      summary: Search players of the caller's game
+      description: |
+        Finds players of the caller's game (the game in the player token) whose display name
+        contains `q`, ignoring upper/lower case, sorted by name and then ID. The caller is never
+        in the list, and neither is any other game's player. `%` and `_` are normal characters.
+
+        Each player comes with `relation`, so the friends tab can show the right button:
+        `none` (Add), `request_sent` (Pending / Cancel), `request_received` (Accept / Decline),
+        `friend`, or `blocked` (the caller blocked this player: Unblock). For the two pending
+        relations, `requestId` is the request to accept, decline or cancel. A player who blocked
+        the caller is not in the list.
+
+        `q` is required, so the whole game can never be listed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Text the name must contain (1 to 50 characters after trimming spaces).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 50
+          example: ay
+        - name: limit
+          in: query
+          required: false
+          description: How many players at most, 1 to 100 (default 100).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+      responses:
+        "200":
+          description: The players found. An empty list when nobody matches.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerSearchList"
+              example:
+                players:
+                  - id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                    displayName: Aysel
+                    relation: request_received
+                    requestId: 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
+                  - id: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                    displayName: Ayten
+                    relation: none
+        "400":
+          description: |
+            Wrong input. `code` is `invalid_query` (q missing, empty or over 50 characters) or
+            `invalid_limit` (not a whole number from 1 to 100).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_query
+                  message: Search text (q) is required
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/players/me:
+    get:
+      tags: [players]
+      operationId: getMyPlayer
+      summary: The calling player, created on first use
+      description: |
+        Returns the player named by the player token. The first call for a
+        (game, player) pair creates the player record; later calls return the same
+        record. The display name is updated from the token on every call, so a
+        rename in the game shows up here.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The player.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Player"
+              example:
+                id: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+                gameId: a6c1e2f0-1111-4222-8333-944455556666
+                externalId: u_42
+                displayName: Ali
+                createdAt: "2026-11-07T10:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/players/me/clan:
+    get:
+      tags: [clans]
+      operationId: getMyClan
+      summary: The caller's clan and role
+      description: |
+        Returns the clan the caller is in (in the game of the player token) and their role
+        in it. Only reads: a player who was never seen before is simply not in a clan.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The caller's clan and role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyClan"
+              example:
+                clan:
+                  id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                  name: Wolves
+                  memberCount: 3
+                  maxMembers: 10
+                role: owner
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: The caller is not in a clan (not_in_clan).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_in_clan
+                  message: You are not in a clan
+  /api/v1/players/me/blocks:
+    get:
+      tags: [players]
+      operationId: listBlocks
+      summary: The players the caller blocked
+      description: |
+        Returns the players the caller blocked in their game, newest block first.
+        An empty list when the caller has blocked nobody.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The blocked players.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockList"
+              example:
+                blocks:
+                  - id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                    displayName: Aysel
+                    since: "2026-11-11T09:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/players/{playerID}/block:
+    parameters:
+      - name: playerID
+        in: path
+        required: true
+        description: The player's ID in the social service (from search, the friends list or the block list).
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [players]
+      operationId: blockPlayer
+      summary: Block a player
+      description: |
+        The caller blocks this player of the same game. Blocking is one-way: the other player is
+        not told and can still block, or not block, the caller.
+
+        In one transaction, with the pair locked, it also ends what a block does not allow:
+        - their friendship, which publishes `friend.removed` (`removed_by` is the caller);
+        - their pending friend request, in either direction: `friend.request_cancelled` when the
+          caller had sent it, `friend.request_declined` when the other player had.
+
+        Afterwards the blocked player's friend requests to the caller answer 404
+        `player_not_found`, and the caller no longer appears in their search. The caller's own
+        request to them answers 409 `player_blocked`; in the caller's search they have
+        `relation: blocked`.
+
+        Publishes `player.blocked`. Blocking a player who is already blocked changes nothing,
+        publishes nothing and still answers 204. No request body is needed.
+      security:
+        - playerToken: []
+      responses:
+        "204":
+          description: Blocked (or already blocked). No body.
+        "400":
+          description: The caller tried to block themselves (cannot_block_self).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: cannot_block_self
+                  message: You cannot block yourself
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/BlockPlayerNotFound"
+    delete:
+      tags: [players]
+      operationId: unblockPlayer
+      summary: Unblock a player
+      description: |
+        Removes the caller's block of this player. A friendship or request that the block ended
+        does not come back. Publishes `player.unblocked`. Unblocking a player who is not blocked
+        changes nothing, publishes nothing and still answers 204.
+      security:
+        - playerToken: []
+      responses:
+        "204":
+          description: Unblocked (or was not blocked). No body.
+        "400":
+          description: The caller named themselves (cannot_block_self).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: cannot_block_self
+                  message: You cannot block yourself
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/BlockPlayerNotFound"
+  /api/v1/clans:
+    get:
+      tags: [clans]
+      operationId: listClans
+      summary: Clans of the player's game
+      description: |
+        Returns the clans of the caller's game (the game in the player token). By default they are
+        sorted by name, at most 100. Clans of other games are never returned.
+
+        - `q`: only clans whose name contains that text, ignoring upper/lower case. A search looks
+          through **all** clans of the game, full ones too.
+        - `limit`: at most this many clans (1 to 100, default 100).
+        - `sort`: `name` (default) or `members` (most members first; equal sizes by name).
+        - `hasSpace`: `true` keeps only clans that still have a free place, by the game's
+          `clan.maxMembers`.
+
+        **Featured clans.** The server has no separate "featured" list. A page that shows a few
+        suggested clans asks for the biggest ones that still have room:
+        `GET /api/v1/clans?hasSpace=true&sort=members&limit=5`. When the player types in the search
+        box, it calls `GET /api/v1/clans?q=...` with none of the other options, which searches all clans.
+      security:
+        - playerToken: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Text the clan name must contain (case-insensitive), at most 50 characters.
+          schema:
+            type: string
+            maxLength: 50
+          example: wol
+        - name: limit
+          in: query
+          required: false
+          description: The most clans to return, 1 to 100 (default 100).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+          example: 5
+        - name: sort
+          in: query
+          required: false
+          description: Order of the clans. `members` puts the biggest clan first and breaks ties by name.
+          schema:
+            type: string
+            enum: [name, members]
+            default: name
+          example: members
+        - name: hasSpace
+          in: query
+          required: false
+          description: When `true`, only clans with a free place are returned. `false` or missing returns all clans.
+          schema:
+            type: boolean
+            default: false
+          example: true
+      responses:
+        "200":
+          description: The clans (an empty list when none match).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClanList"
+              example:
+                clans:
+                  - id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                    name: Wolves
+                    memberCount: 3
+                    maxMembers: 10
+        "400":
+          description: |
+            Wrong input. `code` is `invalid_query` (search text over 50 characters), `invalid_limit`
+            (not a whole number from 1 to 100), `invalid_sort` (not `name` or `members`) or
+            `invalid_has_space` (not `true` or `false`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_limit
+                  message: limit must be a whole number from 1 to 100
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+    post:
+      tags: [clans]
+      operationId: createClan
+      summary: Create a clan
+      description: |
+        Creates a clan in the caller's game (the game in the player token). The caller
+        becomes its owner and first member; the clan and the membership are saved together.
+        The name is trimmed and runs of spaces become one space before it is checked.
+        Names are unique per game, ignoring upper/lower case. A player can be in only one
+        clan per game, so a player who is already in a clan gets 409 already_in_clan.
+      security:
+        - playerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClanRequest"
+            example:
+              name: Wolves
+      responses:
+        "201":
+          description: The new clan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Clan"
+              example:
+                id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                name: Wolves
+                memberCount: 1
+                maxMembers: 10
+        "400":
+          description: The body is not valid JSON (invalid_json), or the name is not 3 to 20 visible characters (invalid_clan_name).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_clan_name
+                  message: Clan name must be 3 to 20 characters
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "409":
+          description: The name is taken in this game (clan_name_taken), or the caller is already in a clan (already_in_clan).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: already_in_clan
+                  message: You are already in a clan; leave it first
+  /api/v1/clans/{clanID}:
+    patch:
+      tags: [clans]
+      operationId: renameClan
+      summary: Rename a clan (owner only)
+      description: |
+        The clan's owner gives the clan a new name. The name is cleaned and checked like on
+        create (trimmed, runs of spaces become one space, 3 to 20 visible characters) and must
+        not be taken by another clan of the game, ignoring upper/lower case.
+
+        Sending the name the clan already has changes nothing: 200 with the clan, and no event.
+        Changing only upper/lower case ("wolves" to "Wolves") is a rename. After a rename Social
+        publishes `clan.renamed` with the new name and `previous_name` (docs/event-messages.md).
+        The clan row is locked like for join, leave and kick, so the owner cannot change
+        while the name does.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The ID of the clan the caller owns.
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClanRequest"
+            example:
+              name: Grey Wolves
+      responses:
+        "200":
+          description: The clan with its name now.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Clan"
+              example:
+                id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                name: Grey Wolves
+                memberCount: 4
+                maxMembers: 10
+        "400":
+          description: The body is not valid JSON (invalid_json), or the name is not 3 to 20 visible characters (invalid_clan_name).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_clan_name
+                  message: Clan name must be 3 to 20 characters
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller is not this clan's owner (not_clan_owner), or the request came from a
+            website that is not in the allowed origins (origin_not_allowed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_clan_owner
+                  message: Only the clan owner can rename the clan
+        "404":
+          description: No such clan in the caller's game (clan_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_not_found
+                  message: Clan not found
+        "409":
+          description: Another clan of the game has this name (clan_name_taken).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_name_taken
+                  message: A clan with this name already exists
+  /api/v1/clans/{clanID}/join:
+    post:
+      tags: [clans]
+      operationId: joinClan
+      summary: Join a clan
+      description: |
+        Adds the caller to the clan as a member. Every clan is open for now.
+        The clan must belong to the caller's game (the game in the player token); a clan of
+        another game answers 404 like a clan that does not exist. The clan row is locked
+        while joining, so two players can never take the same last place.
+        No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The clan's ID (from the clan list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Joined. The clan with its new member count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Clan"
+              example:
+                id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                name: Wolves
+                memberCount: 4
+                maxMembers: 10
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such clan in the caller's game (clan_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_not_found
+                  message: Clan not found
+        "409":
+          description: |
+            The caller is already in a clan (already_in_clan), or the clan has no free place
+            (clan_full): it has as many members as the game's clan.maxMembers allows, or more.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_full
+                  message: This clan has no free places
+  /api/v1/clans/{clanID}/leave:
+    post:
+      tags: [clans]
+      operationId: leaveClan
+      summary: Leave a clan
+      description: |
+        Removes the caller from the clan, and the caller can join another clan afterwards.
+        The clan must belong to the caller's game (the game in the player token); a clan of
+        another game answers 404 like a clan that does not exist.
+
+        - A normal member leaves: the membership is deleted and `memberCount` goes down by one.
+        - The owner leaves and other members remain: the member who joined first becomes the
+          new owner (ties: the lower player ID), then the old owner's membership is deleted.
+          The clan always has exactly one owner.
+        - The owner is the only member: the clan is deleted.
+
+        Everything happens in one transaction with the clan row locked (like joining), so the
+        counts and the owner never get out of step. No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The ID of the clan the caller is in.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: The caller left the clan. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such clan in the caller's game (clan_not_found). This also happens when the clan was deleted because its last member left.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_not_found
+                  message: Clan not found
+        "409":
+          description: The caller is not a member of this clan (not_in_clan).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_in_clan
+                  message: You are not a member of this clan
+  /api/v1/clans/{clanID}/members:
+    get:
+      tags: [clans]
+      operationId: listClanMembers
+      summary: Members of a clan
+      description: |
+        Returns the members of a clan of the caller's game: the owner first, then the others
+        in the order they joined. Any player of the game may look (for example before
+        joining). A clan of another game answers 404 like a clan that does not exist.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The clan's ID (from the clan list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The members.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberList"
+              example:
+                members:
+                  - playerId: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                    displayName: Ali
+                    role: owner
+                    joinedAt: "2026-11-07T17:30:00Z"
+                  - playerId: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+                    displayName: Leyla
+                    role: member
+                    joinedAt: "2026-11-07T17:31:12Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such clan in the caller's game (clan_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_not_found
+                  message: Clan not found
+  /api/v1/clans/{clanID}/members/{playerID}:
+    delete:
+      tags: [clans]
+      operationId: kickClanMember
+      summary: Remove a member from the clan (by clan role)
+      description: |
+        A member removes someone of a lower role, if their role has `canKick` in the game's
+        `clan.roles` (the owner may remove anyone). Without published roles only the owner can.
+        Nobody removes themselves (they leave instead), and nobody is above the owner, so the
+        owner never changes and the clan is never deleted by this call.
+        The removed player is free at once: they can join this or another clan again (there
+        is no ban). The clan must belong to the caller's game; a clan of another game
+        answers 404 like a clan that does not exist.
+
+        Everything happens in one transaction with the clan row locked, like joining and
+        leaving, so a removal and a leave at the same time cannot get the counts out of step.
+        Social then publishes `clan.member_left` with `reason: "kicked"` and `kicked_by`
+        (docs/event-messages.md). No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          description: The ID of the clan the caller owns.
+          schema:
+            type: string
+            format: uuid
+        - name: playerID
+          in: path
+          required: true
+          description: The member to remove (`playerId` from the clan's member list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: The member was removed. No body.
+        "400":
+          description: The caller named themselves (cannot_kick_self); they leave instead.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: cannot_kick_self
+                  message: You cannot remove yourself; leave the clan instead
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller's clan role does not allow it, or the caller is not in the clan
+            (not_allowed), or the request came from a website that is not in the allowed
+            origins (origin_not_allowed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_allowed
+                  message: Your clan role does not allow this
+        "404":
+          description: |
+            No such clan in the caller's game (clan_not_found), or the player is not a member
+            of this clan (member_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: member_not_found
+                  message: This player is not a member of the clan
+  /api/v1/clans/{clanID}/members/{playerID}/promote:
+    post:
+      tags: [clans]
+      operationId: promoteClanMember
+      summary: Move a member one role up
+      description: |
+        One step up the game's `clan.roles`. The caller's role needs `canPromote` (the owner
+        always has it), the member must have a lower role than the caller, and the new role
+        must still be below the caller's own: nobody can make someone their equal, and nobody
+        is promoted to owner. Without published roles there is nothing between member and
+        owner, so this answers 403.
+
+        Decided in one transaction with the clan row locked, like join, leave and kick. Social
+        then publishes `clan.member_role_changed` (docs/event-messages.md). No request body.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: playerID
+          in: path
+          required: true
+          description: The member (`playerId` from the clan's member list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The member's new role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberRole"
+              example:
+                playerId: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                displayName: Leyla
+                role: elder
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller's clan role does not allow this step, the caller names themselves or is
+            not in the clan (not_allowed), or the request came from a website that is not in
+            the allowed origins (origin_not_allowed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_allowed
+                  message: Your clan role does not allow this
+        "404":
+          description: |
+            No such clan in the caller's game (clan_not_found), or the player is not a member
+            of this clan (member_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: member_not_found
+                  message: This player is not a member of the clan
+  /api/v1/clans/{clanID}/members/{playerID}/demote:
+    post:
+      tags: [clans]
+      operationId: demoteClanMember
+      summary: Move a member one role down
+      description: |
+        One step down the game's `clan.roles`. The caller's role needs `canPromote` (the owner
+        always has it) and the member must have a lower role than the caller. A member at the
+        first role answers 409 already_lowest_role.
+
+        Decided in one transaction with the clan row locked, like join, leave and kick. Social
+        then publishes `clan.member_role_changed` (docs/event-messages.md). No request body.
+      security:
+        - playerToken: []
+      parameters:
+        - name: clanID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: playerID
+          in: path
+          required: true
+          description: The member (`playerId` from the clan's member list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The member's new role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberRole"
+              example:
+                playerId: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                displayName: Leyla
+                role: member
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The caller's clan role does not allow this step, the caller names themselves or is
+            not in the clan (not_allowed), or the request came from a website that is not in
+            the allowed origins (origin_not_allowed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_allowed
+                  message: Your clan role does not allow this
+        "404":
+          description: |
+            No such clan in the caller's game (clan_not_found), or the player is not a member
+            of this clan (member_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: member_not_found
+                  message: This player is not a member of the clan
+        "409":
+          description: The member already has the first (lowest) role (already_lowest_role).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: already_lowest_role
+                  message: This member already has the lowest role
+  /api/v1/friends:
+    get:
+      tags: [friends]
+      operationId: listFriends
+      summary: The caller's friends
+      description: |
+        Returns the caller's friends in their game, sorted by name (ignoring upper/lower case).
+        An empty list when the caller has no friends yet.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The friends.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendList"
+              example:
+                friends:
+                  - id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                    displayName: Aysel
+                    since: "2026-11-10T08:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/friends/requests:
+    get:
+      tags: [friends]
+      operationId: listFriendRequests
+      summary: The caller's pending friend requests
+      description: |
+        Returns the caller's pending requests, newest first: `incoming` were sent to the caller
+        (they can accept them), `outgoing` were sent by the caller. `player` is always the
+        other player. Both lists are empty, never missing, when there are none.
+      security:
+        - playerToken: []
+      responses:
+        "200":
+          description: The pending requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendRequests"
+              example:
+                incoming:
+                  - id: 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
+                    player:
+                      id: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                      displayName: Murad
+                    createdAt: "2026-11-10T08:00:00Z"
+                outgoing: []
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+    post:
+      tags: [friends]
+      operationId: sendFriendRequest
+      summary: Send a friend request
+      description: |
+        Asks another player of the caller's game to be friends. `playerId` is the social
+        service's own player ID (as in member lists), not the game's player ID.
+
+        If that player had already sent the caller a request, sending one back accepts it:
+        the answer is 200 with the new friend instead of 201. A pair of players has at most
+        one pending request, in either direction, and requests sent by both players at the
+        same moment end as one friendship.
+
+        After the change is saved, `friend.request_sent` (201) or `friend.accepted` (200) is
+        published to RabbitMQ (README "RabbitMQ events").
+      security:
+        - playerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendFriendRequest"
+            example:
+              playerId: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+      responses:
+        "201":
+          description: The new pending request. `player` is the player it was sent to.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendRequest"
+              example:
+                id: 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d
+                player:
+                  id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                  displayName: Aysel
+                createdAt: "2026-11-10T08:00:00Z"
+        "200":
+          description: That player had already asked the caller, so they are friends now. The new friend.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Friend"
+              example:
+                id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                displayName: Aysel
+                since: "2026-11-10T08:00:00Z"
+        "400":
+          description: |
+            The body is not valid JSON or has unknown fields (invalid_json), `playerId` is missing
+            (invalid_player_id), or it is the caller (cannot_friend_yourself).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: cannot_friend_yourself
+                  message: You cannot send a friend request to yourself
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such player in the caller's game (player_not_found). A player of another game, or an ID that is not a UUID, counts as not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: player_not_found
+                  message: Player not found
+        "409":
+          description: |
+            The two are friends already (already_friends), the caller already sent this player a
+            request (friend_request_exists), or the caller blocked this player (player_blocked:
+            unblock first). A player who blocked the caller answers 404 player_not_found instead,
+            so the block stays hidden.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: friend_request_exists
+                  message: You already sent this player a friend request
+  /api/v1/friends/requests/{requestID}/accept:
+    post:
+      tags: [friends]
+      operationId: acceptFriendRequest
+      summary: Accept a friend request
+      description: |
+        Accepts a pending request sent to the caller: the request is removed and the two
+        players become friends, in one transaction. Publishes `friend.accepted` afterwards.
+        No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          description: The request's ID (from the incoming list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Accepted. The new friend (the player who sent the request).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Friend"
+              example:
+                id: 7d2f1c0e-2b5a-4e8f-9a61-3c4d5e6f7a8b
+                displayName: Murad
+                since: "2026-11-10T08:05:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The website is not allowed (origin_not_allowed), or the caller sent this request and
+            only the other player can accept it (not_request_receiver).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_request_receiver
+                  message: Only the player who received this request can accept it
+        "404":
+          description: No such pending request for the caller (friend_request_not_found). A request of another game, one between two other players, or one already accepted counts as not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: friend_request_not_found
+                  message: Friend request not found
+  /api/v1/friends/{playerID}:
+    delete:
+      tags: [friends]
+      operationId: removeFriend
+      summary: Remove a friend
+      description: |
+        Ends the caller's friendship with this player, for both of them, in one transaction with
+        the pair locked. Afterwards they are strangers again and either may send a new request.
+        Publishes `friend.removed` afterwards. No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: playerID
+          in: path
+          required: true
+          description: The friend's player ID in the social service (from the friends list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Removed. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: The caller is not friends with this player (not_friends). Also for an unknown player, a player of another game, or an ID that is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_friends
+                  message: You are not friends with this player
+  /api/v1/friends/requests/{requestID}:
+    delete:
+      tags: [friends]
+      operationId: cancelFriendRequest
+      summary: Cancel a friend request
+      description: |
+        The caller takes back a pending request they sent. Only the sender can cancel; the
+        receiver declines instead. Publishes `friend.request_cancelled` afterwards. No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          description: The request's ID (from the outgoing list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Cancelled. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The website is not allowed (origin_not_allowed), or the caller received this request and
+            can only decline it (not_request_sender).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_request_sender
+                  message: Only the player who sent this request can cancel it
+        "404":
+          description: No such pending request for the caller (friend_request_not_found). Also when it was already accepted, declined or cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: friend_request_not_found
+                  message: Friend request not found
+  /api/v1/friends/requests/{requestID}/decline:
+    post:
+      tags: [friends]
+      operationId: declineFriendRequest
+      summary: Decline a friend request
+      description: |
+        The caller turns down a pending request sent to them; the request is deleted. Only the
+        receiver can decline; the sender cancels instead. Publishes `friend.request_declined` afterwards
+        (Realtime tells only the caller's own tabs, so the sender is not told). No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - name: requestID
+          in: path
+          required: true
+          description: The request's ID (from the incoming list).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Declined. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            The website is not allowed (origin_not_allowed), or the caller sent this request and
+            can only cancel it (not_request_receiver).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_request_receiver
+                  message: Only the player who received this request can decline it
+        "404":
+          description: No such pending request for the caller (friend_request_not_found). Also when it was already accepted, declined or cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: friend_request_not_found
+                  message: Friend request not found
+  /internal/v1/friendships:
+    get:
+      tags: [internal]
+      operationId: listFriendshipsForSync
+      summary: Every friendship of every game, one page at a time (for the realtime backfill)
+      description: |
+        For other services, not for the SDK: the realtime service reads it at startup (when its
+        backfill is switched on) to create the conversations of friendships it never heard about.
+        Needs `X-Internal-Token` (the value of `SOCIAL_INTERNAL_TOKEN`); a player token is not accepted.
+        While `SOCIAL_INTERNAL_TOKEN` is not set, this route answers 404 `not_found`, like an unknown route.
+
+        Unlike every `/api/v1` endpoint it covers all games, because the caller rebuilds state for all of them.
+        Each friendship names its `gameId`.
+
+        Friendships come in a fixed order (game, then `playerA`, then `playerB`; `playerA` is the smaller ID).
+        Pass `nextCursor` as `after` to get the next page; it is missing on the last page. A cursor is
+        opaque: send it back unchanged. Friendships made while a caller is paging may or may not be included;
+        a friendship is never returned twice.
+      security:
+        - internalToken: []
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page. Leave out for the first page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: How many friendships at most, 1 to 500 (default 200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 200
+      responses:
+        "200":
+          description: One page of friendships. An empty list when there are none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FriendshipSyncPage"
+              example:
+                friendships:
+                  - gameId: a6c1e2f0-1111-4222-8333-944455556666
+                    playerA:
+                      id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
+                      displayName: Aysel
+                    playerB:
+                      id: 8f1d2c3b-4a5e-4b6c-8d7e-9f0a1b2c3d4e
+                      displayName: Ali
+                    since: "2026-11-10T08:00:00Z"
+                nextCursor: YTZjMWUyZjAtMTExMS00MjIyLTgzMzMtOTQ0NDU1NTU2NjY2
+        "400":
+          description: |
+            Wrong input. `code` is `invalid_cursor` (`after` was not made by a previous page) or
+            `invalid_limit` (not a whole number from 1 to 500).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_cursor
+                  message: after is not a cursor from a previous page
+        "401":
+          description: |
+            `X-Internal-Token` is missing or wrong. Code: `invalid_internal_token`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_internal_token
+                  message: Send the internal token in the X-Internal-Token header
+        "404":
+          $ref: "#/components/responses/NotFound"
 components:
   securitySchemes:
     playerToken:
@@ -67,7 +1337,7 @@ components:
       type: apiKey
       in: header
       name: X-Internal-Token
-      description: Shared secret for the /internal endpoints, used only by the platform service.
+      description: Shared secret for the /internal endpoints (`SOCIAL_INTERNAL_TOKEN`), used only by other services, for now the realtime service.
   schemas:
     Status:
       type: object
@@ -78,6 +1348,267 @@ components:
           enum: [ok, ready]
         service:
           type: string
+    Player:
+      type: object
+      required: [id, gameId, externalId, displayName, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Our own ID for the player.
+        gameId:
+          type: string
+          format: uuid
+          description: The game the player belongs to (from the token).
+        externalId:
+          type: string
+          description: The game's own player ID (the token's sub).
+        displayName:
+          type: string
+          description: Name shown to other players (from the token).
+        createdAt:
+          type: string
+          format: date-time
+          description: When the player was first seen.
+    Clan:
+      type: object
+      required: [id, name, memberCount, maxMembers]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        memberCount:
+          type: integer
+          description: How many players are in the clan now.
+        maxMembers:
+          type: integer
+          description: |
+            How many players a clan of this game can have: the game's `clan.maxMembers` from its
+            published widget config (10 before the first publish). The same for every clan of
+            the game. After the developer lowers it, a clan can show `memberCount` above
+            `maxMembers`: nobody is removed, the clan just takes no one new.
+    CreateClanRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 20
+          description: Clan name, 3 to 20 characters after trimming.
+    MyClan:
+      type: object
+      required: [clan, role]
+      properties:
+        clan:
+          $ref: "#/components/schemas/Clan"
+        role:
+          $ref: "#/components/schemas/RoleId"
+    RoleId:
+      type: string
+      pattern: "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+      maxLength: 24
+      description: |
+        A role id of the game's `clan.roles` (config v1), such as `member`, `elder`,
+        `co-leader`. The SDK shows the role's name from the config. The owner always has the
+        last role; a role the developer removed reads as the first one. Before the game
+        publishes roles there are two: `member` and `owner`.
+      example: co-leader
+    MemberRole:
+      type: object
+      required: [playerId, displayName, role]
+      properties:
+        playerId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        role:
+          $ref: "#/components/schemas/RoleId"
+    Member:
+      type: object
+      required: [playerId, displayName, role, joinedAt]
+      properties:
+        playerId:
+          type: string
+          format: uuid
+          description: The social service's own ID for the player (not the game's player ID).
+        displayName:
+          type: string
+        role:
+          $ref: "#/components/schemas/RoleId"
+        joinedAt:
+          type: string
+          format: date-time
+    MemberList:
+      type: object
+      required: [members]
+      properties:
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/Member"
+    ClanList:
+      type: object
+      required: [clans]
+      properties:
+        clans:
+          type: array
+          items:
+            $ref: "#/components/schemas/Clan"
+    FriendPlayer:
+      type: object
+      required: [id, displayName]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The social service's own ID for the player (not the game's player ID).
+        displayName:
+          type: string
+    Friend:
+      type: object
+      required: [id, displayName, since]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The friend's player ID in the social service.
+        displayName:
+          type: string
+        since:
+          type: string
+          format: date-time
+          description: When the two became friends.
+    FriendList:
+      type: object
+      required: [friends]
+      properties:
+        friends:
+          type: array
+          items:
+            $ref: "#/components/schemas/Friend"
+    BlockedPlayer:
+      type: object
+      required: [id, displayName, since]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The blocked player's ID in the social service.
+        displayName:
+          type: string
+        since:
+          type: string
+          format: date-time
+          description: When the caller blocked this player.
+    BlockList:
+      type: object
+      required: [blocks]
+      properties:
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/BlockedPlayer"
+    FriendshipSyncPlayer:
+      type: object
+      required: [id, displayName]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Social's own ID for the player.
+        displayName:
+          type: string
+    FriendshipSync:
+      type: object
+      required: [gameId, playerA, playerB, since]
+      properties:
+        gameId:
+          type: string
+          format: uuid
+        playerA:
+          $ref: "#/components/schemas/FriendshipSyncPlayer"
+        playerB:
+          $ref: "#/components/schemas/FriendshipSyncPlayer"
+        since:
+          type: string
+          format: date-time
+    FriendshipSyncPage:
+      type: object
+      required: [friendships]
+      properties:
+        friendships:
+          type: array
+          items:
+            $ref: "#/components/schemas/FriendshipSync"
+        nextCursor:
+          type: string
+          description: Pass it as `after` to get the next page. Missing on the last page.
+    FriendRequest:
+      type: object
+      required: [id, player, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        player:
+          $ref: "#/components/schemas/FriendPlayer"
+        createdAt:
+          type: string
+          format: date-time
+    FriendRequests:
+      type: object
+      required: [incoming, outgoing]
+      properties:
+        incoming:
+          type: array
+          description: Sent to the caller; they can accept them. `player` is the sender.
+          items:
+            $ref: "#/components/schemas/FriendRequest"
+        outgoing:
+          type: array
+          description: Sent by the caller, waiting for the other player. `player` is the receiver.
+          items:
+            $ref: "#/components/schemas/FriendRequest"
+    SendFriendRequest:
+      type: object
+      required: [playerId]
+      additionalProperties: false
+      properties:
+        playerId:
+          type: string
+          format: uuid
+          description: The social service's ID of the player to ask.
+    PlayerSearchResult:
+      type: object
+      required: [id, displayName, relation]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The social service's own ID for the player (use it as playerId to send a request).
+        displayName:
+          type: string
+        relation:
+          type: string
+          enum: [none, friend, request_sent, request_received, blocked]
+          description: How the player relates to the caller.
+        requestId:
+          type: string
+          format: uuid
+          description: The pending request, only for request_sent and request_received.
+    PlayerSearchList:
+      type: object
+      required: [players]
+      properties:
+        players:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerSearchResult"
     Error:
       type: object
       required: [error]
@@ -93,6 +1624,36 @@ components:
               type: string
               description: Human-readable explanation.
   responses:
+    Unauthorized:
+      description: |
+        No valid player token. Every /api/v1 endpoint needs `Authorization: Bearer <player token>`.
+        Codes: missing_token, invalid_token, token_expired (get a new token from the game),
+        wrong_token_type (for example a developer token).
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: Bearer realm="social"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: token_expired
+              message: The player token has expired; get a new one from the game
+    BlockPlayerNotFound:
+      description: |
+        No such player in the caller's game (player_not_found). Also for a player of another
+        game, or an ID that is not a UUID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: player_not_found
+              message: Player not found
     NotFound:
       description: No such route.
       content:

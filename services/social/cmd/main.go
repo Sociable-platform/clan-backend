@@ -8,20 +8,28 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/config"
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/auth"
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/gameconfig"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/handler"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/service"
 )
 
 const serviceName = "social"
+
+// minInternalTokenLen keeps the shared secret of the /internal endpoints from being guessable.
+const minInternalTokenLen = 32
 
 func main() {
 	if err := run(); err != nil {
@@ -36,6 +44,21 @@ func run() error {
 		return err
 	}
 	log := logx.New(serviceName, config.String("LOG_LEVEL", "info"))
+
+	// Social holds only platform's PUBLIC key: it can check player tokens, never create them.
+	keyFile := config.String("SOCIAL_JWT_PUBLIC_KEY_FILE", "")
+	if keyFile == "" {
+		return fmt.Errorf("SOCIAL_JWT_PUBLIC_KEY_FILE is not set (see README: JWT signing key)")
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return fmt.Errorf("read JWT public key: %w", err)
+	}
+	verifyKey, err := jwt.ParsePublicKeyPEM(keyPEM)
+	if err != nil {
+		return err
+	}
+	log.Info("loaded JWT public key", "file", keyFile)
 
 	// Stop cleanly on Ctrl+C or when Docker sends SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -53,12 +76,59 @@ func run() error {
 		log.Warn("SOCIAL_DATABASE_URL is not set: starting without a database, /ready will report not ready")
 	}
 
+	// Events for the other services (see README "RabbitMQ events"). Without a broker URL they are
+	// dropped. The publisher connects on its first event, so a broker that is down never stops
+	// social from starting, and events.Safe makes sure it never fails a request either.
+	var publisher events.Publisher = events.Noop{}
+	if url := config.String("SOCIAL_RABBITMQ_URL", ""); url != "" {
+		rabbit := events.NewRabbitMQ(url, log)
+		defer rabbit.Close()
+		publisher = rabbit
+		log.Info("publishing events to rabbitmq", "exchange", events.Exchange) // never log the URL: it holds the password
+	} else {
+		log.Warn("SOCIAL_RABBITMQ_URL is not set: events for other services are dropped")
+	}
+
+	// The clan rules each game set in Studio (clan.maxMembers), read from platform's published
+	// config and kept for SOCIAL_CONFIG_CACHE_TTL. Without a platform URL every game gets the
+	// default (10 members). Platform being down never fails a request: the last known rules,
+	// or the default, are used.
+	var rules gameconfig.Source = gameconfig.Fixed{}
+	if url := config.String("SOCIAL_PLATFORM_URL", ""); url != "" {
+		ttl, err := config.Duration("SOCIAL_CONFIG_CACHE_TTL", 30*time.Second)
+		if err != nil {
+			return err
+		}
+		client, err := gameconfig.NewClient(url, 3*time.Second, ttl, log)
+		if err != nil {
+			return err
+		}
+		rules = client
+		log.Info("reading clan rules from platform", "url", url, "cache_ttl", ttl)
+	} else {
+		log.Warn("SOCIAL_PLATFORM_URL is not set: every game gets the default clan size", "max_members", gameconfig.DefaultMaxMembers)
+	}
+
 	// Wiring: repository (database) -> service (rules) -> handler (HTTP).
 	repo := repository.New(pool)
-	svc := service.New(repo)
+	svc := service.New(repo).WithPublisher(events.Safe(publisher, log)).WithRules(rules)
+
+	// The /internal routes (for realtime's backfill) need a shared secret. Without one they answer 404.
+	internalToken := config.String("SOCIAL_INTERNAL_TOKEN", "")
+	switch {
+	case internalToken == "":
+		log.Warn("SOCIAL_INTERNAL_TOKEN is not set: the /internal endpoints are switched off")
+	case len(internalToken) < minInternalTokenLen:
+		return fmt.Errorf("SOCIAL_INTERNAL_TOKEN must be at least %d characters (try: openssl rand -hex 32)", minInternalTokenLen)
+	default:
+		log.Info("internal endpoints enabled") // never log the token itself
+	}
 
 	mux := http.NewServeMux()
-	handler.New(serviceName, svc).Register(mux)
+	// Every /api/v1 route requires a player token signed by platform (checked with verifyKey).
+	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now), log).
+		WithInternal(httpx.RequireInternal(internalToken)).
+		Register(mux)
 
 	// Browser pages allowed to call this service (the demo game, where the SDK runs).
 	origins := config.List("SOCIAL_CORS_ORIGINS", []string{"http://localhost:5174"})

@@ -1,0 +1,22 @@
+# Traefik static configuration (read once at start). Routes live in dynamic/.
+entryPoints:
+  web:
+    address: ":80"
+    transport:
+      # The defaults are close to 60 s. Keep these above 60 s so an idle WebSocket is not cut
+      # before the realtime service's own 60 s ping/pong check notices that the client is gone.
+      respondingTimeouts:
+        readTimeout: 120s
+        writeTimeout: 120s
+        idleTimeout: 180s
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+log:
+  level: INFO
+
+# No access log on purpose: the WebSocket URL carries the player token in its query string,
+# and tokens must never be written to logs. Do not enable accessLog without removing the query.

@@ -1,0 +1,8 @@
+# Not part of the chart package. Two Helm rules to keep in mind here:
+# - a pattern without "/" matches a file of that name in ANY folder, so "secrets*.yaml" would
+#   also hide templates/secrets.yaml; the files are therefore named exactly.
+# - no "!" lines: in Helm (unlike git) a "!" line hides every file that does not match it.
+secrets.prod.yaml
+secrets.local.yaml
+secrets.example.yaml
+README.md

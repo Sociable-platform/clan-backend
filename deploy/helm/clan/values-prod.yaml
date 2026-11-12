@@ -1,0 +1,22 @@
+# The Oracle server: one k3s node, ARM, 2 OCPU / 12 GB, 100 GB disk.
+postgres:
+  storage: 20Gi
+rabbitmq:
+  storage: 2Gi
+
+# sslip.io answers every *.130-61-158-79.sslip.io with 130.61.158.79, so no DNS setup is needed.
+# For an own domain, point *.<domain> at 130.61.158.79 and put it here.
+ingress:
+  domain: 130-61-158-79.sslip.io
+  tls:
+    enabled: true
+    issuer: letsencrypt
+
+# Browser pages allowed to call each service: Studio (studio.<domain>) and the demo game
+# (game.<domain>), plus the local dev servers so a local Studio or game can try the deployed backend.
+platform:
+  corsOrigins: https://studio.130-61-158-79.sslip.io,http://localhost:5173
+social:
+  corsOrigins: https://game.130-61-158-79.sslip.io,http://localhost:5174
+realtime:
+  corsOrigins: https://game.130-61-158-79.sslip.io,http://localhost:5174

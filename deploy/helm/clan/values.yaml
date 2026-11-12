@@ -1,0 +1,121 @@
+# Settings of the clan chart.
+#   values-prod.yaml   the Oracle server (k3s)
+#   values-local.yaml  a cluster on your own computer (k3d, Docker Desktop)
+# Passwords and keys are NOT in these files. They come from a secrets file that is never committed
+# (copy secrets.example.yaml) and from --set-file for the JWT keys; see README.md.
+
+# Storage class of the disks (PersistentVolumeClaims). Empty means the cluster's default,
+# which is local-path on k3s: a folder on the server's own disk.
+storageClass: ""
+
+postgres:
+  image: postgres:16-alpine
+  # Admin user and database; each service gets its own user and schema from files/01-schemas.sh.
+  user: postgres
+  database: clan
+  storage: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+rabbitmq:
+  image: rabbitmq:3-management-alpine
+  user: clan
+  storage: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+  # Declares the exchange, queue and bindings of files/definitions.json after every install and
+  # upgrade, the same way rabbitmq-setup does in docker-compose.
+  setupImage: curlimages/curl:8.11.1
+
+# The GitLab container registry the service images are pulled from.
+registry:
+  server: registry.gitlab.com
+
+# The images of platform, social and realtime and their migration images, built by the CI job
+# "images" (see the main README, "Container images"): <repository>/<service>:<tag> and
+# <repository>/<service>-migrate:<tag>.
+image:
+  repository: registry.gitlab.com/clan-platform/clan-backend
+  # A short commit SHA (a fixed version you can roll back to), or a branch name: "develop" is the
+  # newest build of develop. Override it per install: --set image.tag=a1b2c3d
+  tag: develop
+  # Always: a moving tag like "develop" is downloaded again whenever a pod starts.
+  pullPolicy: Always
+
+logLevel: info
+
+# One Postgres database for all services, each with its own user and schema (see postgres above).
+# Browsers may call a service only from these origins (CORS): comma-separated scheme://host[:port],
+# no trailing slash, "*" not allowed. The real domains are set in values-prod.yaml with the Ingress.
+platform:
+  replicas: 1
+  corsOrigins: http://localhost:5173
+  developerTokenTtl: 24h
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+social:
+  replicas: 1
+  corsOrigins: http://localhost:5174
+  # How long social keeps a game's clan rules read from platform.
+  configCacheTtl: 30s
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# Realtime always runs exactly one pod: presence, rate limits and the config cache live in its
+# memory, and it is the only reader of the realtime.events queue. Updates stop the old pod before
+# the new one starts (strategy Recreate), so two never run at once.
+realtime:
+  corsOrigins: http://localhost:5174
+  # true: read every friendship from social once at startup (needs secrets.socialInternalToken).
+  backfill: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# Filled from the secrets file (never committed). Each password: at least 12 letters and digits only,
+# because the services put them inside database and broker URLs.
+secrets:
+  postgresPassword: ""
+  platformDbPassword: ""
+  socialDbPassword: ""
+  realtimeDbPassword: ""
+  rabbitmqPassword: ""
+  # Shared secrets of the /internal endpoints, at least 32 characters. Empty switches the endpoints off.
+  platformInternalToken: ""
+  socialInternalToken: ""
+  # PEM files, given with --set-file (see README.md).
+  jwtPrivateKey: ""
+  jwtPublicKey: ""
+  # A GitLab group deploy token with the read_registry scope. Empty: no pull secret is created.
+  registryUsername: ""
+  registryPassword: ""
+
+# Public URLs (Traefik, the Ingress controller of k3s): platform.<domain>, social.<domain> and
+# realtime.<domain>. Empty domain: nothing is published, the services stay inside the cluster.
+ingress:
+  domain: ""
+  tls:
+    # true: HTTPS with a Let's Encrypt certificate from cert-manager, and http:// redirects to it.
+    enabled: false
+    # letsencrypt (real certificates) or letsencrypt-staging (untrusted test certificates)
+    issuer: letsencrypt

@@ -1,0 +1,3024 @@
+{
+  "info": {
+    "name": "Clan realtime - friends, chat, history and read (TEAM-146, TEAM-147, TEAM-150)",
+    "description": "Realtime service flow, end to end (TEAM-146: conversation list, message history, conversation.read; TEAM-147: every server frame has the event envelope).\n\nHOW TO RUN\n1. Start everything: docker compose up -d (platform 8081, social 8082, realtime 8083, postgres, rabbitmq). Collection variables: baseUrl (platform), socialUrl, realtimeUrl, wsUrl.\n2. Run folders 1, 2, 3 with the Runner (or request by request). They create a developer, game, key, three players, make Alice and Bob friends through Social, and check that Realtime made the conversation.\n3. Folder 4 is MANUAL (a collection cannot hold WebSocket requests): send its request, open the Visualize tab, open two WebSocket tabs and send the shown frames. Bob sends 3 messages, Alice 1. Check that every frame the server sends has event_id, type, occurred_at, game_id and data.\n4. Run folder 5 (list, history, paging).\n5. Folder 6 is MANUAL: send conversation.read in Alice's WebSocket tab (the Visualize tab shows the frame).\n6. Run folder 7 (unread is 0 for Alice, still 1 for Bob). Folder 8 (errors and security) can run any time after folder 3.\nFolder 9 (TEAM-150) tries every message.send rule: it sets the game's rules through Platform (draft and publish), puts a block event on RabbitMQ (set rabbitUser and rabbitPassword) and its STEP requests show the frames to send in the WebSocket tabs. Run it after folder 3; folder 8 does not depend on it.\nRunning the whole collection in one go fails folders 5 and 7 unless the manual steps were done in between.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1 Setup (platform and social)",
+      "item": [
+        {
+          "name": "Setup - register developer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "register"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{devEmail}}\",\n  \"password\": \"{{devPassword}}\",\n  \"name\": \"Dev\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('devEmail', `dev+${Date.now()}@example.com`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup - login developer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{devEmail}}\",\n  \"password\": \"{{devPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('devToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup - register a game",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Space Raiders\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('gameId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup - create an API key",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const k = pm.response.json();",
+                  "pm.collectionVariables.set('apiKey', k.key);",
+                  "pm.collectionVariables.set('keyId', k.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue token - Alice (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_alice\",\n  \"displayName\": \"Alice\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "What the game's own server does after logging its player in. The game in the token is the key's game."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b64 = s => JSON.parse(atob(s.replace(/-/g, '+').replace(/_/g, '/')));",
+                  "const r = pm.response.json();",
+                  "const p = b64(r.token.split('.')[1]);",
+                  "pm.test('claims: player, this game, name, 1 hour', () => {",
+                  "  pm.expect(p.typ).to.eql('player');",
+                  "  pm.expect(p.sub).to.eql('u_alice');",
+                  "  pm.expect(p.name).to.eql('Alice');",
+                  "  pm.expect(p.gid).to.eql(pm.collectionVariables.get('gameId'));",
+                  "});",
+                  "pm.collectionVariables.set('aliceToken', r.token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue token - Bob (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_bob\",\n  \"displayName\": \"Bob\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "What the game's own server does after logging its player in. The game in the token is the key's game."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b64 = s => JSON.parse(atob(s.replace(/-/g, '+').replace(/_/g, '/')));",
+                  "const r = pm.response.json();",
+                  "const p = b64(r.token.split('.')[1]);",
+                  "pm.test('claims: player, this game, name, 1 hour', () => {",
+                  "  pm.expect(p.typ).to.eql('player');",
+                  "  pm.expect(p.sub).to.eql('u_bob');",
+                  "  pm.expect(p.name).to.eql('Bob');",
+                  "  pm.expect(p.gid).to.eql(pm.collectionVariables.get('gameId'));",
+                  "});",
+                  "pm.collectionVariables.set('bobToken', r.token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue token - Carol (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_carol\",\n  \"displayName\": \"Carol\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "What the game's own server does after logging its player in. The game in the token is the key's game."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const b64 = s => JSON.parse(atob(s.replace(/-/g, '+').replace(/_/g, '/')));",
+                  "const r = pm.response.json();",
+                  "const p = b64(r.token.split('.')[1]);",
+                  "pm.test('claims: player, this game, name, 1 hour', () => {",
+                  "  pm.expect(p.typ).to.eql('player');",
+                  "  pm.expect(p.sub).to.eql('u_carol');",
+                  "  pm.expect(p.name).to.eql('Carol');",
+                  "  pm.expect(p.gid).to.eql(pm.collectionVariables.get('gameId'));",
+                  "});",
+                  "pm.collectionVariables.set('carolToken', r.token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Social - Alice's own ID (200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/players/me",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Realtime asks Social this same question to learn the player's own ID (the token only holds the game's player ID, like u_alice)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('has a social ID (a UUID) and the display name', () => {",
+                  "  pm.expect(j.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(j.displayName).to.eql('Alice');",
+                  "});",
+                  "pm.collectionVariables.set('aliceId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Social - Bob's own ID (200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/players/me",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Realtime asks Social this same question to learn the player's own ID (the token only holds the game's player ID, like u_alice)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('has a social ID (a UUID) and the display name', () => {",
+                  "  pm.expect(j.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(j.displayName).to.eql('Bob');",
+                  "});",
+                  "pm.collectionVariables.set('bobId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Social - Carol's own ID (200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/players/me",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Realtime asks Social this same question to learn the player's own ID (the token only holds the game's player ID, like u_alice)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('has a social ID (a UUID) and the display name', () => {",
+                  "  pm.expect(j.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(j.displayName).to.eql('Carol');",
+                  "});",
+                  "pm.collectionVariables.set('carolId', j.id);"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Makes its own developer, game, API key and three players (Alice, Bob and Carol, who is never a friend), so it can be re-run. Needs the platform, social and realtime services, postgres and rabbitmq (docker compose up)."
+    },
+    {
+      "name": "2 Friends (social)",
+      "item": [
+        {
+          "name": "Alice sends Bob a friend request (201)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/friends/requests",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "friends",
+                "requests"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{bobId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('reqId', pm.response.json().id);",
+                  "pm.test('the request has an id', () => pm.expect(pm.collectionVariables.get('reqId')).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Bob accepts the request (200)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/friends/requests/{{reqId}}/accept",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "friends",
+                "requests",
+                "{{reqId}}",
+                "accept"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Social saves the friendship and publishes friend.accepted to RabbitMQ. Realtime reads it and creates the conversation."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the new friend is Alice', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('aliceId')));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Social publishes friend.accepted after the commit; Realtime turns it into a conversation. That is asynchronous, so the next folder waits for it."
+    },
+    {
+      "name": "3 Realtime before chatting",
+      "item": [
+        {
+          "name": "List conversations - Alice (200): the new DM, empty",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Retries by itself (up to 6 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the friend.accepted event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const tries = Number(pm.collectionVariables.get('tries') || 0);",
+                  "const list = pm.response.code === 200 ? pm.response.json().conversations : [];",
+                  "if (list.length === 0 && tries < 6) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const j = pm.response.json();",
+                  "  pm.test('REST answers are plain JSON: only { conversations } (no frame envelope)', () => pm.expect(j).to.have.all.keys('conversations'));",
+                  "  pm.test('exactly one conversation', () => pm.expect(j.conversations).to.have.lengthOf(1));",
+                  "  const c = j.conversations[0];",
+                  "  pm.test('a DM without a clan', () => { pm.expect(c.kind).to.eql('dm'); pm.expect(c.clanId).to.be.null; });",
+                  "  pm.test('members are Alice and Bob, with their social IDs', () => {",
+                  "    const got = c.members.map(m => m.id + ':' + m.name).sort();",
+                  "    pm.expect(got).to.eql([pm.collectionVariables.get('aliceId') + ':Alice', pm.collectionVariables.get('bobId') + ':Bob'].sort());",
+                  "    c.members.forEach(m => pm.expect(m.online).to.be.a('boolean'));",
+                  "  });",
+                  "  pm.test('nobody wrote yet: lastMessage null, unread 0', () => { pm.expect(c.lastMessage).to.be.null; pm.expect(c.unread).to.eql(0); });",
+                  "  pm.collectionVariables.set('convId', c.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Bob (200): the same conversation",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json().conversations;",
+                  "pm.test('Bob has the same conversation as Alice', () => { pm.expect(c).to.have.lengthOf(1); pm.expect(c[0].id).to.eql(pm.collectionVariables.get('convId')); pm.expect(c[0].unread).to.eql(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Carol (200): none",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Carol is in the same game but is nobody's friend."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('an empty list, not null', () => pm.expect(pm.response.json().conversations).to.eql([]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Alice (200): empty",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('no messages yet, no more', () => pm.expect(pm.response.json()).to.eql({ messages: [], hasMore: false }));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4 STEP A - chat over WebSocket (manual)",
+      "item": [
+        {
+          "name": "STOP - open two WebSocket tabs and chat (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Postman collections cannot hold WebSocket requests, so this step is manual. Send this request, open the Visualize tab: it shows the two WebSocket URLs and the exact frames to send. Then run folder 5."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const send = (id, body) => JSON.stringify({ type: 'message.send', id, data: { conversationId: v('convId'), body } });",
+                  "const view = {",
+                  "  wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'),",
+                  "  wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'),",
+                  "  b1: send('b-1', 'bob 1'), b2: send('b-2', 'bob 2'), b3: send('b-3', 'bob 3'), a1: send('a-1', 'alice 1')",
+                  "};",
+                  "pm.visualizer.set(`",
+                  "<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px}</style>",
+                  "<h2>STEP A - chat over WebSocket (do this by hand, then run folder 5)</h2>",
+                  "<p>In Postman: <b>New &gt; WebSocket</b> (two tabs). Press <b>Connect</b> in each. The first message in each tab is <code>hello</code>.</p>",
+                  "<h3>Tab 1 - Alice: URL</h3><pre>{{wsAlice}}</pre>",
+                  "<h3>Tab 2 - Bob: URL</h3><pre>{{wsBob}}</pre>",
+                  "<h3>In Bob's tab send these three messages (Message type: JSON), one by one</h3><pre>{{b1}}</pre><pre>{{b2}}</pre><pre>{{b3}}</pre>",
+                  "<h3>Then in Alice's tab send</h3><pre>{{a1}}</pre>",
+                  "<h3>What you should see in every frame the server sends</h3>",
+                  "<pre>{ \"event_id\": \"<uuid>\", \"type\": \"...\", \"occurred_at\": \"2026-...Z\", \"game_id\": \"{{gameId}}\", \"data\": { ... } }</pre>",
+                  "<ul><li><code>hello</code>, <code>pong</code>, <code>error</code>, <code>message.ack</code>, <code>message.new</code> all have the five fields</li>",
+                  "<li><code>game_id</code> is this game's id; <code>event_id</code> is a UUID, new for each frame</li>",
+                  "<li>the sender gets <code>message.ack</code> (data has replyTo, messageId, createdAt), then everybody gets <code>message.new</code></li>",
+                  "<li>the <code>message.new</code> in Alice's tab and in Bob's tab have the <b>same</b> event_id; <code>occurred_at</code> of the ack and the message.new is the time the message was stored</li></ul>",
+                  "`, Object.assign(view, { gameId: v('gameId') }));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Manual. Bob sends three messages and Alice one, over two WebSocket tabs. Folder 5 checks the result."
+    },
+    {
+      "name": "5 Realtime after chatting (run after step A)",
+      "item": [
+        {
+          "name": "List conversations - Alice (200): last message and unread 3",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Alice wrote the newest message herself; the 3 unread are Bob's. Her own messages never count as unread."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json().conversations[0];",
+                  "pm.test('same conversation', () => pm.expect(c.id).to.eql(pm.collectionVariables.get('convId')));",
+                  "pm.test('lastMessage is her own newest one', () => {",
+                  "  pm.expect(c.lastMessage.body).to.eql('alice 1');",
+                  "  pm.expect(c.lastMessage.senderId).to.eql(pm.collectionVariables.get('aliceId'));",
+                  "  pm.expect(c.lastMessage.senderName).to.eql('Alice');",
+                  "  pm.expect(c.lastMessage.createdAt).to.match(/^\\d{4}-\\d\\d-\\d\\dT/);",
+                  "});",
+                  "pm.test('unread is 3 (Bob\\'s three messages)', () => pm.expect(c.unread).to.eql(3));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Bob (200): unread 1",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json().conversations[0];",
+                  "pm.test('lastMessage is the same newest message', () => pm.expect(c.lastMessage.body).to.eql('alice 1'));",
+                  "pm.test('unread is 1 (Alice\\'s message), his own do not count', () => pm.expect(c.unread).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Alice (200): newest first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('every message has id, senderId, senderName, body, createdAt', () => j.messages.forEach(m => pm.expect(m).to.have.all.keys('id', 'senderId', 'senderName', 'body', 'createdAt')));",
+                  "pm.test('newest first', () => pm.expect(j.messages.map(m => m.body)).to.eql(['alice 1', 'bob 3', 'bob 2', 'bob 1']));",
+                  "pm.test('nothing older', () => pm.expect(j.hasMore).to.eql(false));",
+                  "pm.test('ids are UUIDv7: newest has the biggest id', () => { const ids = j.messages.map(m => m.id); pm.expect(ids).to.eql([...ids].sort().reverse()); });",
+                  "pm.test('sender names are kept', () => pm.expect(j.messages.map(m => m.senderName)).to.eql(['Alice', 'Bob', 'Bob', 'Bob']));",
+                  "pm.collectionVariables.set('newestId', j.messages[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - page 1, limit=2 (200): hasMore true",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages?limit=2",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('the two newest', () => pm.expect(j.messages.map(m => m.body)).to.eql(['alice 1', 'bob 3']));",
+                  "pm.test('older messages exist', () => pm.expect(j.hasMore).to.eql(true));",
+                  "pm.collectionVariables.set('cursor', j.messages[1].id); // the oldest message of this page"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - page 2, before=<cursor>&limit=2 (200): hasMore false",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages?before={{cursor}}&limit=2",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "before",
+                  "value": "{{cursor}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('the next two, the cursor message itself is not repeated', () => pm.expect(j.messages.map(m => m.body)).to.eql(['bob 2', 'bob 1']));",
+                  "pm.test('this was the last page', () => pm.expect(j.hasMore).to.eql(false));",
+                  "pm.collectionVariables.set('oldestId', j.messages[j.messages.length - 1].id); // the oldest message of the whole history"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - before the oldest message (200): empty",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages?before={{oldestId}}",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "before",
+                  "value": "{{oldestId}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('nothing older than the oldest', () => pm.expect(pm.response.json()).to.eql({ messages: [], hasMore: false }));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Bob sees the same conversation (200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the same four messages', () => pm.expect(pm.response.json().messages.map(m => m.body)).to.eql(['alice 1', 'bob 3', 'bob 2', 'bob 1']));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6 STEP B - conversation.read over WebSocket (manual)",
+      "item": [
+        {
+          "name": "STOP - send conversation.read in Alice's WebSocket tab (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual. Open the Visualize tab: it shows the frame with this run's conversation and newest message id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { frame: JSON.stringify({ type: 'conversation.read', id: 'r-1', data: { conversationId: v('convId'), lastMessageId: v('newestId') } }),",
+                  "  older: JSON.stringify({ type: 'conversation.read', id: 'r-2', data: { conversationId: v('convId'), lastMessageId: v('cursor') } }) };",
+                  "pm.visualizer.set(`",
+                  "<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all}</style>",
+                  "<h2>STEP B - tell the server Alice has read the conversation</h2>",
+                  "<p>In <b>Alice's</b> WebSocket tab send:</p><pre>{{frame}}</pre>",
+                  "<p>There is <b>no reply</b> (that is correct). Then run folder 7: Alice's unread is 0.</p>",
+                  "<p>Optional: send this older position afterwards, nothing changes (the position only moves forward):</p><pre>{{older}}</pre>",
+                  "`, view);"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Manual. conversation.read is a WebSocket frame, so it cannot be a collection request."
+    },
+    {
+      "name": "7 Realtime after conversation.read (run after step B)",
+      "item": [
+        {
+          "name": "List conversations - Alice (200): unread dropped to 0",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json().conversations[0];",
+                  "pm.test('unread is 0 after conversation.read', () => pm.expect(c.unread).to.eql(0));",
+                  "pm.test('the last message is still there', () => pm.expect(c.lastMessage.body).to.eql('alice 1'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Bob (200): his unread is untouched",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Bob still has 1 unread: reading is per player', () => pm.expect(pm.response.json().conversations[0].unread).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Alice (200): reading does not delete anything",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('still the four messages', () => pm.expect(pm.response.json().messages).to.have.lengthOf(4));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8 Errors and security (no WebSocket needed, run after folder 3)",
+      "item": [
+        {
+          "name": "History - Carol is not a member (403 not_member)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is not_member', () => pm.expect(pm.response.json().error.code).to.eql('not_member'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - unknown conversation (403 not_member, same answer)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/00000000-0000-7000-8000-000000000000/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "00000000-0000-7000-8000-000000000000",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is not_member', () => pm.expect(pm.response.json().error.code).to.eql('not_member'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - id that is not a UUID (403 not_member)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/not-a-uuid/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "not-a-uuid",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is not_member', () => pm.expect(pm.response.json().error.code).to.eql('not_member'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - limit=0 (400 invalid_limit)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages?limit=0",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "0"
+                }
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_limit', () => pm.expect(pm.response.json().error.code).to.eql('invalid_limit'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - limit=101 (400 invalid_limit)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages?limit=101",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "101"
+                }
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_limit', () => pm.expect(pm.response.json().error.code).to.eql('invalid_limit'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - limit=abc (400 invalid_limit)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages?limit=abc",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "abc"
+                }
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_limit', () => pm.expect(pm.response.json().error.code).to.eql('invalid_limit'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - before=xyz (400 invalid_before)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{convId}}/messages?before=xyz",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{convId}}",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "before",
+                  "value": "xyz"
+                }
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_before', () => pm.expect(pm.response.json().error.code).to.eql('invalid_before'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "No Authorization header (401 missing_token)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is missing_token', () => pm.expect(pm.response.json().error.code).to.eql('missing_token'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);",
+                  "pm.test('says how to authenticate', () => pm.response.to.have.header('WWW-Authenticate'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Token in the query string is not accepted (401 missing_token)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations?token={{aliceToken}}",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ],
+              "query": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is missing_token', () => pm.expect(pm.response.json().error.code).to.eql('missing_token'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Garbage token (401 invalid_token)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "not.a.token",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is invalid_token', () => pm.expect(pm.response.json().error.code).to.eql('invalid_token'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Developer token is not a player token (401 wrong_token_type)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is wrong_token_type', () => pm.expect(pm.response.json().error.code).to.eql('wrong_token_type'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Another website's Origin (403 origin_not_allowed)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "http://evil.example"
+              }
+            ],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is origin_not_allowed', () => pm.expect(pm.response.json().error.code).to.eql('origin_not_allowed'));",
+                  "pm.test('the error has a message', () => pm.expect(pm.response.json().error.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The allowed Origin works (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Origin",
+                "value": "http://localhost:5174"
+              }
+            ],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the browser is allowed to read the answer', () => pm.response.to.have.header('Access-Control-Allow-Origin', 'http://localhost:5174'));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Every request here must be refused with the standard error shape { error: { code, message } }. They need folders 1 to 3 first (a conversation and tokens)."
+    },
+    {
+      "name": "9 Message rules over WebSocket (TEAM-150, manual steps)",
+      "item": [
+        {
+          "name": "Rules: 20 characters, profanity filter on, no slow mode - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 20,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": true,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: 20 characters, profanity filter on, no slow mode - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C1 - too_long, the filter, empty, not_member (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C1 - length, profanity filter, empty, not a member</h2><p>Use the two WebSocket tabs of folder 4 (Alice and Bob). If they are closed: <b>New &gt; WebSocket</b>, URL <code>{{wsAlice}}</code> for Alice and <code>{{wsBob}}</code> for Bob, Connect. A new connection starts with a fresh rate limit.</p><p>In <b>Alice's</b> tab send each frame below (a second apart, not more than 5 in 5 seconds) and read the answer. Bob's tab sees only the messages that were stored.</p><h3>1. 21 characters &rarr; <code>error</code> <b>too_long</b> (replyTo c-1, data.message names the limit 20)</h3><pre>{\"type\": \"message.send\", \"id\": \"c-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"{{twentyOne}}\"}}</pre><h3>2. 20 emoji (80 bytes) &rarr; <code>message.ack</code> (the limit counts characters)</h3><pre>{\"type\": \"message.send\", \"id\": \"c-2\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"{{twentyEmoji}}\"}}</pre><h3>3. a banned word &rarr; ack; Bob gets <code>message.new</code> with the body <b>oh *** happens</b> (the filter is on)</h3><pre>{\"type\": \"message.send\", \"id\": \"c-3\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"oh shit happens\"}}</pre><h3>4. a word that only contains a banned one &rarr; ack, text unchanged (whole words only)</h3><pre>{\"type\": \"message.send\", \"id\": \"c-4\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"a classy assassin\"}}</pre><h3>5. only spaces &rarr; <code>error</code> <b>empty</b></h3><pre>{\"type\": \"message.send\", \"id\": \"c-5\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"   \"}}</pre><h3>6. a conversation that does not exist &rarr; <code>error</code> <b>not_member</b></h3><pre>{\"type\": \"message.send\", \"id\": \"c-6\", \"data\": {\"conversationId\": \"{{other}}\", \"body\": \"hi\"}}</pre><p>Every error frame has the envelope (event_id, type, occurred_at, game_id, data) and <code>data.replyTo</code> = the id you sent. Then run folder 5's history request: the stored body is <code>oh *** happens</code>, never the original.</p>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C2 - rate_limited and the 1008 close (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C2 - rate limit: 5 per 5 seconds, 3 refused in a row close the connection</h2><p>Open a <b>new</b> WebSocket tab for Alice with <code>{{wsAlice}}</code> (a fresh connection). Click Send on the frame below five times, quickly, then once more, within 5 seconds. Change the <code>id</code> each time if you want to tell the answers apart.</p><pre>{\"type\": \"message.send\", \"id\": \"r-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"spam\"}}</pre><ul><li>Frames 1 to 5: <code>message.ack</code> (+ <code>message.new</code>)</li><li>Frame 6: <code>error</code> <b>rate_limited</b>, replyTo = its id, <b>no</b> retryAfterMs</li><li>Send two more right away: two more <b>rate_limited</b> errors, and then the connection <b>closes with code 1008</b> (Postman shows it in the connection log)</li><li>After <b>one or two</b> refusals nothing closes; wait 5 seconds and you may send again</li><li>Connect again: it works at once (the limit is per connection)</li></ul>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: slow mode 5 seconds - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 5,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: slow mode 5 seconds - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C3 - slow_mode with retryAfterMs, across tabs (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C3 - slow mode (5 s), counted for the player across tabs</h2><p>Open <b>two</b> WebSocket tabs for Alice (<code>{{wsAlice}}</code>) and keep Bob's. Within 5 seconds:</p><h3>1. Alice tab 1 &rarr; <code>message.ack</code></h3><pre>{\"type\": \"message.send\", \"id\": \"s-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"first\"}}</pre><h3>2. Alice tab 1, right after &rarr; <code>error</code> <b>slow_mode</b> with <code>data.retryAfterMs</code> (milliseconds, at most 5000, less because time has passed)</h3><pre>{\"type\": \"message.send\", \"id\": \"s-2\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"second\"}}</pre><h3>3. Alice tab 2 &rarr; <b>slow_mode</b> as well: it is one player, not one tab</h3><pre>{\"type\": \"message.send\", \"id\": \"s-3\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"from the other tab\"}}</pre><h3>4. Bob, a different player &rarr; <code>message.ack</code>, not held back</h3><pre>{\"type\": \"message.send\", \"id\": \"s-4\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"bob is free\"}}</pre><h3>5. Wait the retryAfterMs, then Alice (any tab) &rarr; <code>message.ack</code></h3><pre>{\"type\": \"message.send\", \"id\": \"s-5\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"after the wait\"}}</pre><p>The refused messages are not stored (folder 5's history request shows only the accepted ones).</p>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: direct messages off - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": false,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: direct messages off - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C4a - feature_disabled: direct messages off (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C4a - direct messages turned off</h2><p>Use the two WebSocket tabs of folder 4 (Alice and Bob). If they are closed: <b>New &gt; WebSocket</b>, URL <code>{{wsAlice}}</code> for Alice and <code>{{wsBob}}</code> for Bob, Connect. A new connection starts with a fresh rate limit.</p><h3>Alice sends &rarr; <code>error</code> <b>feature_disabled</b> (data.message: Direct messages are turned off in this game)</h3><pre>{\"type\": \"message.send\", \"id\": \"f-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"hi\"}}</pre>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: chat off - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": false,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: chat off - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C4b - feature_disabled: chat off (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C4b - the whole chat turned off</h2><p>Use the two WebSocket tabs of folder 4 (Alice and Bob). If they are closed: <b>New &gt; WebSocket</b>, URL <code>{{wsAlice}}</code> for Alice and <code>{{wsBob}}</code> for Bob, Connect. A new connection starts with a fresh rate limit.</p><h3>Alice sends &rarr; <code>error</code> <b>feature_disabled</b> (data.message: Chat is turned off in this game)</h3><pre>{\"type\": \"message.send\", \"id\": \"f-2\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"hi\"}}</pre><p><code>clan_chat</code> off gives the same error for a clan room; clan rooms do not exist yet in Realtime (TEAM-147), so that one is covered by unit tests only.</p>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: everything on again - save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rules: everything on again - publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the new config and tells the players (config.updated). Wait a second before the next WebSocket frame."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('has a version', () => pm.expect(pm.response.json().version).to.be.a('number'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Block: Alice blocks Bob (player.blocked on the exchange, 200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{rabbitUrl}}/api/exchanges/%2F/socialkit.events/publish",
+              "host": [
+                "{{rabbitUrl}}"
+              ],
+              "path": [
+                "api",
+                "exchanges",
+                "%2F",
+                "socialkit.events",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPassword}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{payload}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Social has no block endpoints yet, so the event it will publish is put on the RabbitMQ exchange by hand (management API). Needs rabbitUser and rabbitPassword (the RABBITMQ_USER and RABBITMQ_PASSWORD of your .env)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const ev = { event_id: pm.variables.replaceIn('{{$guid}}'), type: 'player.blocked', occurred_at: new Date().toISOString(), game_id: pm.collectionVariables.get('gameId'),",
+                  "  data: { blocker_id: pm.collectionVariables.get('aliceId'), blocked_id: pm.collectionVariables.get('bobId') } };",
+                  "pm.variables.set('payload', JSON.stringify({ properties: { content_type: 'application/json', delivery_mode: 2 }, routing_key: 'player.blocked', payload: JSON.stringify(ev), payload_encoding: 'string' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the exchange routed it to a queue', () => pm.expect(pm.response.json().routed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "STEP C5 - blocked, in both directions (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual WebSocket step: send this request, open the Visualize tab."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), conv: v('convId'),",
+                  "  other: '00000000-0000-4000-8000-000000000000', twentyOne: 'x'.repeat(21), twentyEmoji: '\\u{1F600}'.repeat(20) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} code{background:#eee;padding:1px 3px}</style><h2>STEP C5 - blocked</h2><p>Wait a second after the request before sending.</p><p>Use the two WebSocket tabs of folder 4 (Alice and Bob). If they are closed: <b>New &gt; WebSocket</b>, URL <code>{{wsAlice}}</code> for Alice and <code>{{wsBob}}</code> for Bob, Connect. A new connection starts with a fresh rate limit.</p><h3>1. Bob sends &rarr; <code>error</code> <b>blocked</b></h3><pre>{\"type\": \"message.send\", \"id\": \"b-1\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"hello?\"}}</pre><h3>2. Alice sends (she blocked Bob) &rarr; <b>blocked</b> too: a block stops the conversation both ways</h3><pre>{\"type\": \"message.send\", \"id\": \"b-2\", \"data\": {\"conversationId\": \"{{conv}}\", \"body\": \"hello?\"}}</pre><p>Then send the <b>Unblock</b> request below, wait a second, and send again: <code>message.ack</code>.</p>`, view);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unblock: Alice unblocks Bob (player.unblocked on the exchange, 200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{rabbitUrl}}/api/exchanges/%2F/socialkit.events/publish",
+              "host": [
+                "{{rabbitUrl}}"
+              ],
+              "path": [
+                "api",
+                "exchanges",
+                "%2F",
+                "socialkit.events",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPassword}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{payload}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Social has no block endpoints yet, so the event it will publish is put on the RabbitMQ exchange by hand (management API). Needs rabbitUser and rabbitPassword (the RABBITMQ_USER and RABBITMQ_PASSWORD of your .env)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const ev = { event_id: pm.variables.replaceIn('{{$guid}}'), type: 'player.unblocked', occurred_at: new Date().toISOString(), game_id: pm.collectionVariables.get('gameId'),",
+                  "  data: { blocker_id: pm.collectionVariables.get('aliceId'), blocked_id: pm.collectionVariables.get('bobId') } };",
+                  "pm.variables.set('payload', JSON.stringify({ properties: { content_type: 'application/json', delivery_mode: 2 }, routing_key: 'player.unblocked', payload: JSON.stringify(ev), payload_encoding: 'string' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the exchange routed it to a queue', () => pm.expect(pm.response.json().routed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset the rules - 300 characters, no filter, no slow mode (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"dark\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Unbounded\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Inter\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"solid\",\n        \"width\": 1,\n        \"color\": \"#2C3B3E\",\n        \"corners\": \"soft\"\n      },\n      \"buttons\": {\n        \"style\": \"filled\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 1,\n        \"blur\": false\n      },\n      \"colors\": {\n        \"brand\": \"#80EAFF\",\n        \"background\": \"#141D1F\",\n        \"surface\": \"#1B2628\",\n        \"text\": \"#E8ECED\",\n        \"muted\": \"#B7C5C8\"\n      },\n      \"textures\": {\n        \"panel\": {\n          \"asset\": \"tex_grid\",\n          \"fit\": \"tile\",\n          \"strength\": \"subtle\"\n        }\n      }\n    },\n    \"layout\": {\n      \"position\": \"bottom-right\",\n      \"startCollapsed\": true\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 30,\n      \"tags\": true,\n      \"descriptionMax\": 140,\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": [\n          \"star\",\n          \"diamond\",\n          \"peak\",\n          \"spark\",\n          \"moon\",\n          \"cross\"\n        ]\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": true\n        },\n        \"create\": {\n          \"enabled\": true\n        },\n        \"home\": {\n          \"enabled\": true,\n          \"header\": \"compact\",\n          \"showStats\": true\n        },\n        \"members\": {\n          \"enabled\": true\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 300,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {\n        \"panelTitle\": \"Arena Social\",\n        \"createCta\": \"+ Start a {clan}\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Every message.send rule over a real WebSocket. The REST requests set the game's rules (Platform draft and Publish) or put a block event on RabbitMQ; the STEP requests are manual: send them, open the Visualize tab, and send the frames it shows in the two WebSocket tabs. Needs folders 1 to 3 first (a game, three players and the friendship of Alice and Bob). Set rabbitUser and rabbitPassword (and rabbitUrl, http://localhost:15672) for the block requests."
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "socialUrl",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "realtimeUrl",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "wsUrl",
+      "value": "ws://localhost:8083"
+    },
+    {
+      "key": "devPassword",
+      "value": "correct horse"
+    },
+    {
+      "key": "devEmail",
+      "value": ""
+    },
+    {
+      "key": "devToken",
+      "value": ""
+    },
+    {
+      "key": "gameId",
+      "value": ""
+    },
+    {
+      "key": "apiKey",
+      "value": ""
+    },
+    {
+      "key": "keyId",
+      "value": ""
+    },
+    {
+      "key": "aliceToken",
+      "value": ""
+    },
+    {
+      "key": "bobToken",
+      "value": ""
+    },
+    {
+      "key": "carolToken",
+      "value": ""
+    },
+    {
+      "key": "aliceId",
+      "value": ""
+    },
+    {
+      "key": "bobId",
+      "value": ""
+    },
+    {
+      "key": "carolId",
+      "value": ""
+    },
+    {
+      "key": "rabbitUrl",
+      "value": "http://localhost:15672"
+    },
+    {
+      "key": "rabbitUser",
+      "value": ""
+    },
+    {
+      "key": "rabbitPassword",
+      "value": ""
+    },
+    {
+      "key": "reqId",
+      "value": ""
+    },
+    {
+      "key": "convId",
+      "value": ""
+    },
+    {
+      "key": "newestId",
+      "value": ""
+    },
+    {
+      "key": "cursor",
+      "value": ""
+    },
+    {
+      "key": "oldestId",
+      "value": ""
+    },
+    {
+      "key": "tries",
+      "value": "0"
+    }
+  ]
+}

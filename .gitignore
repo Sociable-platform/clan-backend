@@ -1,8 +1,12 @@
 # Secrets and local settings
 .env
 *.pem
+# Helm secrets files (deploy/helm/clan/secrets.example.yaml is the committed template)
+deploy/helm/*/secrets*.yaml
+!deploy/helm/*/secrets.example.yaml
 
 # Build output
+.cache/
 bin/
 *.exe
 *.test

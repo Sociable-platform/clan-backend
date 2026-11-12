@@ -1,8 +1,10 @@
 package httpx
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +23,28 @@ func TestWriteErrKeepsAppErrors(t *testing.T) {
 	}
 	if body.Error.Code != "clan_full" || body.Error.Message == "" {
 		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestWriteErrWithoutDetailsHasNoDetailsField(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteErr(rec, NewError(http.StatusConflict, "clan_full", "Clan has reached 10 members"))
+	if want := `{"error":{"code":"clan_full","message":"Clan has reached 10 members"}}`; strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("body %s, want %s", rec.Body.String(), want)
+	}
+}
+
+func TestWriteErrSendsDetails(t *testing.T) {
+	type problem struct {
+		Path string `json:"path"`
+		Rule string `json:"rule"`
+	}
+	rec := httptest.NewRecorder()
+	WriteErr(rec, NewErrorWithDetails(http.StatusBadRequest, "invalid_widget_config", "Config is not valid",
+		[]problem{{Path: "/clan/maxMembers", Rule: "maximum"}}))
+	want := `{"error":{"code":"invalid_widget_config","message":"Config is not valid","details":[{"path":"/clan/maxMembers","rule":"maximum"}]}}`
+	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("status %d, body %s, want %s", rec.Code, rec.Body.String(), want)
 	}
 }
 
@@ -66,5 +90,31 @@ func TestRecoverMiddleware(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status %d", rec.Code)
+	}
+}
+
+// hijackableRecorder is a ResponseWriter that can be hijacked, like the real server's.
+type hijackableRecorder struct {
+	*httptest.ResponseRecorder
+	hijacked bool
+}
+
+func (h *hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijacked = true
+	return nil, nil, nil
+}
+
+// A handler behind RequestLog must still be able to take over the connection
+// (WebSocket upgrade), so the recorder has to expose the real ResponseWriter.
+func TestRequestLogKeepsResponseWriterHijackable(t *testing.T) {
+	rec := &hijackableRecorder{ResponseRecorder: httptest.NewRecorder()}
+	h := RequestLog(discardLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, _, err := http.NewResponseController(w).Hijack(); err != nil {
+			t.Errorf("hijack through RequestLog: %v", err)
+		}
+	}))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !rec.hijacked {
+		t.Fatal("the hijack did not reach the real ResponseWriter")
 	}
 }

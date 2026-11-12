@@ -1,0 +1,37 @@
+# Public URLs of the realtime service. The service itself serves /health, /ready and /api/v1/...;
+# Traefik rewrites the public /realtime/v1/... paths to those (the query string is kept, which the
+# WebSocket needs for ?token=).
+#
+#   /realtime/v1/healthz  -> /health
+#   /realtime/v1/readyz   -> /ready
+#   /realtime/v1/<rest>   -> /api/v1/<rest>   (conversations, messages, ws)
+http:
+  routers:
+    realtime-probes:
+      rule: Path(`/realtime/v1/healthz`) || Path(`/realtime/v1/readyz`)
+      entryPoints: [web]
+      middlewares: [realtime-probes-rewrite]
+      service: realtime
+      priority: 20
+    realtime-api:
+      rule: PathPrefix(`/realtime/v1/`)
+      entryPoints: [web]
+      middlewares: [realtime-api-rewrite]
+      service: realtime
+      priority: 10
+
+  middlewares:
+    realtime-probes-rewrite:
+      replacePathRegex:
+        regex: ^/realtime/v1/(health|ready)z$
+        replacement: /$1
+    realtime-api-rewrite:
+      replacePathRegex:
+        regex: ^/realtime/v1/(.*)
+        replacement: /api/v1/$1
+
+  services:
+    realtime:
+      loadBalancer:
+        servers:
+          - url: http://realtime:8083

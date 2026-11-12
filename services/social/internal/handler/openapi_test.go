@@ -19,7 +19,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	documented := readOperations(t, filepath.Join("..", "..", "..", "..", openAPIFile))
 
 	implemented := map[string]bool{}
-	for _, r := range New("test", fakeService{}).Routes() {
+	for _, r := range New("test", fakeService{}, passThrough, testLog()).Routes() {
 		implemented[strings.ToUpper(r.Method)+" "+r.Path] = true
 	}
 

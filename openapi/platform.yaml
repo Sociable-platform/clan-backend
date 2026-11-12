@@ -10,6 +10,7 @@ info:
     - Browser calls are only accepted from the origins in `PLATFORM_CORS_ORIGINS`
       (default `http://localhost:5173`, the dashboard). Other origins get 403 `origin_not_allowed`.
       Calls without an `Origin` header (the game's own server, curl) are not affected.
+      The one exception is `GET /api/v1/public/...`: it is open to every website (`Access-Control-Allow-Origin: *`).
 
     This file lists only implemented routes. `TestOpenAPIMatchesRoutes` fails when it
     and `services/platform/internal/handler` drift apart.
@@ -19,6 +20,63 @@ servers:
 tags:
   - name: system
     description: Health checks
+  - name: developers
+    description: Developer accounts for the dashboard
+  - name: games
+    description: Existing games a developer has registered with the toolkit
+  - name: api-keys
+    description: Secret keys a game's own server uses to get player tokens
+  - name: internal
+    description: Routes for other services (realtime), guarded by a shared secret; never for browsers
+  - name: widget
+    description: The clan widget's look, edited as a draft in the dashboard
+  - name: players
+    description: Player tokens, issued to a game's own server
+  - name: public
+    description: Read-only routes for a game's page in the player's browser; no login, open to every website
+x-valid-widget-config: &validConfig
+  schemaVersion: 1
+  game_id: b21d94e7-3c0a-4f68-8e15-a9d7c4f02b61
+  theme:
+    mode: light
+    fonts:
+      heading: { family: Fredoka, source: google }
+      body: { family: Nunito, source: google }
+    frame: { style: none, width: 1, color: "#D9DBD5", corners: round }
+    buttons: { style: outline, case: normal }
+    panel: { opacity: 0.9, blur: true }
+    colors:
+      brand: "#2E8B57"
+      background: "#FFFFFF"
+      surface: "#F2F3F1"
+      text: "#000000"
+      muted: "#5B5D56"
+    textures: {}
+  layout: { position: bottom-left, startCollapsed: false }
+  friends: { enabled: true }
+  clan:
+    enabled: false
+    maxMembers: 10
+    tags: false
+    descriptionMax: 140
+    badges: { source: developer, allowed: [] }
+    screens:
+      discover: { enabled: false }
+      create: { enabled: false }
+      home: { enabled: false, header: compact, showStats: false }
+      members: { enabled: false }
+  chat:
+    enabled: true
+    layout: bubbles
+    directMessages: true
+    clanChat: false
+    maxMessageLength: 500
+    slowModeSeconds: 0
+    profanityFilter: false
+    historyLimit: 50
+  texts:
+    terms: { clan: Clan, clans: Clans }
+    labels: {}
 paths:
   /health:
     get:
@@ -56,7 +114,836 @@ paths:
           $ref: "#/components/responses/OriginNotAllowed"
         "503":
           $ref: "#/components/responses/NotReady"
+  /api/v1/developers/register:
+    post:
+      tags: [developers]
+      operationId: registerDeveloper
+      summary: Create a developer account
+      description: |
+        The email is trimmed and lowercased; two accounts cannot share an email.
+        Password: 8 to 72 characters (bcrypt limit). Name: 1 to 100 characters.
+        Registering does not log the developer in; call login next.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              email: dev@example.com
+              password: correct horse
+              name: Dev One
+      responses:
+        "201":
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Developer"
+              example:
+                id: 6f1c1d1e-8a43-4d0e-9d57-0c2f0b1f6a10
+                email: dev@example.com
+                name: Dev One
+                createdAt: "2026-11-06T10:00:00Z"
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_email`, `invalid_password`, `invalid_name`
+            or `invalid_json`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_email
+                  message: Email address is not valid
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "409":
+          description: An account with this email already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: email_taken
+                  message: An account with this email already exists
+  /api/v1/developers/login:
+    post:
+      tags: [developers]
+      operationId: loginDeveloper
+      summary: Log in and get a developer token
+      description: |
+        Send the token as `Authorization: Bearer <token>` on developer endpoints.
+        An unknown email and a wrong password give the same 401.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              email: dev@example.com
+              password: correct horse
+      responses:
+        "200":
+          description: Logged in. The response is not cacheable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+              example:
+                token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+                expiresIn: 86400
+        "400":
+          description: The body is not valid JSON (`invalid_json`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_json
+                  message: Request body must contain a single JSON object
+        "401":
+          description: Email or password is wrong.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_credentials
+                  message: Email or password is wrong
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/developers/me:
+    get:
+      tags: [developers]
+      operationId: getCurrentDeveloper
+      summary: The logged-in developer
+      description: Accepts only a developer token. Player tokens and API keys are rejected.
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The developer behind the token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Developer"
+              example:
+                id: 6f1c1d1e-8a43-4d0e-9d57-0c2f0b1f6a10
+                email: dev@example.com
+                name: Dev One
+                createdAt: "2026-11-06T10:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/games:
+    get:
+      tags: [games]
+      operationId: listGames
+      summary: List my games
+      description: Returns only the games registered by the logged-in developer, newest first.
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The developer's games. An empty list when there are none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameList"
+              example:
+                games:
+                  - id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                    name: Space Raiders
+                    description: Browser shooter, 2 to 4 players
+                    allowedOrigins: ["https://play.example.com"]
+                    createdAt: "2026-11-07T09:30:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+    post:
+      tags: [games]
+      operationId: registerGame
+      summary: Register an existing game
+      description: |
+        Records an integration for a game the developer already has. This never creates a game.
+        The game belongs to the logged-in developer.
+      security:
+        - developerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterGameRequest"
+            example:
+              name: Space Raiders
+              description: Browser shooter, 2 to 4 players
+      responses:
+        "201":
+          description: Game registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+              example:
+                id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                name: Space Raiders
+                description: Browser shooter, 2 to 4 players
+                allowedOrigins: []
+                createdAt: "2026-11-07T09:30:00Z"
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_name`, `invalid_description` or `invalid_json`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_name
+                  message: Game name must be 1 to 100 characters
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/games/{gameID}/api-keys:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [api-keys]
+      operationId: listApiKeys
+      summary: List a game's API keys
+      description: |
+        Active and revoked keys, newest first. Only the prefix is shown, never the full key.
+        Only the game's owner can list its keys; for anyone else the game does not exist (404).
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The game's keys. An empty list when there are none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyList"
+              example:
+                apiKeys:
+                  - id: 3b1c6f0e-9d2a-4a53-8f0b-7a9d2f6c1e44
+                    gameId: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                    keyPrefix: clk_Ab3x
+                    createdAt: "2026-11-07T10:00:00Z"
+                    revokedAt: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+    post:
+      tags: [api-keys]
+      operationId: createApiKey
+      summary: Create an API key
+      description: |
+        Generates a random key. **The full key is in this response only**; the database keeps
+        just a hash, so it cannot be shown again. Keep it on the game's own server, never in
+        browser code. No request body.
+      security:
+        - developerToken: []
+      responses:
+        "201":
+          description: Key created. The response is not cacheable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NewApiKey"
+              example:
+                id: 3b1c6f0e-9d2a-4a53-8f0b-7a9d2f6c1e44
+                gameId: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                keyPrefix: clk_Ab3x
+                createdAt: "2026-11-07T10:00:00Z"
+                revokedAt: null
+                key: clk_Ab3xQ0m7w2n5v8k1p4s9d6f3g0h7j2l5z8c1x4b7n0m
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/allowed-origins:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    put:
+      tags: [games]
+      operationId: setAllowedOrigins
+      summary: Set the websites allowed to open a WebSocket for a game
+      description: |
+        Replaces the whole list. Realtime accepts a WebSocket from a browser only when the page's
+        `Origin` is one of these (once realtime uses the list; see the internal config endpoint).
+        Each origin is written as the browser sends it in the `Origin` header: `http` or `https`, then
+        the host and, when it is not the default, the port, for example `https://play.example.com` or
+        `http://localhost:5174`. No path, query, trailing slash or user name, and no wildcard.
+        Hosts are lower-cased and repeats are dropped. At most 20 origins, 255 characters each.
+        An empty list clears the setting. Nothing is saved when one origin is invalid.
+        Only the game's owner can set it; for anyone else the game does not exist (404).
+      security:
+        - developerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetAllowedOriginsRequest"
+            example:
+              allowedOrigins: ["https://play.example.com", "http://localhost:5174"]
+      responses:
+        "200":
+          description: The game with its new list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+              example:
+                id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                name: Space Raiders
+                description: Browser shooter, 2 to 4 players
+                allowedOrigins: ["https://play.example.com", "http://localhost:5174"]
+                createdAt: "2026-11-07T09:30:00Z"
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_origins` (a bad origin, too many, or `allowedOrigins`
+            missing or null) or `invalid_json` (also for unknown fields).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_origins
+                  message: '"*" is not a valid origin: wildcards are not supported. Use scheme://host[:port], like https://play.example.com'
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/widget/draft:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [widget]
+      operationId: getWidgetDraft
+      summary: Get a game's widget draft
+      description: |
+        The config the developer is editing. When nothing was saved yet it returns the default
+        config and `updatedAt` is null. Players never see drafts, only published versions.
+        Only the game's owner can read it; for anyone else the game does not exist (404).
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The current draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetDraft"
+              example:
+                config: *validConfig
+                updatedAt: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+    put:
+      tags: [widget]
+      operationId: saveWidgetDraft
+      summary: Save a game's widget draft
+      description: |
+        Replaces the whole draft with the config in the body. The config must be a JSON object
+        of at most 64 KB. Only the game's owner can save it; for anyone else the game does not
+        exist (404).
+      security:
+        - developerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveWidgetDraftRequest"
+            example:
+              config: *validConfig
+      responses:
+        "200":
+          description: The saved draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetDraft"
+              example:
+                config: *validConfig
+                updatedAt: "2026-11-08T12:00:00Z"
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_widget_config` when the config breaks the config v1
+            contract, or `invalid_json` when the request body itself is not valid JSON.
+
+            For `invalid_widget_config`, `error.details` lists every problem at once as
+            `{ path, rule, message }`: `path` is a JSON Pointer into the config (`""` is the whole
+            document), `rule` is the JSON Schema keyword that failed (`required`,
+            `additionalProperties`, `pattern`, `maximum`, ...). A config over 64 KB gives one issue
+            with rule `size`, and text that is not JSON gives one issue with rule `json`.
+            Clients should rely on `path` and `rule`; `message` is for people. Nothing is saved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_widget_config
+                  message: "Config is not valid: 2 problems, see details"
+                  details:
+                    - path: /chat/maxMessageLength
+                      rule: maximum
+                      message: must be at most 1000
+                    - path: /clan/maxMembers
+                      rule: maximum
+                      message: must be at most 200
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/widget/publish:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    post:
+      tags: [widget]
+      operationId: publishWidget
+      summary: Publish the widget draft
+      description: |
+        Publishes the saved draft as the next version of the game's widget (1, 2, 3 ...).
+        No request body: the server publishes the draft it holds, so a stale browser tab cannot
+        publish a different config. Wait until the last draft save has finished before calling it.
+        The draft stays as it is. Only the game's owner can publish; for anyone else the game does
+        not exist (404).
+      security:
+        - developerToken: []
+      responses:
+        "201":
+          description: Published. The response is the new version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetVersion"
+              example:
+                version: 3
+                publishedAt: "2026-11-08T12:00:00Z"
+                publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+                config: *validConfig
+        "400":
+          description: |
+            The saved draft is not accepted any more (`invalid_widget_config`, with `error.details`
+            as for saving a draft), for example because the rules became stricter after it was
+            saved. Save a corrected draft and publish again. Nothing is published.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_widget_config
+                  message: "Config is not valid: 2 problems, see details"
+                  details:
+                    - path: /chat/maxMessageLength
+                      rule: maximum
+                      message: must be at most 1000
+                    - path: /clan/maxMembers
+                      rule: maximum
+                      message: must be at most 200
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+        "409":
+          description: Nothing was saved yet, so there is nothing to publish (`widget_draft_missing`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: widget_draft_missing
+                  message: Save a draft before publishing
+  /api/v1/games/{gameID}/widget/versions:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [widget]
+      operationId: listWidgetVersions
+      summary: List published widget versions
+      description: |
+        Newest first, without the configs (read one with `GET .../versions/{version}`).
+        An empty list when the widget was never published. Only the game's owner can list them;
+        for anyone else the game does not exist (404).
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The published versions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetVersionList"
+              example:
+                versions:
+                  - version: 2
+                    publishedAt: "2026-11-08T12:00:00Z"
+                    publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+                  - version: 1
+                    publishedAt: "2026-11-07T18:30:00Z"
+                    publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/widget/versions/{version}:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+      - $ref: "#/components/parameters/WidgetVersionNumber"
+    get:
+      tags: [widget]
+      operationId: getWidgetVersion
+      summary: Get one published widget version
+      description: |
+        A published version with its config, for example to preview it or to copy it into the draft
+        with `PUT .../draft`. A number that is not a positive whole number is a version that does
+        not exist (404). Only the game's owner can read it.
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetVersion"
+              example:
+                version: 1
+                publishedAt: "2026-11-07T18:30:00Z"
+                publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+                config: *validConfig
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          $ref: "#/components/responses/WidgetVersionNotFound"
+  /api/v1/games/{gameID}/widget/versions/{version}/rollback:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+      - $ref: "#/components/parameters/WidgetVersionNumber"
+    post:
+      tags: [widget]
+      operationId: rollbackWidget
+      summary: Roll back to an earlier widget version
+      description: |
+        Publishes the config of that version again, as a **new** version on top of the history
+        (rolling back to 1 when 2 exists makes version 3). Nothing is deleted or changed, and the
+        draft is left alone: to edit the old config, read it with `GET .../versions/{version}` and
+        save it with `PUT .../draft`. No request body. Only the game's owner can roll back.
+      security:
+        - developerToken: []
+      responses:
+        "201":
+          description: Rolled back. The response is the new version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WidgetVersion"
+              example:
+                version: 3
+                publishedAt: "2026-11-08T12:05:00Z"
+                publishedBy: 5c0e7d9a-3b6f-4c58-9a21-1d8e4f7b2a60
+                config: *validConfig
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such game (`game_not_found`) or no such version (`widget_version_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: widget_version_not_found
+                  message: Widget version not found
+  /api/v1/api-keys/{keyID}:
+    delete:
+      tags: [api-keys]
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      description: |
+        The key stops working immediately and stays in the list marked revoked.
+        Revoking an already revoked key succeeds. Only the owner of the key's game can revoke it;
+        for anyone else the key does not exist (404).
+      security:
+        - developerToken: []
+      parameters:
+        - name: keyID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Key revoked.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such key, or it belongs to another developer's game.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: api_key_not_found
+                  message: API key not found
+  /api/v1/public/games/{gameID}/widget-config:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [public]
+      operationId: getPublicWidgetConfig
+      summary: Get the published widget config of a game
+      description: |
+        What the clan widget on a game's page loads to know how to look. It returns the **latest
+        published version** (a publish or a rollback makes a new latest version). A draft is never
+        returned, however recently it was saved.
+
+        No login, no API key: the game ID is public, and the answer holds only the config and its
+        version number (not who published it or when). Any website may call it
+        (`Access-Control-Allow-Origin: *`, `ETag` readable from JavaScript); every other route keeps
+        the origin list. A game that does not exist and a game that was never published get the same
+        404 `widget_not_published`, so the route does not reveal which game IDs exist.
+
+        **Caching.** Every 200 and 304 carries a strong `ETag` such as `"v3"`: the version number,
+        so it changes only when a publish or rollback adds a version. Send it back in
+        `If-None-Match` to get `304 Not Modified` with no body. `Cache-Control` is
+        `public, max-age=60`, so browsers and a CDN keep the answer for a minute and a new publish
+        reaches players within about that time. Errors are sent with `Cache-Control: no-store`.
+
+        **Load and rate limits.** The route is meant to be cached in front of the service. There is
+        no rate limit in the service itself; put a CDN or reverse-proxy limit in front of
+        `/api/v1/public/` before heavy production use. Each uncached call is one indexed query.
+      security: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The `ETag` of the copy the page already has. A match returns 304.
+          schema:
+            type: string
+          example: '"v3"'
+      responses:
+        "200":
+          description: The latest published config.
+          headers:
+            ETag:
+              description: Strong ETag, the version number in quotes.
+              schema:
+                type: string
+              example: '"v3"'
+            Cache-Control:
+              schema:
+                type: string
+              example: public, max-age=60
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicWidgetConfig"
+              example:
+                version: 3
+                config: *validConfig
+        "304":
+          description: The page already has this version. No body.
+          headers:
+            ETag:
+              schema:
+                type: string
+              example: '"v3"'
+            Cache-Control:
+              schema:
+                type: string
+              example: public, max-age=60
+        "404":
+          description: The game has no published widget (or no such game).
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: widget_not_published
+                  message: This game has no published widget
+  /api/v1/players/auth:
+    post:
+      tags: [players]
+      operationId: authPlayer
+      summary: Get a player token
+      description: |
+        Called by the **game's own server**, never by a browser: the API key must stay secret.
+        The game has already logged its player in with its own account system; this call
+        vouches for that player and returns a short-lived token for the browser and the SDK.
+
+        The token is an Ed25519 JWT (`typ` "player") with the claims `sub` (the game's player ID),
+        `gid` (the game the API key belongs to), `name` (display name), `iat` and `exp`.
+        It is valid for 1 hour. The game cannot be chosen in the body: it is always the key's game.
+        Social checks the token with platform's public key and never calls platform.
+
+        The key is checked before the body, so a wrong key gets 401 whatever the body holds.
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlayerAuthRequest"
+            example:
+              externalPlayerId: u_42
+              displayName: Rashad
+      responses:
+        "200":
+          description: Token issued. The response is not cacheable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerAuthResponse"
+              example:
+                token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+                expiresIn: 3600
+        "400":
+          description: |
+            Invalid input. `code` is `invalid_external_player_id`, `invalid_display_name`
+            or `invalid_json` (also for unknown fields).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_display_name
+                  message: displayName must be 1 to 50 characters without control characters
+        "401":
+          description: The `X-API-Key` header is missing, or the key is wrong or revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_api_key
+                  message: API key is missing, wrong or revoked
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /internal/v1/games/{gameID}/config:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [internal]
+      operationId: getInternalGameConfig
+      summary: A game's active config and allowed origins (for realtime)
+      description: |
+        For other services, not for browsers or the SDK: realtime reads it to check the `Origin` of a
+        WebSocket against the game's `allowedOrigins` and to know the game's chat rules.
+        Needs `X-Internal-Token` (the value of `PLATFORM_INTERNAL_TOKEN`); a developer or player token
+        is not accepted. While `PLATFORM_INTERNAL_TOKEN` is not set, this route answers 404 `not_found`,
+        like an unknown route.
+
+        `config` is the newest **published** version (never a draft), the same document as
+        `GET /api/v1/public/games/{gameID}/widget-config`. A game that exists but was never published
+        is not an error: `version` is 0 and `config` is null, and `allowedOrigins` is still there.
+        `allowedOrigins` is the list the developer set with `PUT /api/v1/games/{gameID}/allowed-origins`;
+        an empty list means none were set (what that means for a WebSocket is realtime's rule).
+        The answer is never cached.
+      security:
+        - internalToken: []
+      responses:
+        "200":
+          description: The game's active config and allowed origins.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InternalGameConfig"
+              example:
+                gameId: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                version: 3
+                config: *validConfig
+                allowedOrigins: ["https://play.example.com", "http://localhost:5174"]
+        "401":
+          description: |
+            `X-Internal-Token` is missing or wrong. Code: `invalid_internal_token`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_internal_token
+                  message: Send the internal token in the X-Internal-Token header
+        "404":
+          description: |
+            No such game, or a malformed ID (`game_not_found`), or the internal endpoints are switched
+            off (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: game_not_found
+                  message: Game not found
 components:
+  parameters:
+    GameID:
+      name: gameID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    WidgetVersionNumber:
+      name: version
+      in: path
+      required: true
+      description: Published version number, 1 or higher.
+      schema:
+        type: integer
+        minimum: 1
   securitySchemes:
     developerToken:
       type: http
@@ -68,6 +955,11 @@ components:
       in: header
       name: X-API-Key
       description: Secret API key of a game. Only the game's own server sends it, never a browser.
+    internalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: Shared secret for the /internal endpoints (`PLATFORM_INTERNAL_TOKEN`), used only by other services, for now the realtime service.
   schemas:
     Status:
       type: object
@@ -78,6 +970,263 @@ components:
           enum: [ok, ready]
         service:
           type: string
+    RegisterRequest:
+      type: object
+      required: [email, password, name]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    LoginRequest:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+          format: password
+    LoginResponse:
+      type: object
+      required: [token, expiresIn]
+      properties:
+        token:
+          type: string
+          description: Developer JWT (`typ` "developer", Ed25519).
+        expiresIn:
+          type: integer
+          description: Seconds until the token expires.
+    Developer:
+      type: object
+      required: [id, email, name, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    RegisterGameRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+    Game:
+      type: object
+      required: [id, name, description, allowedOrigins, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          description: Empty string when none was given.
+        allowedOrigins:
+          type: array
+          description: |
+            The websites allowed to open a WebSocket for this game (see `PUT .../allowed-origins`).
+            Empty until the developer sets some.
+          items:
+            type: string
+            example: https://play.example.com
+        createdAt:
+          type: string
+          format: date-time
+    SetAllowedOriginsRequest:
+      type: object
+      required: [allowedOrigins]
+      additionalProperties: false
+      properties:
+        allowedOrigins:
+          type: array
+          maxItems: 20
+          description: The whole new list; `[]` clears it. Each item is `scheme://host[:port]`, no wildcard.
+          items:
+            type: string
+            maxLength: 255
+    InternalGameConfig:
+      type: object
+      required: [gameId, version, config, allowedOrigins]
+      properties:
+        gameId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          description: The newest published version, 0 when the game was never published.
+        config:
+          type: object
+          nullable: true
+          description: The config of that version (config v1), null when `version` is 0.
+        allowedOrigins:
+          type: array
+          items:
+            type: string
+          description: Empty when the developer set none.
+    GameList:
+      type: object
+      required: [games]
+      properties:
+        games:
+          type: array
+          items:
+            $ref: "#/components/schemas/Game"
+    ApiKey:
+      type: object
+      required: [id, gameId, keyPrefix, createdAt, revokedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        gameId:
+          type: string
+          format: uuid
+        keyPrefix:
+          type: string
+          description: First 8 characters of the key (`clk_` and 4 more), to recognise it.
+        createdAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the key was revoked; null while it is active.
+    NewApiKey:
+      allOf:
+        - $ref: "#/components/schemas/ApiKey"
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: The full secret key. Returned only by the create call and never stored.
+    ApiKeyList:
+      type: object
+      required: [apiKeys]
+      properties:
+        apiKeys:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApiKey"
+    SaveWidgetDraftRequest:
+      type: object
+      required: [config]
+      properties:
+        config:
+          type: object
+          description: |
+            The widget config. It is checked against the config v1 contract (JSON Schema 2020-12,
+            `docs/config-v1` in the clan-frontend repository) and must be at most 64 KB.
+            Unknown fields are refused.
+          additionalProperties: true
+    WidgetDraft:
+      type: object
+      required: [config, updatedAt]
+      properties:
+        config:
+          type: object
+          additionalProperties: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the draft was last saved. Null while nothing was saved and `config` is the default.
+    WidgetVersionSummary:
+      type: object
+      required: [version, publishedAt, publishedBy]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: 1, 2, 3 ... per game. Never reused.
+        publishedAt:
+          type: string
+          format: date-time
+        publishedBy:
+          type: string
+          format: uuid
+          description: ID of the developer who published (or rolled back).
+    WidgetVersion:
+      allOf:
+        - $ref: "#/components/schemas/WidgetVersionSummary"
+        - type: object
+          required: [config]
+          properties:
+            config:
+              type: object
+              additionalProperties: true
+    PublicWidgetConfig:
+      type: object
+      description: The latest published config and its version. Nothing else.
+      required: [version, config]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        config:
+          type: object
+          description: The widget config JSON, as published.
+          additionalProperties: true
+    WidgetVersionList:
+      type: object
+      required: [versions]
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/WidgetVersionSummary"
+    PlayerAuthRequest:
+      type: object
+      required: [externalPlayerId, displayName]
+      additionalProperties: false
+      properties:
+        externalPlayerId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: The game's own ID for the player. Surrounding spaces are trimmed.
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          description: Name shown to other players. Surrounding spaces are trimmed.
+    PlayerAuthResponse:
+      type: object
+      required: [token, expiresIn]
+      properties:
+        token:
+          type: string
+          description: Player JWT (`typ` "player", Ed25519). Hand it to the game's frontend.
+        expiresIn:
+          type: integer
+          description: Seconds until the token expires (3600).
     Error:
       type: object
       required: [error]
@@ -92,7 +1241,55 @@ components:
             message:
               type: string
               description: Human-readable explanation.
+            details:
+              type: array
+              description: Only present for some codes. For `invalid_widget_config`, every problem found in the config.
+              items:
+                $ref: "#/components/schemas/ConfigIssue"
+    ConfigIssue:
+      type: object
+      required: [path, rule]
+      properties:
+        path:
+          type: string
+          description: JSON Pointer to the field in the config, for example `/clan/maxMembers`. Empty for the whole document.
+        rule:
+          type: string
+          description: The JSON Schema keyword that failed (`required`, `additionalProperties`, `type`, `enum`, `pattern`, `maximum`, ...), or `size` / `json` for a config that is too large or not JSON.
+        message:
+          type: string
+          description: For people. Clients should rely on `path` and `rule`.
   responses:
+    GameNotFound:
+      description: No such game, or it belongs to another developer.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: game_not_found
+              message: Game not found
+    WidgetVersionNotFound:
+      description: No such game, it belongs to another developer (`game_not_found`), or the game has no such version (`widget_version_not_found`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: widget_version_not_found
+              message: Widget version not found
+    Unauthorized:
+      description: The developer token is missing, malformed, expired, of the wrong type, or its account no longer exists.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: unauthorized
+              message: A valid developer token is required
     NotFound:
       description: No such route.
       content:

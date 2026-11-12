@@ -1,6 +1,10 @@
-# Local development stack: PostgreSQL + platform + social.
+# Local development stack: PostgreSQL + RabbitMQ + platform + social + realtime + Traefik.
 #   1. copy .env.example to .env and set the passwords
-#   2. docker compose up --build
+#   2. create the JWT signing key (README: "JWT signing key")
+#   3. docker compose up --build
+# platform-migrate, social-migrate and realtime-migrate apply each service's SQL migrations once, then exit;
+# rabbitmq-setup declares the RabbitMQ queues once, then exits;
+# each service starts only after its migrations succeeded.
 name: clan
 
 services:
@@ -13,6 +17,7 @@ services:
       # read by deploy/postgres/init/01-schemas.sh
       PLATFORM_DB_PASSWORD: ${PLATFORM_DB_PASSWORD:?set PLATFORM_DB_PASSWORD in .env}
       SOCIAL_DB_PASSWORD: ${SOCIAL_DB_PASSWORD:?set SOCIAL_DB_PASSWORD in .env}
+      REALTIME_DB_PASSWORD: ${REALTIME_DB_PASSWORD:?set REALTIME_DB_PASSWORD in .env}
     ports:
       - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
@@ -26,6 +31,89 @@ services:
       timeout: 3s
       retries: 30
 
+  # Message broker for events between services (exchange socialkit.events). Management UI: http://localhost:15672
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-clan}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+    ports:
+      - "${RABBITMQ_HOST_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_HOST_PORT:-15672}:15672"
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      # passes once the management API (port 15672) is listening, which rabbitmq-setup needs
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_port_listener 15672"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  # One-shot job: declares the socialkit.events exchange, the durable realtime.events queue and its
+  # bindings from deploy/rabbitmq/definitions.json, so events published today wait in the queue even
+  # before Realtime exists. Safe to repeat: importing definitions only adds what is missing.
+  rabbitmq-setup:
+    image: curlimages/curl:8.11.1
+    command:
+      - --fail
+      - --silent
+      - --show-error
+      - --retry
+      - "5"
+      - --retry-connrefused
+      - --user
+      - ${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}
+      - --header
+      - "Content-Type: application/json"
+      - --data
+      - "@/definitions.json"
+      - http://rabbitmq:15672/api/definitions
+    volumes:
+      - ./deploy/rabbitmq/definitions.json:/definitions.json:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # One-shot jobs: apply the SQL files in services/<name>/migrations/ that have not run yet,
+  # as the service's own database user so the tables land in its own schema.
+  # golang-migrate remembers what ran in a schema_migrations table inside that schema.
+  platform-migrate:
+    image: migrate/migrate:v4.18.1
+    command:
+      - -path=/migrations
+      - -database=postgres://platform_user:${PLATFORM_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      - up
+    volumes:
+      - ./services/platform/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  social-migrate:
+    image: migrate/migrate:v4.18.1
+    command:
+      - -path=/migrations
+      - -database=postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      - up
+    volumes:
+      - ./services/social/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  realtime-migrate:
+    image: migrate/migrate:v4.18.1
+    command:
+      - -path=/migrations
+      - -database=postgres://realtime_user:${REALTIME_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      - up
+    volumes:
+      - ./services/realtime/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   platform:
     build:
       context: .
@@ -34,12 +122,27 @@ services:
       PLATFORM_PORT: "8081"
       PLATFORM_DATABASE_URL: postgres://platform_user:${PLATFORM_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
       PLATFORM_CORS_ORIGINS: ${PLATFORM_CORS_ORIGINS:-http://localhost:5173}
+      PLATFORM_JWT_PRIVATE_KEY_FILE: /run/secrets/platform_jwt_private.pem
+      PLATFORM_DEVELOPER_TOKEN_TTL: ${PLATFORM_DEVELOPER_TOKEN_TTL:-24h}
+      # Shared secret of platform's /internal endpoints (realtime reads each game's allowed origins there). Empty: switched off.
+      PLATFORM_INTERNAL_TOKEN: ${PLATFORM_INTERNAL_TOKEN:-}
+      # Events for the other services: config.published after a publish or rollback (README "RabbitMQ events")
+      PLATFORM_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # Signing key, generated by you (see README "JWT signing key"). Never committed (*.pem).
+      - ./secrets/platform_jwt_private.pem:/run/secrets/platform_jwt_private.pem:ro
     ports:
       - "8081:8081"
     depends_on:
       postgres:
         condition: service_healthy
+      platform-migrate:
+        condition: service_completed_successfully
+      # Start after the queues and bindings exist, so the first config.published reaches realtime.events.
+      # Once running, platform keeps working if RabbitMQ goes down (the event is then lost, see README).
+      rabbitmq-setup:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   social:
@@ -50,13 +153,76 @@ services:
       SOCIAL_PORT: "8082"
       SOCIAL_DATABASE_URL: postgres://social_user:${SOCIAL_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
       SOCIAL_CORS_ORIGINS: ${SOCIAL_CORS_ORIGINS:-http://localhost:5174}
+      SOCIAL_JWT_PUBLIC_KEY_FILE: /run/secrets/platform_jwt_public.pem
+      # Events for the other services (README "RabbitMQ events")
+      SOCIAL_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      # Secret of the /internal endpoints; empty switches them off (README "Social service")
+      SOCIAL_INTERNAL_TOKEN: ${SOCIAL_INTERNAL_TOKEN:-}
+      # Where social reads each game's clan rules (clan.maxMembers from the published config)
+      SOCIAL_PLATFORM_URL: http://platform:8081
+      SOCIAL_CONFIG_CACHE_TTL: ${SOCIAL_CONFIG_CACHE_TTL:-30s}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # Platform's public key, created by you (see README "JWT signing key"). Never committed (*.pem).
+      - ./secrets/platform_jwt_public.pem:/run/secrets/platform_jwt_public.pem:ro
     ports:
       - "8082:8082"
     depends_on:
       postgres:
         condition: service_healthy
+      social-migrate:
+        condition: service_completed_successfully
+      # Start after the queues and bindings exist, so the first events already reach realtime.events.
+      # Once running, social keeps working if RabbitMQ goes down (events are then lost, see README).
+      rabbitmq-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  realtime:
+    build:
+      context: .
+      dockerfile: services/realtime/Dockerfile
+    environment:
+      REALTIME_PORT: "8083"
+      REALTIME_DATABASE_URL: postgres://realtime_user:${REALTIME_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
+      REALTIME_CORS_ORIGINS: ${REALTIME_CORS_ORIGINS:-http://localhost:5174}
+      REALTIME_JWT_PUBLIC_KEY_FILE: /run/secrets/platform_jwt_public.pem
+      REALTIME_SOCIAL_URL: http://social:8082
+      # Startup backfill of friendships from social (README "Realtime backfill"); uses social's internal token.
+      REALTIME_BACKFILL: ${REALTIME_BACKFILL:-false}
+      REALTIME_INTERNAL_TOKEN: ${SOCIAL_INTERNAL_TOKEN:-}
+      REALTIME_PLATFORM_URL: http://platform:8081
+      REALTIME_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # Platform's public key only (never the private key). Created by you (see README "JWT signing key").
+      - ./secrets/platform_jwt_public.pem:/run/secrets/platform_jwt_public.pem:ro
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      realtime-migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      rabbitmq-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Public entry point. Routes are in deploy/traefik/dynamic/; the entrypoint timeouts that keep idle
+  # WebSockets open are in deploy/traefik/traefik.yml. Realtime is reached at http://localhost/realtime/v1/...
+  traefik:
+    image: traefik:v3.2
+    ports:
+      - "${TRAEFIK_HOST_PORT:-80}:80"
+    volumes:
+      - ./deploy/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./deploy/traefik/dynamic:/etc/traefik/dynamic:ro
+    depends_on:
+      - realtime
     restart: unless-stopped
 
 volumes:
   pgdata:
+  rabbitmqdata:
