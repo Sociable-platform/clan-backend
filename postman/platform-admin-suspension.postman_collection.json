@@ -1,0 +1,5917 @@
+{
+  "info": {
+    "name": "Clan platform - admin suspension (TEAM-195 to TEAM-200)",
+    "description": "Tests the admin panel's backend, Phase 1 (TEAM-195 to TEAM-200):\n\n- TEAM-195 migrations: admins, account status, audit log tables (every request below needs them)\n- TEAM-196 admin login, admin token type, createadmin tool\n- TEAM-197 list developers, developer detail, audit log\n- TEAM-198 suspend / resume a developer or a game (+ audit row, idempotent, note stays internal)\n- TEAM-199 suspended games: no player tokens, no widget config\n- TEAM-200 suspended developers: dashboard read-only, /developers/me shows status\n\nBEFORE YOU RUN\n1. Start the stack with migrations 000001-000009 applied: `docker compose up --build` (or `docker compose run --rm platform-migrate` and `go run ./services/platform/cmd`).\n2. Create an admin (there is no register endpoint):\n   export PLATFORM_DATABASE_URL=postgres://platform_user:<password>@localhost:5432/clan\n   printf '%s\\n' 'a long password' | go run ./tools/createadmin -email ops@example.com -name \"Ops One\"\n3. Set the collection variables baseUrl (default http://localhost:8081), adminEmail and adminPassword to match.\n\nRUN the whole collection in order (Runner). It makes its own developers and games from a fresh run id, so it can be re-run. It ends with everything resumed.\n\nNOT COVERED: a DISABLED admin cannot log in (needs SQL, see folder 1), and Social / Realtime reacting to a suspension (Phase 3, not built).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "0. Setup (developer, two games, keys, published widgets)",
+      "item": [
+        {
+          "name": "0.1 Register developer A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "register"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"password\": \"{{devPassword}}\",\n  \"name\": \"Suspension Test A\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const runId = Date.now();",
+                  "pm.collectionVariables.set('runId', runId);",
+                  "pm.collectionVariables.set('emailA', `suspensiontest.${runId}.a@example.com`);",
+                  "pm.collectionVariables.set('emailB', `suspensiontest.${runId}.b@example.com`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test(\"new developer is active and has no reason (TEAM-200)\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql('active'); pm.expect(b.statusReason).to.eql(null); });",
+                  "pm.collectionVariables.set('devId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.2 Register developer B (only used for paging)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "register"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailB}}\",\n  \"password\": \"{{devPassword}}\",\n  \"name\": \"Suspension Test B\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('devIdB', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.3 Log in developer A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"password\": \"{{devPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('devToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.4 Register game A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"name\": \"Space Raiders\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('gameIdA', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.5 Register game B",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"name\": \"Second Game\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('gameIdB', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.6 API key A1 (game A)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('keyA1', pm.response.json().key);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.7 API key B1 (game B)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdB}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdB}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('keyB1', pm.response.json().key);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.8 API key B2 (game B, a spare to revoke later)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdB}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdB}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('keyB2', pm.response.json().key);",
+                  "pm.collectionVariables.set('keyIdB2', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.9 Save widget draft (game A)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameIdA}}\",\n    \"theme\": {\n      \"mode\": \"light\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Fredoka\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Nunito\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"none\",\n        \"width\": 1,\n        \"color\": \"#D9DBD5\",\n        \"corners\": \"round\"\n      },\n      \"buttons\": {\n        \"style\": \"outline\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 0.9,\n        \"blur\": true\n      },\n      \"colors\": {\n        \"brand\": \"#2E8B57\",\n        \"background\": \"#FFFFFF\",\n        \"surface\": \"#F2F3F1\",\n        \"text\": \"#000000\",\n        \"muted\": \"#5B5D56\"\n      },\n      \"textures\": {}\n    },\n    \"layout\": {\n      \"position\": \"bottom-left\",\n      \"startCollapsed\": false\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": false,\n      \"maxMembers\": 10,\n      \"tags\": false,\n      \"descriptionMax\": 140,\n      \"roles\": [\n        {\n          \"id\": \"member\",\n          \"name\": \"Member\",\n          \"canPromote\": false,\n          \"canKick\": false\n        },\n        {\n          \"id\": \"leader\",\n          \"name\": \"Leader\",\n          \"canPromote\": true,\n          \"canKick\": true\n        }\n      ],\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": []\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": false\n        },\n        \"create\": {\n          \"enabled\": false\n        },\n        \"home\": {\n          \"enabled\": false,\n          \"header\": \"compact\",\n          \"showStats\": false\n        },\n        \"members\": {\n          \"enabled\": false\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": false,\n      \"maxMessageLength\": 500,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {}\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.10 Publish widget (game A)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test(\"version 1\", () => { pm.expect(pm.response.json().version).to.eql(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.11 Save widget draft (game B)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdB}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdB}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameIdB}}\",\n    \"theme\": {\n      \"mode\": \"light\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Fredoka\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Nunito\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"none\",\n        \"width\": 1,\n        \"color\": \"#D9DBD5\",\n        \"corners\": \"round\"\n      },\n      \"buttons\": {\n        \"style\": \"outline\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 0.9,\n        \"blur\": true\n      },\n      \"colors\": {\n        \"brand\": \"#2E8B57\",\n        \"background\": \"#FFFFFF\",\n        \"surface\": \"#F2F3F1\",\n        \"text\": \"#000000\",\n        \"muted\": \"#5B5D56\"\n      },\n      \"textures\": {}\n    },\n    \"layout\": {\n      \"position\": \"bottom-left\",\n      \"startCollapsed\": false\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": false,\n      \"maxMembers\": 10,\n      \"tags\": false,\n      \"descriptionMax\": 140,\n      \"roles\": [\n        {\n          \"id\": \"member\",\n          \"name\": \"Member\",\n          \"canPromote\": false,\n          \"canKick\": false\n        },\n        {\n          \"id\": \"leader\",\n          \"name\": \"Leader\",\n          \"canPromote\": true,\n          \"canKick\": true\n        }\n      ],\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": []\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": false\n        },\n        \"create\": {\n          \"enabled\": false\n        },\n        \"home\": {\n          \"enabled\": false,\n          \"header\": \"compact\",\n          \"showStats\": false\n        },\n        \"members\": {\n          \"enabled\": false\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": false,\n      \"maxMessageLength\": 500,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {}\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.12 Publish widget (game B)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdB}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdB}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test(\"version 1\", () => { pm.expect(pm.response.json().version).to.eql(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.13 Baseline: player token for game A",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyA1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('playerToken', pm.response.json().token);",
+                  "pm.test(\"a token is returned\", () => { pm.expect(pm.response.json().token).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "0.14 Baseline: widget config for game A",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/games/{{gameIdA}}/widget-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "games",
+                "{{gameIdA}}",
+                "widget-config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('etag', pm.response.headers.get('ETag'));",
+                  "pm.test(\"cacheable while active\", () => { pm.expect(pm.response.headers.get('Cache-Control')).to.include('max-age=60'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Creates its own developers and games with a fresh run id, so the collection can be re-run. Needs migrations 000001-000009."
+    },
+    {
+      "name": "1. TEAM-195 / TEAM-196: admin login and the admin token type",
+      "item": [
+        {
+          "name": "1.1 Admin login, wrong password -> 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"definitely wrong password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is invalid_credentials', () => pm.expect(pm.response.json().error.code).to.eql('invalid_credentials'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.2 Admin login, unknown email -> 401 (same answer)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"nobody.{{runId}}@example.com\",\n  \"password\": \"whatever password\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is invalid_credentials', () => pm.expect(pm.response.json().error.code).to.eql('invalid_credentials'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.3 Admin login, a developer's credentials -> 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"password\": \"{{devPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "A developer account is not an admin account, even with a valid password."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is invalid_credentials', () => pm.expect(pm.response.json().error.code).to.eql('invalid_credentials'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.4 Admin login, not JSON -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "nope",
+              "options": {
+                "raw": {
+                  "language": "text"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_json', () => pm.expect(pm.response.json().error.code).to.eql('invalid_json'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.5 Admin login OK",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Needs an admin created with: printf '%s\\n' '<password>' | go run ./tools/createadmin -email <email> -name \"Ops One\". Set adminEmail and adminPassword in the collection variables."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"Cache-Control is no-store\", () => { pm.expect(pm.response.headers.get('Cache-Control')).to.eql('no-store'); });",
+                  "pm.test(\"token and expiresIn\", () => { const b = pm.response.json(); pm.expect(b.token).to.be.a('string').and.not.empty; pm.expect(b.expiresIn).to.be.a('number').and.above(0); });",
+                  "pm.test(\"token is an admin token (typ admin)\", () => { const p = JSON.parse(atob(pm.response.json().token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); pm.expect(p.typ).to.eql('admin'); pm.expect(p.exp - p.iat).to.eql(pm.response.json().expiresIn); });",
+                  "pm.collectionVariables.set('adminToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.6 Admin me",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"the admin, without any secret\", () => { const b = pm.response.json(); pm.expect(b.email).to.eql(pm.collectionVariables.get('adminEmail').toLowerCase()); pm.expect(b).to.have.keys('id','email','name','createdAt'); });",
+                  "pm.collectionVariables.set('adminId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.7 Admin me without a token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.8 Admin me with garbage -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.token"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.9 Admin me with a DEVELOPER token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.10 Admin me with a PLAYER token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{playerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.11 Developer me with an ADMIN token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "The token types are not interchangeable in either direction."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.12 GET /developers with a DEVELOPER token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.13 GET /developers/{id} with a DEVELOPER token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.14 PUT /developers/{id}/status with a DEVELOPER token -> 401",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"suspended\", \"reason\": \"abuse\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.15 PUT /games/{id}/status with a DEVELOPER token -> 401",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"suspended\", \"reason\": \"abuse\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1.16 GET /audit-log with a DEVELOPER token -> 401",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is unauthorized', () => pm.expect(pm.response.json().error.code).to.eql('unauthorized'));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Proves the admin tables exist (migrations 000007-000009), login works, and an admin token, a developer token and a player token are not interchangeable.\n\nNot covered here because it needs the database: a DISABLED admin cannot log in and its old token stops working at once. Try it by hand: `update admins set disabled_at = now() where email = '<adminEmail>';` then run 1.5 (401 invalid_credentials) and 1.6 with the old token (401); undo with `update admins set disabled_at = null ...;`."
+    },
+    {
+      "name": "2. TEAM-197: list developers, developer detail, audit log (before any suspension)",
+      "item": [
+        {
+          "name": "2.1 List developers (search by run id)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?q=suspensiontest.{{runId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "suspensiontest.{{runId}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"both test developers, newest first\", () => { const b = pm.response.json(); pm.expect(b.developers).to.have.lengthOf(2); pm.expect(b.developers[0].id).to.eql(pm.collectionVariables.get('devIdB')); pm.expect(b.developers[1].id).to.eql(pm.collectionVariables.get('devId')); pm.expect(b.nextCursor).to.eql(null); });",
+                  "pm.test(\"row fields\", () => { const d = pm.response.json().developers[1]; pm.expect(d).to.have.keys('id','email','name','status','gameCount','createdAt'); pm.expect(d.status).to.eql('active'); pm.expect(d.gameCount).to.eql(2); pm.expect(pm.response.json().developers[0].gameCount).to.eql(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.2 List, limit=1 -> first page with a cursor",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?q=suspensiontest.{{runId}}&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "suspensiontest.{{runId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"one row and a cursor\", () => { const b = pm.response.json(); pm.expect(b.developers).to.have.lengthOf(1); pm.expect(b.developers[0].id).to.eql(pm.collectionVariables.get('devIdB')); pm.expect(b.nextCursor).to.be.a('string').and.not.empty; });",
+                  "pm.collectionVariables.set('cursor', pm.response.json().nextCursor);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.3 List, limit=1 and the cursor -> last page",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?q=suspensiontest.{{runId}}&limit=1&cursor={{cursor}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "suspensiontest.{{runId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{cursor}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"the other developer, and no further cursor\", () => { const b = pm.response.json(); pm.expect(b.developers).to.have.lengthOf(1); pm.expect(b.developers[0].id).to.eql(pm.collectionVariables.get('devId')); pm.expect(b.nextCursor).to.eql(null); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.4 List, status=suspended -> none yet",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?q=suspensiontest.{{runId}}&status=suspended",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "suspensiontest.{{runId}}"
+                },
+                {
+                  "key": "status",
+                  "value": "suspended"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"empty list, not null\", () => { pm.expect(pm.response.json().developers).to.eql([]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.5 List, status=active -> both",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?q=suspensiontest.{{runId}}&status=active",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "suspensiontest.{{runId}}"
+                },
+                {
+                  "key": "status",
+                  "value": "active"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"two rows\", () => { pm.expect(pm.response.json().developers).to.have.lengthOf(2); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.6 List, search ignores case",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?q=SUSPENSIONTEST.{{runId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "SUSPENSIONTEST.{{runId}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"two rows\", () => { pm.expect(pm.response.json().developers).to.have.lengthOf(2); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.7 List, % in the search is plain text",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?q=%25suspensiontest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "%25suspensiontest"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"matches nothing (no email contains %)\", () => { pm.expect(pm.response.json().developers).to.eql([]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.8 List with limit=0 -> 400 invalid_limit",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?limit=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "0"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_limit', () => pm.expect(pm.response.json().error.code).to.eql('invalid_limit'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.9 List with limit=500 -> 400 invalid_limit",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?limit=500",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "500"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_limit', () => pm.expect(pm.response.json().error.code).to.eql('invalid_limit'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.10 List with limit=abc -> 400 invalid_limit",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?limit=abc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "abc"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_limit', () => pm.expect(pm.response.json().error.code).to.eql('invalid_limit'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.11 List with status=paused -> 400 invalid_status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?status=paused",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "paused"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_status', () => pm.expect(pm.response.json().error.code).to.eql('invalid_status'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.12 List with cursor=zzz -> 400 invalid_cursor",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?cursor=zzz",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "cursor",
+                  "value": "zzz"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_cursor', () => pm.expect(pm.response.json().error.code).to.eql('invalid_cursor'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.13 Developer detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"developer fields\", () => { const b = pm.response.json(); pm.expect(b.id).to.eql(pm.collectionVariables.get('devId')); pm.expect(b.email).to.eql(pm.collectionVariables.get('emailA')); pm.expect(b.status).to.eql('active'); pm.expect(b.statusReason).to.eql(null); pm.expect(b.statusChangedAt).to.eql(null); });",
+                  "pm.test(\"both games with status and reason\", () => { const g = pm.response.json().games; pm.expect(g).to.have.lengthOf(2); g.forEach(x => { pm.expect(x).to.have.keys('id','name','description','status','statusReason','statusChangedAt','createdAt'); pm.expect(x.status).to.eql('active'); pm.expect(x.statusReason).to.eql(null); }); });",
+                  "pm.test(\"no secrets\", () => { const txt = pm.response.text(); pm.expect(txt).to.not.include('password'); pm.expect(txt).to.not.include('$2a$'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.14 Developer detail, unknown id -> 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/00000000-0000-4000-8000-00000000dead",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "00000000-0000-4000-8000-00000000dead"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code is developer_not_found', () => pm.expect(pm.response.json().error.code).to.eql('developer_not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.15 Developer detail, malformed id -> 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/not-a-uuid",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "not-a-uuid"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code is developer_not_found', () => pm.expect(pm.response.json().error.code).to.eql('developer_not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.16 Audit log of the developer -> empty so far",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log?targetId={{devId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ],
+              "query": [
+                {
+                  "key": "targetId",
+                  "value": "{{devId}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"no entries, no cursor\", () => { const b = pm.response.json(); pm.expect(b.entries).to.eql([]); pm.expect(b.nextCursor).to.eql(null); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.17 Audit log, targetId=x -> 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log?targetId=x",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ],
+              "query": [
+                {
+                  "key": "targetId",
+                  "value": "x"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_target_id', () => pm.expect(pm.response.json().error.code).to.eql('invalid_target_id'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2.18 Audit log, limit=0 -> 400",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log?limit=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "0"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_limit', () => pm.expect(pm.response.json().error.code).to.eql('invalid_limit'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. TEAM-198 + TEAM-199: suspend and resume ONE game",
+      "item": [
+        {
+          "name": "3.1 Suspend game A without a reason -> 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"suspended\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is reason_required', () => pm.expect(pm.response.json().error.code).to.eql('reason_required'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.2 Suspend game A with an unknown reason -> 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"suspended\", \"reason\": \"bored\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_reason', () => pm.expect(pm.response.json().error.code).to.eql('invalid_reason'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.3 Unknown status -> 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"paused\", \"reason\": \"abuse\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_status', () => pm.expect(pm.response.json().error.code).to.eql('invalid_status'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.4 Note over 1000 characters -> 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"suspended\", \"reason\": \"abuse\", \"note\": \"{{longNote}}\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('longNote', 'x'.repeat(1001));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_note', () => pm.expect(pm.response.json().error.code).to.eql('invalid_note'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.5 Unknown field in the body -> 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"suspended\", \"reason\": \"abuse\", \"gameId\": \"other\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is invalid_json', () => pm.expect(pm.response.json().error.code).to.eql('invalid_json'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.6 Unknown game -> 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/00000000-0000-4000-8000-00000000dead/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "00000000-0000-4000-8000-00000000dead",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"suspended\",\n  \"reason\": \"abuse\",\n  \"note\": \"SECRET-NOTE reported by a player\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code is game_not_found', () => pm.expect(pm.response.json().error.code).to.eql('game_not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.7 Malformed game id -> 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/not-a-uuid/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "not-a-uuid",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"suspended\",\n  \"reason\": \"abuse\",\n  \"note\": \"SECRET-NOTE reported by a player\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code is game_not_found', () => pm.expect(pm.response.json().error.code).to.eql('game_not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.8 Refused calls changed nothing: both games still active",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"both games active\", () => { pm.response.json().games.forEach(g => { pm.expect(g.status).to.eql('active'); pm.expect(g.statusChangedAt).to.eql(null); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.9 SUSPEND game A (abuse)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"suspended\",\n  \"reason\": \"abuse\",\n  \"note\": \"SECRET-NOTE reported by a player\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"suspended with the reason and a time\", () => { const b = pm.response.json(); pm.expect(b.id).to.eql(pm.collectionVariables.get('gameIdA')); pm.expect(b.status).to.eql('suspended'); pm.expect(b.statusReason).to.eql('abuse'); pm.expect(b.statusChangedAt).to.be.a('string'); });",
+                  "pm.test(\"the note is not returned\", () => { const txt = pm.response.text(); pm.expect(txt).to.not.include('SECRET-NOTE'); pm.expect(txt).to.not.have.string('\"note\"'); });",
+                  "pm.collectionVariables.set('gameChangedAt', pm.response.json().statusChangedAt);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.10 Suspend game A again (idempotent)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"suspended\", \"reason\": \"other\", \"note\": \"second try\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"nothing changed: same reason, same time\", () => { const b = pm.response.json(); pm.expect(b.statusReason).to.eql('abuse'); pm.expect(b.statusChangedAt).to.eql(pm.collectionVariables.get('gameChangedAt')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.11 players/auth, old key of game A -> 403 game_suspended",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyA1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test(\"game_suspended and no token\", () => { const b = pm.response.json(); pm.expect(b.error.code).to.eql('game_suspended'); pm.expect(b.token).to.eql(undefined); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.12 players/auth, invalid body -> still 403 (the game is checked before the body)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyA1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "not json at all",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is game_suspended', () => pm.expect(pm.response.json().error.code).to.eql('game_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.13 players/auth, wrong key -> 401 (the key is checked first)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "clk_wrongwrongwrongwrongwrong"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is invalid_api_key', () => pm.expect(pm.response.json().error.code).to.eql('invalid_api_key'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.14 Create a NEW key for the suspended game (the developer is active)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('keyA2', pm.response.json().key);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.15 players/auth, the NEW key of game A -> 403 too",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyA2}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Every key of a suspended game is refused, old or new: the check is on the game."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is game_suspended', () => pm.expect(pm.response.json().error.code).to.eql('game_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.16 widget-config of game A -> 403 game_suspended, not cacheable",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/games/{{gameIdA}}/widget-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "games",
+                "{{gameIdA}}",
+                "widget-config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is game_suspended', () => pm.expect(pm.response.json().error.code).to.eql('game_suspended'));",
+                  "pm.test(\"Cache-Control is no-store\", () => { pm.expect(pm.response.headers.get('Cache-Control')).to.eql('no-store'); });",
+                  "pm.test(\"no ETag, so nothing to revalidate\", () => { pm.expect(pm.response.headers.has('ETag')).to.eql(false); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.17 widget-config with If-None-Match -> 403, never 304",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "If-None-Match",
+                "value": "{{etag}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/games/{{gameIdA}}/widget-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "games",
+                "{{gameIdA}}",
+                "widget-config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is game_suspended', () => pm.expect(pm.response.json().error.code).to.eql('game_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.18 Game B is not affected: players/auth -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyB1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.19 Game B is not affected: widget-config -> 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/games/{{gameIdB}}/widget-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "games",
+                "{{gameIdB}}",
+                "widget-config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.20 The developer is still active (a game switch is not an account switch)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"active\", () => { pm.expect(pm.response.json().status).to.eql('active'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.21 ...so the developer can still edit game B",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdB}}/allowed-origins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdB}}",
+                "allowed-origins"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"allowedOrigins\": [\"https://play.example.com\"] }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.22 Admin detail shows A suspended, B active",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"statuses\", () => { const g = pm.response.json().games; const a = g.find(x => x.id === pm.collectionVariables.get('gameIdA')); const b = g.find(x => x.id === pm.collectionVariables.get('gameIdB')); pm.expect(a.status).to.eql('suspended'); pm.expect(a.statusReason).to.eql('abuse'); pm.expect(b.status).to.eql('active'); pm.expect(pm.response.json().status).to.eql('active'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.23 RESUME game A (no reason needed)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"active\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"active again, reason cleared, time updated\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql('active'); pm.expect(b.statusReason).to.eql(null); pm.expect(b.statusChangedAt).to.be.a('string').and.not.eql(pm.collectionVariables.get('gameChangedAt')); });",
+                  "pm.collectionVariables.set('gameResumedAt', pm.response.json().statusChangedAt);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.24 Resume game A again (idempotent)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/games/{{gameIdA}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "games",
+                "{{gameIdA}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"active\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"time unchanged\", () => { pm.expect(pm.response.json().statusChangedAt).to.eql(pm.collectionVariables.get('gameResumedAt')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.25 After resume: old key works again at once",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyA1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.26 After resume: the key made while suspended works too",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyA2}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.27 After resume: widget-config -> 200, cacheable again",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/games/{{gameIdA}}/widget-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "games",
+                "{{gameIdA}}",
+                "widget-config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"public cache header\", () => { pm.expect(pm.response.headers.get('Cache-Control')).to.include('public'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Validation of the status endpoint, then the effect on the two public entry points: POST /players/auth (game server) and GET /public/games/{id}/widget-config (players' browser)."
+    },
+    {
+      "name": "4. TEAM-198 + TEAM-199 + TEAM-200: suspend and resume the DEVELOPER",
+      "item": [
+        {
+          "name": "4.1 Suspend developer without a reason -> 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"suspended\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code is reason_required', () => pm.expect(pm.response.json().error.code).to.eql('reason_required'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.2 Unknown developer -> 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/00000000-0000-4000-8000-00000000dead/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "00000000-0000-4000-8000-00000000dead",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"suspended\",\n  \"reason\": \"non_payment\",\n  \"note\": \"SECRET-NOTE invoice 1042 unpaid after two reminders\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code is developer_not_found', () => pm.expect(pm.response.json().error.code).to.eql('developer_not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.3 Malformed developer id -> 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/not-a-uuid/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "not-a-uuid",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"suspended\",\n  \"reason\": \"non_payment\",\n  \"note\": \"SECRET-NOTE invoice 1042 unpaid after two reminders\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code is developer_not_found', () => pm.expect(pm.response.json().error.code).to.eql('developer_not_found'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.4 Spare: create a second key for game A before the suspension",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.5 SUSPEND the developer (non_payment)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"suspended\",\n  \"reason\": \"non_payment\",\n  \"note\": \"SECRET-NOTE invoice 1042 unpaid after two reminders\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"suspended with reason and time\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql('suspended'); pm.expect(b.statusReason).to.eql('non_payment'); pm.expect(b.statusChangedAt).to.be.a('string'); });",
+                  "pm.test(\"the developer's games keep their own status (the switch is not copied to them)\", () => { const b = pm.response.json(); b.games.forEach(g => pm.expect(g.status).to.eql('active')); });",
+                  "pm.test(\"the note is not returned\", () => { const txt = pm.response.text(); pm.expect(txt).to.not.include('SECRET-NOTE'); pm.expect(txt).to.not.have.string('\"note\"'); });",
+                  "pm.collectionVariables.set('devChangedAt', pm.response.json().statusChangedAt);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.6 Suspend again (idempotent)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"suspended\", \"reason\": \"abuse\", \"note\": \"second try\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"nothing changed\", () => { const b = pm.response.json(); pm.expect(b.statusReason).to.eql('non_payment'); pm.expect(b.statusChangedAt).to.eql(pm.collectionVariables.get('devChangedAt')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.7 players/auth, game A -> 403 account_suspended",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyA1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is account_suspended', () => pm.expect(pm.response.json().error.code).to.eql('account_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.8 players/auth, game B -> 403 account_suspended (one switch, every game)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyB1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is account_suspended', () => pm.expect(pm.response.json().error.code).to.eql('account_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.9 widget-config of game A -> 403 game_suspended (players never see \"account\")",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/games/{{gameIdA}}/widget-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "games",
+                "{{gameIdA}}",
+                "widget-config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is game_suspended', () => pm.expect(pm.response.json().error.code).to.eql('game_suspended'));",
+                  "pm.test(\"Cache-Control is no-store\", () => { pm.expect(pm.response.headers.get('Cache-Control')).to.eql('no-store'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.10 widget-config of game B -> 403 game_suspended",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/games/{{gameIdB}}/widget-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "games",
+                "{{gameIdB}}",
+                "widget-config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is game_suspended', () => pm.expect(pm.response.json().error.code).to.eql('game_suspended'));",
+                  "pm.test(\"Cache-Control is no-store\", () => { pm.expect(pm.response.headers.get('Cache-Control')).to.eql('no-store'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.11 Developer me shows status and reason, never the note",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"suspended and why\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql('suspended'); pm.expect(b.statusReason).to.eql('non_payment'); });",
+                  "pm.test(\"no internal note\", () => { const txt = pm.response.text(); pm.expect(txt).to.not.include('SECRET-NOTE'); pm.expect(txt).to.not.have.string('\"note\"'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.12 A suspended developer can still log in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailA}}\",\n  \"password\": \"{{devPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.13 GET games -> 200 (reads keep working)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"no internal note\", () => { const txt = pm.response.text(); pm.expect(txt).to.not.include('SECRET-NOTE'); pm.expect(txt).to.not.have.string('\"note\"'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.14 GET api-keys of game A -> 200 (reads keep working)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"no internal note\", () => { const txt = pm.response.text(); pm.expect(txt).to.not.include('SECRET-NOTE'); pm.expect(txt).to.not.have.string('\"note\"'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.15 GET widget draft -> 200 (reads keep working)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"no internal note\", () => { const txt = pm.response.text(); pm.expect(txt).to.not.include('SECRET-NOTE'); pm.expect(txt).to.not.have.string('\"note\"'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.16 GET widget versions -> 200 (reads keep working)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/versions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "versions"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"no internal note\", () => { const txt = pm.response.text(); pm.expect(txt).to.not.include('SECRET-NOTE'); pm.expect(txt).to.not.have.string('\"note\"'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.17 GET widget version 1 -> 200 (reads keep working)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/versions/1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "versions",
+                "1"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"no internal note\", () => { const txt = pm.response.text(); pm.expect(txt).to.not.include('SECRET-NOTE'); pm.expect(txt).to.not.have.string('\"note\"'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.18 Register a game (invalid body: 403 comes first) -> 403 account_suspended",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "not json",
+              "options": {
+                "raw": {
+                  "language": "text"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is account_suspended', () => pm.expect(pm.response.json().error.code).to.eql('account_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.19 Create an API key -> 403 account_suspended",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is account_suspended', () => pm.expect(pm.response.json().error.code).to.eql('account_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.20 Save allowed origins -> 403 account_suspended",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/allowed-origins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "allowed-origins"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"allowedOrigins\": [] }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is account_suspended', () => pm.expect(pm.response.json().error.code).to.eql('account_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.21 Save a widget draft -> 403 account_suspended",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameIdA}}\",\n    \"theme\": {\n      \"mode\": \"light\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Fredoka\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Nunito\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"none\",\n        \"width\": 1,\n        \"color\": \"#D9DBD5\",\n        \"corners\": \"round\"\n      },\n      \"buttons\": {\n        \"style\": \"outline\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 0.9,\n        \"blur\": true\n      },\n      \"colors\": {\n        \"brand\": \"#2E8B57\",\n        \"background\": \"#FFFFFF\",\n        \"surface\": \"#F2F3F1\",\n        \"text\": \"#000000\",\n        \"muted\": \"#5B5D56\"\n      },\n      \"textures\": {}\n    },\n    \"layout\": {\n      \"position\": \"bottom-left\",\n      \"startCollapsed\": false\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": false,\n      \"maxMembers\": 10,\n      \"tags\": false,\n      \"descriptionMax\": 140,\n      \"roles\": [\n        {\n          \"id\": \"member\",\n          \"name\": \"Member\",\n          \"canPromote\": false,\n          \"canKick\": false\n        },\n        {\n          \"id\": \"leader\",\n          \"name\": \"Leader\",\n          \"canPromote\": true,\n          \"canKick\": true\n        }\n      ],\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": []\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": false\n        },\n        \"create\": {\n          \"enabled\": false\n        },\n        \"home\": {\n          \"enabled\": false,\n          \"header\": \"compact\",\n          \"showStats\": false\n        },\n        \"members\": {\n          \"enabled\": false\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": false,\n      \"maxMessageLength\": 500,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {}\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is account_suspended', () => pm.expect(pm.response.json().error.code).to.eql('account_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.22 Publish -> 403 account_suspended",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is account_suspended', () => pm.expect(pm.response.json().error.code).to.eql('account_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.23 Roll back to version 1 -> 403 account_suspended",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/versions/1/rollback",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "versions",
+                "1",
+                "rollback"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error code is account_suspended', () => pm.expect(pm.response.json().error.code).to.eql('account_suspended'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.24 Refused writes changed nothing: still 2 games",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"two games\", () => { pm.expect(pm.response.json().games).to.have.lengthOf(2); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.25 ...and game A still has 3 keys",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"three keys\", () => { pm.expect(pm.response.json().apiKeys).to.have.lengthOf(3); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.26 Revoking an API key is still allowed (it only takes access away)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/api-keys/{{keyIdB2}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "api-keys",
+                "{{keyIdB2}}"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.27 The revoked key gets 401, not 403 (the key is checked first)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyB2}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error code is invalid_api_key', () => pm.expect(pm.response.json().error.code).to.eql('invalid_api_key'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.28 Admin list: status=suspended finds the developer",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?q=suspensiontest.{{runId}}&status=suspended",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "suspensiontest.{{runId}}"
+                },
+                {
+                  "key": "status",
+                  "value": "suspended"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"exactly developer A\", () => { const d = pm.response.json().developers; pm.expect(d).to.have.lengthOf(1); pm.expect(d[0].id).to.eql(pm.collectionVariables.get('devId')); pm.expect(d[0].status).to.eql('suspended'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.29 Admin list: status=active finds only developer B",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers?q=suspensiontest.{{runId}}&status=active",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "suspensiontest.{{runId}}"
+                },
+                {
+                  "key": "status",
+                  "value": "active"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"exactly developer B\", () => { const d = pm.response.json().developers; pm.expect(d).to.have.lengthOf(1); pm.expect(d[0].id).to.eql(pm.collectionVariables.get('devIdB')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.30 RESUME the developer (no reason needed)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"active\", \"note\": \"paid in full\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"active again, reason cleared\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql('active'); pm.expect(b.statusReason).to.eql(null); pm.expect(b.statusChangedAt).to.be.a('string').and.not.eql(pm.collectionVariables.get('devChangedAt')); });",
+                  "pm.collectionVariables.set('devResumedAt', pm.response.json().statusChangedAt);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.31 Resume again (idempotent)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}",
+                "status"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"status\": \"active\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"time unchanged\", () => { pm.expect(pm.response.json().statusChangedAt).to.eql(pm.collectionVariables.get('devResumedAt')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.32 Developer me is active again",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"active, no reason\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql('active'); pm.expect(b.statusReason).to.eql(null); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.33 Writes work again at once: register a game",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"name\": \"Third Game\" }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.34 ...create an API key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.35 ...save allowed origins",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/allowed-origins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "allowed-origins"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"allowedOrigins\": [\"https://play.example.com\"] }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.36 ...save a draft",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameIdA}}\",\n    \"theme\": {\n      \"mode\": \"light\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Fredoka\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Nunito\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"none\",\n        \"width\": 1,\n        \"color\": \"#D9DBD5\",\n        \"corners\": \"round\"\n      },\n      \"buttons\": {\n        \"style\": \"outline\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 0.9,\n        \"blur\": true\n      },\n      \"colors\": {\n        \"brand\": \"#2E8B57\",\n        \"background\": \"#FFFFFF\",\n        \"surface\": \"#F2F3F1\",\n        \"text\": \"#000000\",\n        \"muted\": \"#5B5D56\"\n      },\n      \"textures\": {}\n    },\n    \"layout\": {\n      \"position\": \"bottom-left\",\n      \"startCollapsed\": false\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": false,\n      \"maxMembers\": 10,\n      \"tags\": false,\n      \"descriptionMax\": 140,\n      \"roles\": [\n        {\n          \"id\": \"member\",\n          \"name\": \"Member\",\n          \"canPromote\": false,\n          \"canKick\": false\n        },\n        {\n          \"id\": \"leader\",\n          \"name\": \"Leader\",\n          \"canPromote\": true,\n          \"canKick\": true\n        }\n      ],\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": []\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": false\n        },\n        \"create\": {\n          \"enabled\": false\n        },\n        \"home\": {\n          \"enabled\": false,\n          \"header\": \"compact\",\n          \"showStats\": false\n        },\n        \"members\": {\n          \"enabled\": false\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": false,\n      \"maxMessageLength\": 500,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {}\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.37 ...publish (version 2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test(\"version 2\", () => { pm.expect(pm.response.json().version).to.eql(2); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.38 ...roll back to version 1 (version 3)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{devToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameIdA}}/widget/versions/1/rollback",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameIdA}}",
+                "widget",
+                "versions",
+                "1",
+                "rollback"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test(\"version 3\", () => { pm.expect(pm.response.json().version).to.eql(3); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.39 players/auth, game A -> 200 again",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyA1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.40 players/auth, game B -> 200 again",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{keyB1}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_42\",\n  \"displayName\": \"Rashad\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.41 widget-config of game A -> 200 again (version 3)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/games/{{gameIdA}}/widget-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "games",
+                "{{gameIdA}}",
+                "widget-config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"latest version\", () => { pm.expect(pm.response.json().version).to.eql(3); });",
+                  "pm.test(\"cacheable again\", () => { pm.expect(pm.response.headers.get('Cache-Control')).to.include('public'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4.42 widget-config of game B -> 200 again",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/public/games/{{gameIdB}}/widget-config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "public",
+                "games",
+                "{{gameIdB}}",
+                "widget-config"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "One switch turns off every game: game servers get 403 account_suspended, players' browsers get 403 game_suspended. The dashboard stays readable (login, every GET) but every write is refused with 403 account_suspended before the body is read, except revoking an API key. Resuming brings everything back at once."
+    },
+    {
+      "name": "5. TEAM-197 + TEAM-198: the audit log after all of the above",
+      "item": [
+        {
+          "name": "5.1 Audit log of the developer: suspended, then resumed (idempotent calls wrote nothing)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log?targetId={{devId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ],
+              "query": [
+                {
+                  "key": "targetId",
+                  "value": "{{devId}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"exactly two entries, newest first\", () => { const e = pm.response.json().entries; pm.expect(e).to.have.lengthOf(2); pm.expect(e[0].action).to.eql('developer.resumed'); pm.expect(e[1].action).to.eql('developer.suspended'); });",
+                  "pm.test(\"suspension entry: who, why, internal note\", () => { const s = pm.response.json().entries[1]; pm.expect(s.actor).to.eql(pm.collectionVariables.get('adminId')); pm.expect(s.targetType).to.eql('developer'); pm.expect(s.targetId).to.eql(pm.collectionVariables.get('devId')); pm.expect(s.reason).to.eql('non_payment'); pm.expect(s.note).to.include('SECRET-NOTE'); });",
+                  "pm.test(\"resume entry records the reason it lifted, and its own note\", () => { const r = pm.response.json().entries[0]; pm.expect(r.reason).to.eql('non_payment'); pm.expect(r.note).to.eql('paid in full'); });",
+                  "pm.test(\"every field is present\", () => { pm.response.json().entries.forEach(x => pm.expect(x).to.have.keys('id','actor','action','targetType','targetId','reason','note','createdAt')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.2 Audit log of game A: suspended, then resumed",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log?targetId={{gameIdA}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ],
+              "query": [
+                {
+                  "key": "targetId",
+                  "value": "{{gameIdA}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"two entries for the game\", () => { const e = pm.response.json().entries; pm.expect(e).to.have.lengthOf(2); pm.expect(e[0].action).to.eql('game.resumed'); pm.expect(e[1].action).to.eql('game.suspended'); e.forEach(x => { pm.expect(x.targetType).to.eql('game'); pm.expect(x.targetId).to.eql(pm.collectionVariables.get('gameIdA')); }); });",
+                  "pm.test(\"reasons\", () => { const e = pm.response.json().entries; pm.expect(e[1].reason).to.eql('abuse'); pm.expect(e[0].reason).to.eql('abuse'); pm.expect(e[1].note).to.include('SECRET-NOTE'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.3 Audit log, limit=1: first page",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log?targetId={{devId}}&limit=1",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ],
+              "query": [
+                {
+                  "key": "targetId",
+                  "value": "{{devId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"newest entry and a cursor\", () => { const b = pm.response.json(); pm.expect(b.entries).to.have.lengthOf(1); pm.expect(b.entries[0].action).to.eql('developer.resumed'); pm.expect(b.nextCursor).to.be.a('string'); });",
+                  "pm.collectionVariables.set('cursor', pm.response.json().nextCursor);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.4 Audit log, limit=1: second page",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log?targetId={{devId}}&limit=1&cursor={{cursor}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ],
+              "query": [
+                {
+                  "key": "targetId",
+                  "value": "{{devId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1"
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{cursor}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"older entry and no further cursor\", () => { const b = pm.response.json(); pm.expect(b.entries).to.have.lengthOf(1); pm.expect(b.entries[0].action).to.eql('developer.suspended'); pm.expect(b.nextCursor).to.eql(null); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.5 Audit log of an unrelated target is empty",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log?targetId={{devIdB}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ],
+              "query": [
+                {
+                  "key": "targetId",
+                  "value": "{{devIdB}}"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"empty\", () => { pm.expect(pm.response.json().entries).to.eql([]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.6 Unfiltered audit log is newest first and has at least our four entries",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-log?limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "audit-log"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"at least 4 entries, createdAt never increasing\", () => { const e = pm.response.json().entries; pm.expect(e.length).to.be.at.least(4); for (let i = 1; i < e.length; i++) pm.expect(Date.parse(e[i-1].createdAt)).to.be.at.least(Date.parse(e[i].createdAt)); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5.7 Developer detail in the admin panel is back to active",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/developers/{{devId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "developers",
+                "{{devId}}"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"active, reason cleared, time kept\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql('active'); pm.expect(b.statusReason).to.eql(null); pm.expect(b.statusChangedAt).to.be.a('string'); });",
+                  "pm.test(\"the games are all active\", () => { pm.response.json().games.forEach(g => pm.expect(g.status).to.eql('active')); });"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Only real changes are in the log: the repeated (idempotent) suspend and resume calls above wrote nothing."
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "adminEmail",
+      "value": "ops@example.com"
+    },
+    {
+      "key": "adminPassword",
+      "value": "a long password"
+    },
+    {
+      "key": "devPassword",
+      "value": "correct horse"
+    },
+    {
+      "key": "runId",
+      "value": ""
+    },
+    {
+      "key": "emailA",
+      "value": ""
+    },
+    {
+      "key": "emailB",
+      "value": ""
+    },
+    {
+      "key": "devId",
+      "value": ""
+    },
+    {
+      "key": "devIdB",
+      "value": ""
+    },
+    {
+      "key": "devToken",
+      "value": ""
+    },
+    {
+      "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "adminId",
+      "value": ""
+    },
+    {
+      "key": "playerToken",
+      "value": ""
+    },
+    {
+      "key": "gameIdA",
+      "value": ""
+    },
+    {
+      "key": "gameIdB",
+      "value": ""
+    },
+    {
+      "key": "keyA1",
+      "value": ""
+    },
+    {
+      "key": "keyA2",
+      "value": ""
+    },
+    {
+      "key": "keyB1",
+      "value": ""
+    },
+    {
+      "key": "keyB2",
+      "value": ""
+    },
+    {
+      "key": "keyIdB2",
+      "value": ""
+    },
+    {
+      "key": "etag",
+      "value": ""
+    },
+    {
+      "key": "cursor",
+      "value": ""
+    },
+    {
+      "key": "gameChangedAt",
+      "value": ""
+    },
+    {
+      "key": "gameResumedAt",
+      "value": ""
+    },
+    {
+      "key": "devChangedAt",
+      "value": ""
+    },
+    {
+      "key": "devResumedAt",
+      "value": ""
+    },
+    {
+      "key": "longNote",
+      "value": ""
+    }
+  ]
+}

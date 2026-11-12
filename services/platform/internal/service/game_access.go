@@ -62,3 +62,23 @@ func (s *Service) EnsureGameServed(ctx context.Context, gameID string) error {
 func errGameSuspended() *httpx.Error {
 	return httpx.NewError(http.StatusForbidden, "game_suspended", "This game is suspended")
 }
+
+// EnsureDeveloperActive returns nil while the developer's account is active, and 403
+// account_suspended once it is suspended. The dashboard uses it to refuse writes: a suspended
+// developer can still log in and read everything, to see why, but cannot change anything. A
+// developer who no longer exists gets 401 like any token of a deleted account. It reads the
+// status on every call, so a resume lets writes through at once.
+func (s *Service) EnsureDeveloperActive(ctx context.Context, developerID string) error {
+	status, err := s.store.DeveloperStatusOf(ctx, developerID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return errUnauthorized() // the account behind a valid token is gone
+	}
+	if err != nil {
+		return fmt.Errorf("check status of developer %s: %w", developerID, err)
+	}
+	if status != repository.StatusActive {
+		return httpx.NewError(http.StatusForbidden, "account_suspended",
+			"Your account is suspended. You can still view your data, but not change it.")
+	}
+	return nil
+}

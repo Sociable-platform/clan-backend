@@ -147,6 +147,8 @@ paths:
                 email: dev@example.com
                 name: Dev One
                 createdAt: "2026-11-06T10:00:00Z"
+                status: active
+                statusReason: null
         "400":
           description: |
             Invalid input. `code` is `invalid_email`, `invalid_password`, `invalid_name`
@@ -225,7 +227,10 @@ paths:
       tags: [developers]
       operationId: getCurrentDeveloper
       summary: The logged-in developer
-      description: Accepts only a developer token. Player tokens and API keys are rejected.
+      description: |
+        Accepts only a developer token. Player tokens and API keys are rejected. Works while the
+        account is suspended: `status` is `suspended` and `statusReason` says why, so the dashboard can
+        show a banner and disable its write buttons.
       security:
         - developerToken: []
       responses:
@@ -240,6 +245,8 @@ paths:
                 email: dev@example.com
                 name: Dev One
                 createdAt: "2026-11-06T10:00:00Z"
+                status: active
+                statusReason: null
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -719,7 +726,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/AccountSuspendedOrOrigin"
   /api/v1/games/{gameID}/api-keys:
     parameters:
       - $ref: "#/components/parameters/GameID"
@@ -779,7 +786,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/AccountSuspendedOrOrigin"
         "404":
           $ref: "#/components/responses/GameNotFound"
   /api/v1/games/{gameID}/allowed-origins:
@@ -836,7 +843,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/AccountSuspendedOrOrigin"
         "404":
           $ref: "#/components/responses/GameNotFound"
   /api/v1/games/{gameID}/widget/draft:
@@ -925,7 +932,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/AccountSuspendedOrOrigin"
         "404":
           $ref: "#/components/responses/GameNotFound"
   /api/v1/games/{gameID}/widget/publish:
@@ -978,7 +985,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/AccountSuspendedOrOrigin"
         "404":
           $ref: "#/components/responses/GameNotFound"
         "409":
@@ -1087,7 +1094,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/AccountSuspendedOrOrigin"
         "404":
           description: No such game (`game_not_found`) or no such version (`widget_version_not_found`).
           content:
@@ -1650,7 +1657,7 @@ components:
           description: Pass as `cursor` for the next page; null on the last page.
     Developer:
       type: object
-      required: [id, email, name, createdAt]
+      required: [id, email, name, createdAt, status, statusReason]
       properties:
         id:
           type: string
@@ -1663,6 +1670,15 @@ components:
         createdAt:
           type: string
           format: date-time
+        status:
+          $ref: "#/components/schemas/AccountStatus"
+        statusReason:
+          type: string
+          nullable: true
+          enum: [non_payment, abuse, other]
+          description: |
+            Why the account is suspended, so the dashboard can explain it; null while `active`. The
+            admin's internal note is never part of any developer response.
     RegisterGameRequest:
       type: object
       required: [name]
@@ -1960,6 +1976,28 @@ components:
             error:
               code: origin_not_allowed
               message: This website is not allowed to call the API
+    AccountSuspendedOrOrigin:
+      description: |
+        `account_suspended`: the developer's account is suspended, so the dashboard is read-only. Logging
+        in and every `GET` still work (`GET /api/v1/developers/me` says why), and so does revoking an API
+        key; everything that changes data is refused until an admin resumes the account, and then it
+        works again at once. Checked before the body is read. Also `origin_not_allowed` for a call from a
+        website that is not in the allowed origins.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            account_suspended:
+              value:
+                error:
+                  code: account_suspended
+                  message: Your account is suspended. You can still view your data, but not change it.
+            origin_not_allowed:
+              value:
+                error:
+                  code: origin_not_allowed
+                  message: This website is not allowed to call the API
     NotReady:
       description: The database is not reachable.
       content:

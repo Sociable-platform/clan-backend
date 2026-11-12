@@ -315,3 +315,53 @@ func TestGameAccessOf(t *testing.T) {
 		t.Fatalf("unknown game: %v, want ErrNotFound", err)
 	}
 }
+
+func TestDeveloperStatusIsReadEverywhereItIsNeeded(t *testing.T) {
+	r := testRepo(t)
+	ctx := context.Background()
+	tag, ids := tagged(t, r, 1)
+	dev := ids[0]
+	t.Cleanup(func() {
+		_, _ = r.pool.Exec(context.Background(), `delete from admin_audit_log where target_id = $1`, dev)
+	})
+	email := tag + "-0@example.com"
+
+	created, err := r.CreateDeveloper(ctx, tag+"-new@example.com", "hash", "New")
+	if err != nil || created.Status != StatusActive || created.StatusReason != "" {
+		t.Fatalf("CreateDeveloper: %+v, %v (a new developer is active)", created, err)
+	}
+	t.Cleanup(func() { _, _ = r.pool.Exec(context.Background(), `delete from developers where id = $1`, created.ID) })
+
+	if st, err := r.DeveloperStatusOf(ctx, dev); err != nil || st != StatusActive {
+		t.Fatalf("DeveloperStatusOf: %q, %v", st, err)
+	}
+	if _, _, err := r.SetDeveloperStatus(ctx, dev, suspend("non_payment", "internal")); err != nil {
+		t.Fatal(err)
+	}
+
+	if st, err := r.DeveloperStatusOf(ctx, dev); err != nil || st != StatusSuspended {
+		t.Fatalf("DeveloperStatusOf after suspend: %q, %v", st, err)
+	}
+	byID, err := r.DeveloperByID(ctx, dev)
+	if err != nil || byID.Status != StatusSuspended || byID.StatusReason != "non_payment" {
+		t.Fatalf("DeveloperByID: %+v, %v", byID, err)
+	}
+	byEmail, err := r.DeveloperByEmail(ctx, email)
+	if err != nil || byEmail.Status != StatusSuspended || byEmail.StatusReason != "non_payment" {
+		t.Fatalf("DeveloperByEmail: %+v, %v", byEmail, err)
+	}
+
+	if _, _, err := r.SetDeveloperStatus(ctx, dev, StatusChange{Actor: "a", Action: "developer.resumed", Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := r.DeveloperStatusOf(ctx, dev); st != StatusActive {
+		t.Fatalf("after resume: %q", st)
+	}
+	if byID, _ = r.DeveloperByID(ctx, dev); byID.Status != StatusActive || byID.StatusReason != "" {
+		t.Fatalf("DeveloperByID after resume: %+v", byID)
+	}
+
+	if _, err := r.DeveloperStatusOf(ctx, unknownID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown developer: %v, want ErrNotFound", err)
+	}
+}
