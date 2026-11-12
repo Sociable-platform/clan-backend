@@ -245,6 +245,14 @@ func (m *memStore) AuditEntries(context.Context, repository.AuditFilter) ([]repo
 	return nil, nil
 }
 
+func (m *memStore) SetDeveloperStatus(context.Context, string, repository.StatusChange) (repository.AdminDeveloper, bool, error) {
+	return repository.AdminDeveloper{}, false, repository.ErrNotFound
+}
+
+func (m *memStore) SetGameStatus(context.Context, string, repository.StatusChange) (repository.AdminGame, bool, error) {
+	return repository.AdminGame{}, false, repository.ErrNotFound
+}
+
 func (m *memStore) AdminByEmail(_ context.Context, email string) (repository.Admin, error) {
 	for _, a := range m.admins {
 		if a.Email == email {

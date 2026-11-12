@@ -30,11 +30,19 @@ type fakeStore struct {
 	auditRows   []repository.AuditEntry
 	devFilter   repository.DeveloperFilter
 	auditFilter repository.AuditFilter
-	games       []repository.Game
-	keys        []storedKey
-	drafts      map[string]repository.WidgetDraft     // by game ID
-	versions    map[string][]repository.WidgetVersion // by game ID, oldest first
-	err         error                                 // returned by every call when set
+
+	// What the status changes return, and the call they were last made with.
+	statusDev    repository.AdminDeveloper
+	statusGame   repository.AdminGame
+	statusCalls  int
+	statusTarget string
+	statusChange repository.StatusChange
+
+	games    []repository.Game
+	keys     []storedKey
+	drafts   map[string]repository.WidgetDraft     // by game ID
+	versions map[string][]repository.WidgetVersion // by game ID, oldest first
+	err      error                                 // returned by every call when set
 }
 
 func newFakeStore() *fakeStore {

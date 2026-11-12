@@ -25,6 +25,8 @@ type Service interface {
 	ListDevelopers(ctx context.Context, in service.ListDevelopersInput) (service.DeveloperPage, error)
 	AdminDeveloper(ctx context.Context, developerID string) (service.AdminDeveloper, error)
 	AuditLog(ctx context.Context, in service.AuditLogInput) (service.AuditPage, error)
+	SetDeveloperStatus(ctx context.Context, actor, developerID string, in service.SetStatusInput) (service.AdminDeveloper, error)
+	SetGameStatus(ctx context.Context, actor, gameID string, in service.SetStatusInput) (service.AdminGame, error)
 	Me(ctx context.Context, developerID string) (service.Developer, error)
 	RegisterGame(ctx context.Context, developerID string, in service.RegisterGameInput) (service.Game, error)
 	ListGames(ctx context.Context, developerID string) ([]service.Game, error)
@@ -104,6 +106,8 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/admin/me", h.requireAdmin(h.adminMe)},
 		{http.MethodGet, "/api/v1/admin/developers", h.requireAdmin(h.listAdminDevelopers)},
 		{http.MethodGet, "/api/v1/admin/developers/{developerID}", h.requireAdmin(h.getAdminDeveloper)},
+		{http.MethodPut, "/api/v1/admin/developers/{developerID}/status", h.requireAdmin(h.setDeveloperStatus)},
+		{http.MethodPut, "/api/v1/admin/games/{gameID}/status", h.requireAdmin(h.setGameStatus)},
 		{http.MethodGet, "/api/v1/admin/audit-log", h.requireAdmin(h.listAuditLog)},
 		{http.MethodGet, "/api/v1/games", h.requireDeveloper(h.listGames)},
 		{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},

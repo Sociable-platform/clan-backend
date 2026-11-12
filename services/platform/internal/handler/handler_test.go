@@ -29,6 +29,9 @@ type fakeService struct {
 	adminDeveloper func(developerID string) (service.AdminDeveloper, error)
 	auditLog       func(service.AuditLogInput) (service.AuditPage, error)
 
+	setDeveloperStatus func(actor, developerID string, in service.SetStatusInput) (service.AdminDeveloper, error)
+	setGameStatus      func(actor, gameID string, in service.SetStatusInput) (service.AdminGame, error)
+
 	registerGame func(developerID string, in service.RegisterGameInput) (service.Game, error)
 	listGames    func(developerID string) ([]service.Game, error)
 
@@ -88,6 +91,14 @@ func (f fakeService) AdminDeveloper(_ context.Context, id string) (service.Admin
 
 func (f fakeService) AuditLog(_ context.Context, in service.AuditLogInput) (service.AuditPage, error) {
 	return f.auditLog(in)
+}
+
+func (f fakeService) SetDeveloperStatus(_ context.Context, actor, id string, in service.SetStatusInput) (service.AdminDeveloper, error) {
+	return f.setDeveloperStatus(actor, id, in)
+}
+
+func (f fakeService) SetGameStatus(_ context.Context, actor, id string, in service.SetStatusInput) (service.AdminGame, error) {
+	return f.setGameStatus(actor, id, in)
 }
 
 func serve(t *testing.T, svc Service, method, path string) *httptest.ResponseRecorder {
