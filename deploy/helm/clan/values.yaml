@@ -59,6 +59,7 @@ platform:
   replicas: 1
   corsOrigins: http://localhost:5173
   developerTokenTtl: 24h
+  adminTokenTtl: 1h
   resources:
     requests:
       cpu: 50m

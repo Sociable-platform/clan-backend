@@ -17,18 +17,20 @@ import (
 	"time"
 )
 
-// Token types. Player endpoints must reject developer tokens and the other way around.
+// Token types. Each kind of endpoint accepts exactly one type and rejects the others.
 const (
 	TypePlayer    = "player"
 	TypeDeveloper = "developer"
+	// TypeAdmin is for the distributor's admin panel. Only platform's /api/v1/admin/ routes accept it.
+	TypeAdmin = "admin"
 )
 
 // Claims are the fields inside a token.
 type Claims struct {
-	Subject   string `json:"sub"`            // player: the game's own player ID; developer: developer ID
+	Subject   string `json:"sub"`            // player: the game's own player ID; developer: developer ID; admin: admin ID
 	GameID    string `json:"gid,omitempty"`  // player tokens only: the game the player belongs to
 	Name      string `json:"name,omitempty"` // display name
-	Type      string `json:"typ"`            // TypePlayer or TypeDeveloper
+	Type      string `json:"typ"`            // TypePlayer, TypeDeveloper or TypeAdmin
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
 }
@@ -46,7 +48,7 @@ const header = `{"alg":"EdDSA","typ":"JWT"}`
 
 // Sign returns a signed token for c. IssuedAt and ExpiresAt are set from now and ttl.
 func Sign(key ed25519.PrivateKey, c Claims, ttl time.Duration, now time.Time) (string, error) {
-	if c.Type != TypePlayer && c.Type != TypeDeveloper {
+	if c.Type != TypePlayer && c.Type != TypeDeveloper && c.Type != TypeAdmin {
 		return "", ErrType
 	}
 	c.IssuedAt = now.Unix()

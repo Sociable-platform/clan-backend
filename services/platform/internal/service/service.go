@@ -22,6 +22,8 @@ type Store interface {
 	CreateDeveloper(ctx context.Context, email, passwordHash, name string) (repository.Developer, error)
 	DeveloperByEmail(ctx context.Context, email string) (repository.Developer, error)
 	DeveloperByID(ctx context.Context, id string) (repository.Developer, error)
+	AdminByEmail(ctx context.Context, email string) (repository.Admin, error)
+	AdminByID(ctx context.Context, id string) (repository.Admin, error)
 	CreateGame(ctx context.Context, developerID, name, description string) (repository.Game, error)
 	GamesByDeveloper(ctx context.Context, developerID string) ([]repository.Game, error)
 	GameOfDeveloper(ctx context.Context, gameID, developerID string) (repository.Game, error)
@@ -41,11 +43,13 @@ type Store interface {
 
 // Service is the platform service's logic.
 type Service struct {
-	store      Store
-	key        ed25519.PrivateKey
-	pub        ed25519.PublicKey
-	tokenTTL   time.Duration
-	bcryptCost int
+	store    Store
+	key      ed25519.PrivateKey
+	pub      ed25519.PublicKey
+	tokenTTL time.Duration
+	// adminTokenTTL is how long an admin token stays valid; admin sessions are short on purpose.
+	adminTokenTTL time.Duration
+	bcryptCost    int
 	// dummyHash is compared against when a login email is unknown, so that
 	// "no such developer" and "wrong password" take about the same time.
 	dummyHash []byte
@@ -53,6 +57,9 @@ type Service struct {
 	// events tells the other services what changed (config.published); see pkg/events.
 	events events.Publisher
 }
+
+// defaultAdminTokenTTL is used until WithAdminTokenTTL is called.
+const defaultAdminTokenTTL = time.Hour
 
 // New returns a Service. key signs developer tokens (and its public half verifies them);
 // tokenTTL is how long a developer token stays valid.
@@ -74,7 +81,7 @@ func newService(store Store, key ed25519.PrivateKey, tokenTTL time.Duration, cos
 		return nil, fmt.Errorf("generate dummy hash: %w", err)
 	}
 	return &Service{
-		store: store, key: key, pub: pub, tokenTTL: tokenTTL,
+		store: store, key: key, pub: pub, tokenTTL: tokenTTL, adminTokenTTL: defaultAdminTokenTTL,
 		bcryptCost: cost, dummyHash: dummy, now: time.Now, events: events.Noop{},
 	}, nil
 }
@@ -83,6 +90,13 @@ func newService(store Store, key ed25519.PrivateKey, tokenTTL time.Duration, cos
 // Until it is called, events are dropped. It returns s, so it can follow New.
 func (s *Service) WithPublisher(p events.Publisher) *Service {
 	s.events = p
+	return s
+}
+
+// WithAdminTokenTTL sets how long an admin token stays valid (default 1 hour). It returns s,
+// so it can follow New.
+func (s *Service) WithAdminTokenTTL(ttl time.Duration) *Service {
+	s.adminTokenTTL = ttl
 	return s
 }
 

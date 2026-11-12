@@ -220,6 +220,7 @@ func TestUnexpectedErrorIsLoggedAndNotLeaked(t *testing.T) {
 // memStore is a tiny in-memory repository for the end-to-end test below.
 type memStore struct {
 	devs     []repository.Developer
+	admins   []repository.Admin
 	games    []repository.Game
 	keys     []memKey
 	drafts   map[string]repository.WidgetDraft     // by game ID
@@ -227,6 +228,24 @@ type memStore struct {
 }
 
 func (m *memStore) Ping(context.Context) error { return nil }
+
+func (m *memStore) AdminByEmail(_ context.Context, email string) (repository.Admin, error) {
+	for _, a := range m.admins {
+		if a.Email == email {
+			return a, nil
+		}
+	}
+	return repository.Admin{}, repository.ErrNotFound
+}
+
+func (m *memStore) AdminByID(_ context.Context, id string) (repository.Admin, error) {
+	for _, a := range m.admins {
+		if a.ID == id {
+			return a, nil
+		}
+	}
+	return repository.Admin{}, repository.ErrNotFound
+}
 
 func (m *memStore) CreateDeveloper(_ context.Context, email, hash, name string) (repository.Developer, error) {
 	for _, d := range m.devs {

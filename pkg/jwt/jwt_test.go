@@ -65,6 +65,32 @@ func TestVerifyRejects(t *testing.T) {
 	}
 }
 
+// An admin token verifies only as TypeAdmin, and the other types never verify as admin.
+func TestAdminTokenType(t *testing.T) {
+	pub, priv := keys(t)
+	now := time.Unix(1_700_000_000, 0)
+
+	adminTok, err := Sign(priv, Claims{Subject: "a1", Name: "Ops", Type: TypeAdmin}, time.Hour, now)
+	if err != nil {
+		t.Fatalf("sign admin token: %v", err)
+	}
+	if c, err := Verify(pub, adminTok, TypeAdmin, now); err != nil || c.Subject != "a1" || c.Type != TypeAdmin {
+		t.Fatalf("verify as admin: claims %+v, err %v", c, err)
+	}
+	for _, typ := range []string{TypePlayer, TypeDeveloper} {
+		if _, err := Verify(pub, adminTok, typ, now); !errors.Is(err, ErrType) {
+			t.Errorf("admin token verified as %s: err %v", typ, err)
+		}
+		tok, _ := Sign(priv, Claims{Subject: "x", Type: typ}, time.Hour, now)
+		if _, err := Verify(pub, tok, TypeAdmin, now); !errors.Is(err, ErrType) {
+			t.Errorf("%s token verified as admin: err %v", typ, err)
+		}
+	}
+	if _, err := Sign(priv, Claims{Subject: "a1", Type: "superuser"}, time.Hour, now); !errors.Is(err, ErrType) {
+		t.Errorf("sign unknown type: err %v", err)
+	}
+}
+
 // tamper swaps the payload for one with a different subject, keeping the old signature.
 func tamper(tok string) string {
 	p := strings.Split(tok, ".")
