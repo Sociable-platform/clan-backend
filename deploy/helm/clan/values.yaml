@@ -119,3 +119,16 @@ ingress:
     enabled: false
     # letsencrypt (real certificates) or letsencrypt-staging (untrusted test certificates)
     issuer: letsencrypt
+
+# Studio (clan-frontend): the built web app behind nginx, at https://studio.<domain>. Its image comes
+# from clan-frontend's CI job "images"; set the tag to the short commit SHA you want to run.
+studio:
+  enabled: false
+  image: registry.gitlab.com/clan-platform/clan-frontend/studio
+  tag: develop
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      memory: 64Mi
