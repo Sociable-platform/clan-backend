@@ -1,8 +1,10 @@
-# CI: build, vet and test every package with the race detector.
+# CI: build, vet and test every package with the race detector, then build the container images
+# and push them to this project's container registry.
 # The e2e script (tools/e2e) needs the whole Docker stack, so it runs locally, see README.
 
 stages:
   - test
+  - build
 
 variables:
   GOFLAGS: -mod=readonly
@@ -31,3 +33,50 @@ test:
     - go build ./...
     - go vet ./...
     - go test -race -count=1 ./...
+
+# Builds the images of platform, social and realtime, and the migration image of each, for amd64
+# and arm64 (the Oracle server is ARM), and pushes them to $CI_REGISTRY_IMAGE:
+#   registry.gitlab.com/clan-platform/clan-backend/social:<short commit sha>
+#   registry.gitlab.com/clan-platform/clan-backend/social-migrate:<short commit sha>
+# Each image also gets the branch name as a tag (develop, main), and latest on main.
+#
+# Runs after the tests pass, on develop and main. On a merge request it can be started by hand
+# (the ▶ button in the pipeline), to try the images of a branch before it is merged; those images
+# are tagged with the branch name.
+#
+# The Dockerfiles cross-compile Go, so building for arm64 needs no emulation.
+images:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    PLATFORMS: linux/amd64,linux/arm64
+  # The Go module cache of the test job is not needed here.
+  cache: []
+  rules:
+    - if: $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    # The default builder cannot build for two platforms at once; a BuildKit container can.
+    - docker buildx create --use --driver docker-container
+  script:
+    - |
+      set -eu
+      tags="$CI_COMMIT_SHORT_SHA $CI_COMMIT_REF_SLUG"
+      if [ "$CI_COMMIT_REF_NAME" = "main" ]; then tags="$tags latest"; fi
+      for svc in platform social realtime; do
+        image_tags=""
+        migrate_tags=""
+        for tag in $tags; do
+          image_tags="$image_tags -t $CI_REGISTRY_IMAGE/$svc:$tag"
+          migrate_tags="$migrate_tags -t $CI_REGISTRY_IMAGE/$svc-migrate:$tag"
+        done
+        echo "== $svc: $tags"
+        docker buildx build --platform "$PLATFORMS" -f "services/$svc/Dockerfile" $image_tags --push .
+        docker buildx build --platform "$PLATFORMS" -f deploy/migrate/Dockerfile --build-arg "SERVICE=$svc" $migrate_tags --push .
+      done
