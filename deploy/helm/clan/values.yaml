@@ -35,9 +35,62 @@ rabbitmq:
   # upgrade, the same way rabbitmq-setup does in docker-compose.
   setupImage: curlimages/curl:8.11.1
 
-# The GitLab container registry the service images are pulled from (they are used from part 2 on).
+# The GitLab container registry the service images are pulled from.
 registry:
   server: registry.gitlab.com
+
+# The images of platform, social and realtime and their migration images, built by the CI job
+# "images" (see the main README, "Container images"): <repository>/<service>:<tag> and
+# <repository>/<service>-migrate:<tag>.
+image:
+  repository: registry.gitlab.com/clan-platform/clan-backend
+  # A short commit SHA (a fixed version you can roll back to), or a branch name: "develop" is the
+  # newest build of develop. Override it per install: --set image.tag=a1b2c3d
+  tag: develop
+  # Always: a moving tag like "develop" is downloaded again whenever a pod starts.
+  pullPolicy: Always
+
+logLevel: info
+
+# One Postgres database for all services, each with its own user and schema (see postgres above).
+# Browsers may call a service only from these origins (CORS): comma-separated scheme://host[:port],
+# no trailing slash, "*" not allowed. The real domains are set in values-prod.yaml with the Ingress.
+platform:
+  replicas: 1
+  corsOrigins: http://localhost:5173
+  developerTokenTtl: 24h
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+social:
+  replicas: 1
+  corsOrigins: http://localhost:5174
+  # How long social keeps a game's clan rules read from platform.
+  configCacheTtl: 30s
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# Realtime always runs exactly one pod: presence, rate limits and the config cache live in its
+# memory, and it is the only reader of the realtime.events queue. Updates stop the old pod before
+# the new one starts (strategy Recreate), so two never run at once.
+realtime:
+  corsOrigins: http://localhost:5174
+  # true: read every friendship from social once at startup (needs secrets.socialInternalToken).
+  backfill: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 # Filled from the secrets file (never committed). Each password: at least 12 letters and digits only,
 # because the services put them inside database and broker URLs.
