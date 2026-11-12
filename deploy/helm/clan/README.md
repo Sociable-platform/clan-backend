@@ -7,7 +7,8 @@ Installs the clan platform on Kubernetes (k3s on the Oracle server). It is built
 | 1 | PostgreSQL, RabbitMQ, the Secrets, the registry pull secret | TEAM-173 |
 | 2 | platform, social and realtime, each with its migrations | TEAM-175 |
 | 3 | public URLs (Traefik IngressRoutes), HTTPS with Let's Encrypt | TEAM-176 |
-| 4 | Studio and the demo game | later |
+| 4 | deploys from CI (`deploy/deploy.sh`, job `deploy` on main) | TEAM-177 |
+| 5 | Studio and the demo game | later |
 
 Everything is installed into the namespace `clan`, as the release `clan`.
 
@@ -119,7 +120,8 @@ openssl pkey -in secrets/prod/platform_jwt_private.pem -pubout -out secrets/prod
 **3. The registry token** (once): GitLab group `clan-platform` -> Settings -> Repository -> Deploy tokens, scope
 `read_registry`. Put its username and token into `registryUsername` and `registryPassword`.
 
-**4. Check on your laptop, copy to the server, install there** (the same command installs and upgrades):
+**4. Install or upgrade.** Usually you do not do this by hand any more: every merge to `main` deploys (see "Deploy"
+below), and `deploy/deploy.sh` does the same from your laptop. The manual steps, for a first install or for debugging:
 
 ```bash
 # laptop: check the chart (does not need the cluster)
@@ -165,6 +167,100 @@ Call a service from inside the cluster (distroless images have no shell or curl,
 kubectl -n clan run curl --rm -i --restart=Never --image=curlimages/curl:8.11.1 -- \
   sh -c 'for s in platform:8081 social:8082 realtime:8083; do curl -s http://$s/ready; echo; done'
 ```
+
+## Deploy
+
+**Every merge to `main` is deployed.** The pipeline on `main` runs `test`, then `images` (pushes the images tagged with
+the short commit SHA, for example `56bd0093`), then `deploy`, which runs `deploy/deploy.sh <sha>`. `develop` only tests
+and builds images; it never touches the server. So a release is an MR `develop` -> `main`.
+
+`deploy/deploy.sh` copies the chart, the secrets file and the two JWT keys to a private temporary folder on the server,
+runs `helm upgrade --install --wait` there with `image.tag=<sha>`, prints the last revisions and the running images,
+and always deletes the copies. Helm returns only when the new pods are ready; if they are not ready within 10 minutes
+the deploy fails and the old pods keep serving.
+
+**From your laptop** (Git Bash, not PowerShell's `bash`, which is WSL and has no access to your SSH key):
+
+```bash
+git rev-parse --short=8 origin/main        # the tag CI built for the newest main commit
+bash deploy/deploy.sh 56bd0093             # any tag that exists in Deploy -> Container registry
+```
+
+It uses your own SSH key and your `secrets.prod.yaml` and `secrets/prod/*.pem`.
+
+**Which version runs now:** `kubectl -n clan get deploy -o wide` (the IMAGE column ends with the tag), `helm history clan
+-n clan` on the server, or GitLab -> Operate -> Environments -> production.
+
+### Set up CI deploys (once)
+
+The job reads five **Protected** CI/CD variables (clan-backend -> Settings -> CI/CD -> Variables), so only pipelines of
+protected branches can read them: `main` must be protected (Settings -> Repository -> Protected branches). For every
+variable: type Variable, environments All, Protected, and untick "Expand variable reference". In Git Bash, from the
+repository root, each command copies a value to the clipboard:
+
+| Variable | Value | Masked |
+|---|---|---|
+| `DEPLOY_SSH_KEY_B64` | `base64 -w0 ~/.ssh/clan_ci_deploy \| clip` | yes |
+| `DEPLOY_SSH_KNOWN_HOSTS` | `ssh-keyscan -t ed25519 130.61.158.79 2>/dev/null \| clip` | no (it has spaces) |
+| `DEPLOY_SECRETS_B64` | `base64 -w0 deploy/helm/clan/secrets.prod.yaml \| clip` | yes |
+| `DEPLOY_JWT_PRIVATE_B64` | `base64 -w0 secrets/prod/platform_jwt_private.pem \| clip` | yes |
+| `DEPLOY_JWT_PUBLIC_B64` | `base64 -w0 secrets/prod/platform_jwt_public.pem \| clip` | yes |
+
+The CI has its own SSH key, so it can be revoked without touching anyone's personal key:
+
+```bash
+ssh-keygen -t ed25519 -N "" -C "gitlab-ci-deploy" -f ~/.ssh/clan_ci_deploy
+cat ~/.ssh/clan_ci_deploy.pub | ssh ubuntu@130.61.158.79 'cat >> ~/.ssh/authorized_keys'
+ssh -i ~/.ssh/clan_ci_deploy ubuntu@130.61.158.79 hostname     # prints clan-platform
+```
+
+Check the host key before you store it: `ssh-keyscan -t ed25519 130.61.158.79 2>/dev/null | ssh-keygen -lf -` must show
+`SHA256:hxWH4UP41JFbBbrL9R4E26czaH91u0gin7mrR/DTqe4`.
+
+**When a secret changes** (a password, a token, a key), update `secrets.prod.yaml` or the PEM file and the matching
+variable; the next deploy applies it and restarts the pods. To revoke the CI key, delete its line (`gitlab-ci-deploy`)
+from `~/.ssh/authorized_keys` on the server.
+
+### Roll back
+
+- **GitLab:** Operate -> Environments -> production -> an earlier deploy -> Re-deploy. It deploys that commit's images
+  again (they stay in the registry).
+- **Laptop:** `bash deploy/deploy.sh <older sha>`.
+- **Helm, on the server:** `helm history clan -n clan`, then `helm rollback clan <revision> -n clan`. This restores the
+  whole release as it was, including old settings.
+
+Migrations are not rolled back: an older image runs against the newer tables. Our migrations only add (tables, columns,
+nullable fields), which older code ignores, so this is safe. A migration that removes or renames something needs a plan
+first.
+
+### Logs and debugging
+
+On the server (`ssh ubuntu@130.61.158.79`, then `export KUBECONFIG=/etc/rancher/k3s/k3s.yaml`), or on your laptop
+through the tunnel:
+
+```bash
+kubectl -n clan get pods                           # status of everything
+kubectl -n clan logs deploy/social --tail=100 -f   # a service's log, live (Ctrl+C stops)
+kubectl -n clan logs deploy/social -c migrate      # its migrations
+kubectl -n clan logs deploy/social --previous      # the log of the crashed container before a restart
+kubectl -n clan describe pod <pod name>            # events: image pull errors, failed probes, OOMKilled
+kubectl -n clan get events --sort-by=.lastTimestamp | tail -20
+```
+
+`ImagePullBackOff`: the tag does not exist or the registry token is wrong. `Init:Error`: a migration failed (see its
+log). `CrashLoopBackOff`: the service stops right after starting (see `--previous`).
+
+### Access for a teammate
+
+1. They send you their **public** SSH key (`~/.ssh/id_ed25519.pub`), never the private one.
+2. You add it on the server: `echo "ssh-ed25519 AAAA... name" >> ~/.ssh/authorized_keys` (on the server).
+3. They can now `ssh ubuntu@130.61.158.79` and use `kubectl` there, run `deploy/deploy.sh` (with their own copy of
+   the secrets, which you give them privately), or use `kubectl` on their laptop: copy the access file once with
+   `scp ubuntu@130.61.158.79:clan-oracle.yaml ~/.kube/` (made as in the main README), and open the tunnel
+   `ssh -N -L 16443:127.0.0.1:6443 ubuntu@130.61.158.79` whenever they use it.
+
+The server has one Linux user, so everyone with access can do everything. To take access away, delete their line from
+`~/.ssh/authorized_keys`.
 
 ## Good to know
 
