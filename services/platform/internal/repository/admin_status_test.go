@@ -174,8 +174,10 @@ func TestSetGameStatusLeavesTheDeveloperAndOtherGamesAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Runs before newGame's cleanup (last in, first out): the extra game must go before its developer can.
 	t.Cleanup(func() {
 		_, _ = r.pool.Exec(context.Background(), `delete from admin_audit_log where target_id = $1`, game)
+		_, _ = r.pool.Exec(context.Background(), `delete from games where id = $1`, other.ID)
 	})
 
 	c := StatusChange{Actor: "admin-1", Action: "game.suspended", Status: StatusSuspended, Reason: "abuse", Note: "reported"}
@@ -268,5 +270,48 @@ func TestSetDeveloperStatusConcurrentRequestsWriteOneAuditRow(t *testing.T) {
 	}
 	if n := auditCount(t, r, dev); n != 1 {
 		t.Errorf("%d audit rows, want 1", n)
+	}
+}
+
+func TestGameAccessOf(t *testing.T) {
+	r := testRepo(t)
+	ctx := context.Background()
+	dev, game := newGame(t, r)
+	t.Cleanup(func() {
+		_, _ = r.pool.Exec(context.Background(), `delete from admin_audit_log where target_id = any($1::uuid[])`, []string{dev, game})
+	})
+
+	a, err := r.GameAccessOf(ctx, game)
+	if err != nil || a != (GameAccess{GameStatus: "active", DeveloperStatus: "active"}) {
+		t.Fatalf("fresh game: %+v, %v", a, err)
+	}
+
+	if _, _, err := r.SetGameStatus(ctx, game, StatusChange{Actor: "a", Action: "game.suspended", Status: StatusSuspended, Reason: "abuse"}); err != nil {
+		t.Fatal(err)
+	}
+	if a, err = r.GameAccessOf(ctx, game); err != nil || a != (GameAccess{GameStatus: "suspended", DeveloperStatus: "active"}) {
+		t.Fatalf("game suspended: %+v, %v", a, err)
+	}
+
+	if _, _, err := r.SetDeveloperStatus(ctx, dev, suspend("non_payment", "")); err != nil {
+		t.Fatal(err)
+	}
+	if a, err = r.GameAccessOf(ctx, game); err != nil || a != (GameAccess{GameStatus: "suspended", DeveloperStatus: "suspended"}) {
+		t.Fatalf("both suspended: %+v, %v", a, err)
+	}
+
+	// Resuming shows at once: the query reads the rows, nothing is cached.
+	if _, _, err := r.SetGameStatus(ctx, game, StatusChange{Actor: "a", Action: "game.resumed", Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.SetDeveloperStatus(ctx, dev, StatusChange{Actor: "a", Action: "developer.resumed", Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	if a, err = r.GameAccessOf(ctx, game); err != nil || a != (GameAccess{GameStatus: "active", DeveloperStatus: "active"}) {
+		t.Fatalf("resumed: %+v, %v", a, err)
+	}
+
+	if _, err := r.GameAccessOf(ctx, unknownID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown game: %v, want ErrNotFound", err)
 	}
 }

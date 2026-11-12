@@ -152,3 +152,32 @@ func insertAudit(ctx context.Context, tx pgx.Tx, targetType, targetID string, c 
 	}
 	return nil
 }
+
+// GameAccess is the status of a game and of the developer who owns it. A game is served only when
+// both are StatusActive.
+type GameAccess struct {
+	GameStatus      string
+	DeveloperStatus string
+}
+
+// GameAccessOf returns the statuses that decide whether a game is served, or ErrNotFound for a
+// game that does not exist. It reads the database on every call, so a suspension or a resume
+// takes effect at once.
+func (r *Repository) GameAccessOf(ctx context.Context, gameID string) (GameAccess, error) {
+	if r.pool == nil {
+		return GameAccess{}, ErrNoDatabase
+	}
+	var a GameAccess
+	err := r.pool.QueryRow(ctx,
+		`select g.status, d.status
+		 from games g join developers d on d.id = g.developer_id
+		 where g.id = $1`, gameID,
+	).Scan(&a.GameStatus, &a.DeveloperStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return GameAccess{}, ErrNotFound
+	}
+	if err != nil {
+		return GameAccess{}, fmt.Errorf("select game access: %w", err)
+	}
+	return a, nil
+}

@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -219,12 +218,15 @@ func TestUnexpectedErrorIsLoggedAndNotLeaked(t *testing.T) {
 
 // memStore is a tiny in-memory repository for the end-to-end test below.
 type memStore struct {
-	devs     []repository.Developer
-	admins   []repository.Admin
-	games    []repository.Game
-	keys     []memKey
-	drafts   map[string]repository.WidgetDraft     // by game ID
-	versions map[string][]repository.WidgetVersion // by game ID, oldest first
+	devs   []repository.Developer
+	admins []repository.Admin
+	// devStatus and gameStatus hold the status by ID; a missing entry means active.
+	devStatus  map[string]string
+	gameStatus map[string]string
+	games      []repository.Game
+	keys       []memKey
+	drafts     map[string]repository.WidgetDraft     // by game ID
+	versions   map[string][]repository.WidgetVersion // by game ID, oldest first
 }
 
 func (m *memStore) Ping(context.Context) error { return nil }
@@ -245,12 +247,64 @@ func (m *memStore) AuditEntries(context.Context, repository.AuditFilter) ([]repo
 	return nil, nil
 }
 
-func (m *memStore) SetDeveloperStatus(context.Context, string, repository.StatusChange) (repository.AdminDeveloper, bool, error) {
+// Statuses are kept in two maps by ID; a missing entry means active.
+func (m *memStore) statusOf(statuses map[string]string, id string) string {
+	if st := statuses[id]; st != "" {
+		return st
+	}
+	return repository.StatusActive
+}
+
+func (m *memStore) SetDeveloperStatus(_ context.Context, id string, c repository.StatusChange) (repository.AdminDeveloper, bool, error) {
+	for _, d := range m.devs {
+		if d.ID != id {
+			continue
+		}
+		out := repository.AdminDeveloper{ID: d.ID, Email: d.Email, Name: d.Name, CreatedAt: d.CreatedAt}
+		if m.statusOf(m.devStatus, id) == c.Status {
+			out.Status = c.Status
+			return out, false, nil
+		}
+		if m.devStatus == nil {
+			m.devStatus = map[string]string{}
+		}
+		m.devStatus[id] = c.Status
+		out.Status = c.Status
+		return out, true, nil
+	}
 	return repository.AdminDeveloper{}, false, repository.ErrNotFound
 }
 
-func (m *memStore) SetGameStatus(context.Context, string, repository.StatusChange) (repository.AdminGame, bool, error) {
+func (m *memStore) SetGameStatus(_ context.Context, id string, c repository.StatusChange) (repository.AdminGame, bool, error) {
+	for _, g := range m.games {
+		if g.ID != id {
+			continue
+		}
+		out := repository.AdminGame{ID: g.ID, Name: g.Name, CreatedAt: g.CreatedAt}
+		if m.statusOf(m.gameStatus, id) == c.Status {
+			out.Status = c.Status
+			return out, false, nil
+		}
+		if m.gameStatus == nil {
+			m.gameStatus = map[string]string{}
+		}
+		m.gameStatus[id] = c.Status
+		out.Status = c.Status
+		return out, true, nil
+	}
 	return repository.AdminGame{}, false, repository.ErrNotFound
+}
+
+func (m *memStore) GameAccessOf(_ context.Context, gameID string) (repository.GameAccess, error) {
+	for _, g := range m.games {
+		if g.ID == gameID {
+			return repository.GameAccess{
+				GameStatus:      m.statusOf(m.gameStatus, g.ID),
+				DeveloperStatus: m.statusOf(m.devStatus, g.DeveloperID),
+			}, nil
+		}
+	}
+	return repository.GameAccess{}, repository.ErrNotFound
 }
 
 func (m *memStore) AdminByEmail(_ context.Context, email string) (repository.Admin, error) {
@@ -277,7 +331,8 @@ func (m *memStore) CreateDeveloper(_ context.Context, email, hash, name string) 
 			return repository.Developer{}, repository.ErrEmailTaken
 		}
 	}
-	d := repository.Developer{ID: "dev-" + strconv.Itoa(len(m.devs)+1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now()}
+	// the ID is a UUID, like in the real table
+	d := repository.Developer{ID: fmt.Sprintf("00000000-0000-4000-8001-%012d", len(m.devs)+1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now()}
 	m.devs = append(m.devs, d)
 	return d, nil
 }

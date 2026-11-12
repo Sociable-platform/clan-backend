@@ -27,12 +27,19 @@ func gameID(ctx context.Context) string {
 }
 
 // requireAPIKey wraps next so it only runs for a valid, active API key in the
-// X-API-Key header. The key is checked before the body is read, so a caller with a bad
-// key learns nothing about the request format. A missing, wrong or revoked key gets 401.
+// X-API-Key header, of a game that is served. The key is checked before the body is read, so a
+// caller with a bad key learns nothing about the request format. A missing, wrong or revoked key
+// gets 401. A valid key of a suspended game (or of a suspended developer) gets 403
+// game_suspended or account_suspended: the check is on the game, so every key of it is refused,
+// old or new, and all of them work again the moment the game is resumed.
 func (h *Handler) requireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := h.svc.GameForAPIKey(r.Context(), r.Header.Get("X-API-Key"))
 		if err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		if err := h.svc.EnsureGameServed(r.Context(), id); err != nil {
 			h.fail(w, r, err)
 			return
 		}
