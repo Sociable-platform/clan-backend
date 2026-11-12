@@ -52,6 +52,7 @@ type fakeService struct {
 	internalGameConfig func(gameID string) (service.InternalGameConfig, error)
 
 	gameForAPIKey    func(key string) (string, error)
+	ensureGameServed func(gameID string) error // nil: every game is served
 	issuePlayerToken func(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)
 }
 
@@ -99,6 +100,13 @@ func (f fakeService) SetDeveloperStatus(_ context.Context, actor, id string, in 
 
 func (f fakeService) SetGameStatus(_ context.Context, actor, id string, in service.SetStatusInput) (service.AdminGame, error) {
 	return f.setGameStatus(actor, id, in)
+}
+
+func (f fakeService) EnsureGameServed(_ context.Context, gameID string) error {
+	if f.ensureGameServed == nil {
+		return nil
+	}
+	return f.ensureGameServed(gameID)
 }
 
 func serve(t *testing.T, svc Service, method, path string) *httptest.ResponseRecorder {

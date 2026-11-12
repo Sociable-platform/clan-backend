@@ -108,6 +108,11 @@ curl -s -X POST http://localhost:8081/api/v1/players/auth \
 
 A missing, wrong or revoked key gets `401 invalid_api_key`. The token's game is always the key's game.
 
+A valid key of a game that is not **effectively active** gets `403` and no token: `account_suspended` when the developer is suspended
+(all their games are), `game_suspended` when only that game is. A game is served only when the game and its developer are both `active`
+(see the admin endpoints below). The check is on the game, so every key of it is refused, old or new, and all work again at once
+when the admin resumes it. The key is checked first: a wrong key still gets 401, so a stranger learns nothing about a game.
+
 ### Test tokens without platform
 
 To test social alone, make a token with the same private key:
@@ -520,7 +525,7 @@ go test -run TestPublishToRealBroker -v ./pkg/events/
 | GET | `/api/v1/games/{gameID}/widget/versions` | 200 `{ versions: [...] }`, newest first, without configs; an empty list if never published. 404 unless you own the game |
 | GET | `/api/v1/games/{gameID}/widget/versions/{version}` | 200 with that version and its `config`. 404 `widget_version_not_found` (also for a number that is not a positive whole number) |
 | POST | `/api/v1/games/{gameID}/widget/versions/{version}/rollback` | 201 with a **new** version that has the old version's config; nothing is deleted and the draft is untouched. 404 `widget_version_not_found` |
-| GET | `/api/v1/public/games/{gameID}/widget-config` | **No login, open to every website.** 200 `{ version, config }`: the latest **published** version (never a draft), with a strong `ETag` (`"v3"`) and `Cache-Control: public, max-age=60`. Send `If-None-Match` to get 304. 404 `widget_not_published` (also for an unknown game ID). Not rate-limited in the service: put a CDN or proxy limit in front of `/api/v1/public/` |
+| GET | `/api/v1/public/games/{gameID}/widget-config` | **No login, open to every website.** 200 `{ version, config }`: the latest **published** version (never a draft), with a strong `ETag` (`"v3"`) and `Cache-Control: public, max-age=60`. Send `If-None-Match` to get 304. 404 `widget_not_published` (also for an unknown game ID). **403 `game_suspended`** (with `Cache-Control: no-store`) when the game or its developer is suspended, whichever it is, so players never see a billing message; the SDK then removes the panel. Not rate-limited in the service: put a CDN or proxy limit in front of `/api/v1/public/` |
 | GET | `/internal/v1/games/{gameID}/config` | **For other services, not browsers.** Needs `X-Internal-Token: <PLATFORM_INTERNAL_TOKEN>` (401 `invalid_internal_token`; 404 `not_found` while the secret is not set). 200 `{ gameId, version, config, allowedOrigins }`: the newest **published** config and the game's allowed origins, never cached. A game never published has `version: 0` and `config: null` but still its origins. 404 `game_not_found` for an unknown game |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |

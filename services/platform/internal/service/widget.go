@@ -113,10 +113,21 @@ func errWidgetNotPublished() *httpx.Error {
 // PublicWidgetConfig returns the newest published version of a game's widget, for the players'
 // page. It needs no developer: the game ID is public. A game that does not exist, and a
 // game that was never published, both answer widget_not_published, so the route does not
-// tell a stranger which game IDs exist. Drafts are never returned.
+// tell a stranger which game IDs exist. Drafts are never returned. A game that is not effectively
+// active (the game or its developer is suspended) answers 403 game_suspended.
 func (s *Service) PublicWidgetConfig(ctx context.Context, gameID string) (WidgetVersion, error) {
 	if !uuidPattern.MatchString(gameID) {
 		return WidgetVersion{}, errWidgetNotPublished()
+	}
+	// Players must not read a billing message about someone else's contract, so a suspended game
+	// is always "game_suspended", whichever switch is off. Checked before the config is read, so
+	// neither a config nor a 304 for If-None-Match leaves while the game is suspended.
+	why, err := s.suspension(ctx, gameID)
+	if err != nil {
+		return WidgetVersion{}, err
+	}
+	if why != notSuspended {
+		return WidgetVersion{}, errGameSuspended()
 	}
 	v, err := s.store.LatestWidgetVersion(ctx, gameID)
 	if errors.Is(err, repository.ErrNotFound) {

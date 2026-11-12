@@ -38,6 +38,10 @@ type fakeStore struct {
 	statusTarget string
 	statusChange repository.StatusChange
 
+	// IDs of suspended games and developers, for GameAccessOf.
+	suspendedGames map[string]bool
+	suspendedDevs  map[string]bool
+
 	games    []repository.Game
 	keys     []storedKey
 	drafts   map[string]repository.WidgetDraft     // by game ID

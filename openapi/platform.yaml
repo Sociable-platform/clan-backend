@@ -1149,7 +1149,8 @@ paths:
         version number (not who published it or when). Any website may call it
         (`Access-Control-Allow-Origin: *`, `ETag` readable from JavaScript); every other route keeps
         the origin list. A game that does not exist and a game that was never published get the same
-        404 `widget_not_published`, so the route does not reveal which game IDs exist.
+        404 `widget_not_published`, so the route does not reveal which game IDs exist. A game that is
+        suspended answers 403 `game_suspended` instead, even if it was never published.
 
         **Caching.** Every 200 and 304 carries a strong `ETag` such as `"v3"`: the version number,
         so it changes only when a publish or rollback adds a version. Send it back in
@@ -1200,6 +1201,26 @@ paths:
               schema:
                 type: string
               example: public, max-age=60
+        "403":
+          description: |
+            The game is suspended (`game_suspended`): the game itself or its developer is switched off by the
+            distributor. The same code is used for both, because players must not see a message about someone
+            else's contract. Checked before the config is read, so no config and no 304 is sent. The answer
+            is never cached, but a browser or CDN may still hold an earlier 200 for up to 60 seconds.
+            The SDK removes the panel silently and stops asking.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: game_suspended
+                  message: This game is suspended
         "404":
           description: The game has no published widget (or no such game).
           headers:
@@ -1230,7 +1251,8 @@ paths:
         It is valid for 1 hour. The game cannot be chosen in the body: it is always the key's game.
         Social checks the token with platform's public key and never calls platform.
 
-        The key is checked before the body, so a wrong key gets 401 whatever the body holds.
+        The key is checked before the body, so a wrong key gets 401 whatever the body holds. After a valid
+        key, a suspended game or developer gets 403 whatever the body holds, and no token is issued.
       security:
         - apiKey: []
       requestBody:
@@ -1275,7 +1297,31 @@ paths:
                   code: invalid_api_key
                   message: API key is missing, wrong or revoked
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          description: |
+            The key is valid but the game may not use the product. `account_suspended`: the developer is
+            suspended (all their games are). `game_suspended`: only this game is. Every key of the game is
+            refused, old or new, and all work again at once when the game is resumed. Also
+            `origin_not_allowed` for a browser call from a website that is not in the allowed origins.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                account_suspended:
+                  value:
+                    error:
+                      code: account_suspended
+                      message: The developer account is suspended
+                game_suspended:
+                  value:
+                    error:
+                      code: game_suspended
+                      message: This game is suspended
+                origin_not_allowed:
+                  value:
+                    error:
+                      code: origin_not_allowed
+                      message: This website is not allowed to call the API
   /internal/v1/games/{gameID}/config:
     parameters:
       - $ref: "#/components/parameters/GameID"

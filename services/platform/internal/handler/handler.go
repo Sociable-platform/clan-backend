@@ -34,6 +34,7 @@ type Service interface {
 	ListAPIKeys(ctx context.Context, developerID, gameID string) ([]service.APIKey, error)
 	RevokeAPIKey(ctx context.Context, developerID, keyID string) error
 	GameForAPIKey(ctx context.Context, key string) (gameID string, err error)
+	EnsureGameServed(ctx context.Context, gameID string) error
 	IssuePlayerToken(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)
 	WidgetDraft(ctx context.Context, developerID, gameID string) (service.WidgetDraft, error)
 	SaveWidgetDraft(ctx context.Context, developerID, gameID string, config json.RawMessage) (service.WidgetDraft, error)
