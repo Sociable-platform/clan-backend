@@ -28,11 +28,11 @@ func (s *recordingService) ListClans(context.Context, string, service.ListClansI
 	return []service.Clan{}, s.err
 }
 
-func (f fakeService) CreateClan(context.Context, string, string, string, string) (service.Clan, error) {
+func (f fakeService) CreateClan(context.Context, string, string, string, service.NewClan) (service.Clan, error) {
 	return service.Clan{}, f.err
 }
 
-func (s *recordingService) CreateClan(context.Context, string, string, string, string) (service.Clan, error) {
+func (s *recordingService) CreateClan(context.Context, string, string, string, service.NewClan) (service.Clan, error) {
 	return service.Clan{}, s.err
 }
 
@@ -173,16 +173,25 @@ func TestListClansNeedsAToken(t *testing.T) {
 // creatingService remembers what createClan passed on and answers with err or a new clan.
 type creatingService struct {
 	fakeService
-	err                                error
-	gameID, externalID, playerName, nm string
+	err                            error
+	gameID, externalID, playerName string
+	in                             service.NewClan
 }
 
-func (s *creatingService) CreateClan(_ context.Context, gameID, externalID, playerName, name string) (service.Clan, error) {
-	s.gameID, s.externalID, s.playerName, s.nm = gameID, externalID, playerName, name
+func (s *creatingService) CreateClan(_ context.Context, gameID, externalID, playerName string, in service.NewClan) (service.Clan, error) {
+	s.gameID, s.externalID, s.playerName, s.in = gameID, externalID, playerName, in
 	if s.err != nil {
 		return service.Clan{}, s.err
 	}
-	return service.Clan{ID: "c-9", Name: name, MemberCount: 1, MaxMembers: 10}, nil
+	return service.Clan{
+		ID:          "c-9",
+		Name:        in.Name,
+		Description: in.Description,
+		Badge:       in.Badge,
+		Tag:         in.Tag,
+		MemberCount: 1,
+		MaxMembers:  10,
+	}, nil
 }
 
 // postClan sends POST /api/v1/clans with body, using a real player token for tokenGame
@@ -212,9 +221,9 @@ func TestCreateClanReturns201WithTheClan(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
 	}
-	if svc.gameID != tokenGame || svc.externalID != "u_42" || svc.playerName != "Ali" || svc.nm != "Wolves" {
+	if svc.gameID != tokenGame || svc.externalID != "u_42" || svc.playerName != "Ali" || svc.in.Name != "Wolves" {
 		t.Fatalf("service got game=%q player=%q name=%q clan=%q; want the token's game and player, and the body's name",
-			svc.gameID, svc.externalID, svc.playerName, svc.nm)
+			svc.gameID, svc.externalID, svc.playerName, svc.in.Name)
 	}
 	want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
@@ -235,7 +244,7 @@ func TestCreateClanBadBody(t *testing.T) {
 		if rec.Code != http.StatusBadRequest || json.Unmarshal(rec.Body.Bytes(), &e) != nil || e.Error.Code != "invalid_json" {
 			t.Errorf("body %q: status %d, response %s; want 400 invalid_json", body, rec.Code, rec.Body.String())
 		}
-		if svc.nm != "" {
+		if svc.in.Name != "" {
 			t.Errorf("body %q: the service must not be called", body)
 		}
 	}
@@ -533,5 +542,31 @@ func TestListClansBadOptionsAre400(t *testing.T) {
 		if rec.Code != http.StatusBadRequest || json.Unmarshal(rec.Body.Bytes(), &body) != nil || body.Error.Code != code {
 			t.Fatalf("%s: status %d, body %s", code, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestCreateClanPassesTheDescriptionAndBadge(t *testing.T) {
+	svc := &creatingService{}
+	rec := postClan(t, svc, `{"name":"Wolves","description":"Casual farmers","badge":"wolf","tag":"WOLF"}`, false)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	if svc.in.Description != "Casual farmers" || svc.in.Badge != "wolf" || svc.in.Tag != "WOLF" {
+		t.Fatalf("service got %+v; want the body's description, badge and tag", svc.in)
+	}
+	want := `{"id":"c-9","name":"Wolves","description":"Casual farmers","badge":"wolf","tag":"WOLF","memberCount":1,"maxMembers":10}`
+	if got := strings.TrimSpace(rec.Body.String()); got != want {
+		t.Fatalf("body\n got %s\nwant %s", got, want)
+	}
+}
+
+// A clan without a description or badge answers exactly as it did before they existed:
+// the fields are left out, so an older client sees no change.
+func TestCreateClanWithoutTheOptionalFieldsLeavesThemOut(t *testing.T) {
+	svc := &creatingService{}
+	rec := postClan(t, svc, `{"name":"Wolves"}`, false)
+	want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10}`
+	if got := strings.TrimSpace(rec.Body.String()); got != want {
+		t.Fatalf("body\n got %s\nwant %s", got, want)
 	}
 }

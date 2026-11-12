@@ -17,7 +17,7 @@ func (m *memStore) ListClans(context.Context, string, string, repository.ListCla
 	return []repository.Clan{}, nil
 }
 
-func (m *memStore) CreateClan(context.Context, string, string, string) (repository.Clan, error) {
+func (m *memStore) CreateClan(context.Context, string, string, repository.NewClan) (repository.Clan, error) {
 	return repository.Clan{}, errors.New("memStore has no clans")
 }
 
@@ -132,23 +132,30 @@ type creatingStore struct {
 	creates   int
 	game      string
 	owner     string
-	name      string
+	got       repository.NewClan
 }
 
-func (c *creatingStore) CreateClan(_ context.Context, gameID, ownerID, name string) (repository.Clan, error) {
+func (c *creatingStore) CreateClan(_ context.Context, gameID, ownerID string, in repository.NewClan) (repository.Clan, error) {
 	c.creates++
-	c.game, c.owner, c.name = gameID, ownerID, name
+	c.game, c.owner, c.got = gameID, ownerID, in
 	if c.createErr != nil {
 		return repository.Clan{}, c.createErr
 	}
-	return repository.Clan{ID: "clan-1", Name: name, MemberCount: 1}, nil
+	return repository.Clan{
+		ID:          "clan-1",
+		Name:        in.Name,
+		Description: in.Description,
+		Badge:       in.Badge,
+		Tag:         in.Tag,
+		MemberCount: 1,
+	}, nil
 }
 
 func newCreatingStore() *creatingStore { return &creatingStore{memStore: newMemStore()} }
 
 func TestCreateClanMakesThePlayerTheOwner(t *testing.T) {
 	store := newCreatingStore()
-	got, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", "  Wolf   Pack ")
+	got, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", NewClan{Name: "  Wolf   Pack "})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,8 +163,8 @@ func TestCreateClanMakesThePlayerTheOwner(t *testing.T) {
 	if owner.ID == "" {
 		t.Fatal("the player record should be created for the owner")
 	}
-	if store.game != gameA || store.owner != owner.ID || store.name != "Wolf Pack" {
-		t.Fatalf("store got game=%q owner=%q name=%q", store.game, store.owner, store.name)
+	if store.game != gameA || store.owner != owner.ID || store.got.Name != "Wolf Pack" {
+		t.Fatalf("store got game=%q owner=%q name=%q", store.game, store.owner, store.got.Name)
 	}
 	want := Clan{ID: "clan-1", Name: "Wolf Pack", MemberCount: 1, MaxMembers: 10}
 	if got != want {
@@ -197,7 +204,7 @@ func TestCleanClanName(t *testing.T) {
 
 func TestCreateClanInvalidNameTouchesNothing(t *testing.T) {
 	store := newCreatingStore()
-	if _, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", "ab"); err == nil {
+	if _, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", NewClan{Name: "ab"}); err == nil {
 		t.Fatal("expected invalid_clan_name")
 	}
 	if store.creates != 0 || store.memStore.called != 0 {
@@ -217,7 +224,7 @@ func TestCreateClanConflicts(t *testing.T) {
 	for _, tc := range tests {
 		store := newCreatingStore()
 		store.createErr = tc.storeErr
-		_, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", "Wolves")
+		_, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", NewClan{Name: "Wolves"})
 		var he *httpx.Error
 		if !errors.As(err, &he) || he.Status != http.StatusConflict || he.Code != tc.code {
 			t.Errorf("%v: err = %v, want 409 %s", tc.storeErr, err, tc.code)
@@ -228,7 +235,7 @@ func TestCreateClanConflicts(t *testing.T) {
 func TestCreateClanDatabaseError(t *testing.T) {
 	store := newCreatingStore()
 	store.createErr = errors.New("database is down")
-	_, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", "Wolves")
+	_, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", NewClan{Name: "Wolves"})
 	var he *httpx.Error
 	if err == nil || errors.As(err, &he) {
 		t.Fatalf("err = %v, want a plain internal error (answered as 500, details only in the log)", err)
@@ -555,5 +562,77 @@ func TestListClansRejectsBadOptions(t *testing.T) {
 				t.Fatal("the database must not be asked when the input is invalid")
 			}
 		})
+	}
+}
+
+func TestCreateClanKeepsTheDescriptionAndBadge(t *testing.T) {
+	store := newCreatingStore()
+	got, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", NewClan{
+		Name:        "Wolves",
+		Description: "  Casual farmers.\r\nEveryone welcome.  ",
+		Badge:       " wolf-01 ",
+		Tag:         " WOLF ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Trimmed, and the browser's "\r\n" line end became a plain "\n".
+	if store.got.Description != "Casual farmers.\nEveryone welcome." || store.got.Badge != "wolf-01" {
+		t.Fatalf("store got description %q badge %q", store.got.Description, store.got.Badge)
+	}
+	if store.got.Tag != "WOLF" {
+		t.Fatalf("store got tag %q, want it trimmed", store.got.Tag)
+	}
+	if got.Description != store.got.Description || got.Badge != "wolf-01" || got.Tag != "WOLF" {
+		t.Fatalf("answer has description %q badge %q tag %q; want what was saved",
+			got.Description, got.Badge, got.Tag)
+	}
+}
+
+func TestCreateClanWithoutADescriptionOrBadge(t *testing.T) {
+	store := newCreatingStore()
+	got, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", NewClan{Name: "Wolves"})
+	if err != nil {
+		t.Fatalf("a clan without a description must be allowed: %v", err)
+	}
+	if store.got.Description != "" || store.got.Badge != "" || store.got.Tag != "" ||
+		got.Description != "" || got.Badge != "" || got.Tag != "" {
+		t.Fatalf("empty stayed empty? store %+v, answer %+v", store.got, got)
+	}
+}
+
+func TestCreateClanRejectsABadDescriptionOrBadge(t *testing.T) {
+	tests := []struct {
+		name string
+		in   NewClan
+		code string
+	}{
+		{"description too long", NewClan{Name: "Wolves", Description: strings.Repeat("a", 301)}, "invalid_clan_description"},
+		{"description with a control character", NewClan{Name: "Wolves", Description: "a\x00b"}, "invalid_clan_description"},
+		{"badge too long", NewClan{Name: "Wolves", Badge: strings.Repeat("b", 65)}, "invalid_clan_badge"},
+		{"badge with a space", NewClan{Name: "Wolves", Badge: "grey wolf"}, "invalid_clan_badge"},
+		{"badge with a slash", NewClan{Name: "Wolves", Badge: "../etc/passwd"}, "invalid_clan_badge"},
+		{"tag too long", NewClan{Name: "Wolves", Tag: "ABCDEFGHI"}, "invalid_clan_tag"},
+		{"tag with punctuation", NewClan{Name: "Wolves", Tag: "[WF]"}, "invalid_clan_tag"},
+	}
+	for _, tc := range tests {
+		store := newCreatingStore()
+		_, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali", tc.in)
+		var he *httpx.Error
+		if !errors.As(err, &he) || he.Status != http.StatusBadRequest || he.Code != tc.code {
+			t.Errorf("%s: got %v, want 400 %s", tc.name, err, tc.code)
+		}
+		if store.creates != 0 {
+			t.Errorf("%s: nothing may be saved", tc.name)
+		}
+	}
+}
+
+// A description of exactly 300 characters is still allowed; 301 is not (above).
+func TestCreateClanAllowsTheLongestDescription(t *testing.T) {
+	store := newCreatingStore()
+	if _, err := New(store).CreateClan(context.Background(), gameA, "u_42", "Ali",
+		NewClan{Name: "Wolves", Description: strings.Repeat("a", 300)}); err != nil {
+		t.Fatal(err)
 	}
 }

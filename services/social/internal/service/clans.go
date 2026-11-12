@@ -26,14 +26,37 @@ const (
 	// minClanNameLen and maxClanNameLen limit clan names, counted in characters (not bytes).
 	minClanNameLen = 3
 	maxClanNameLen = 20
+	// maxClanDescriptionLen limits the clan description, counted in characters (not bytes).
+	// A clan without a description is a valid clan: the creation form asks for one, the
+	// contract does not, so a game that does not ask keeps working.
+	maxClanDescriptionLen = 300
+	// maxClanBadgeLen limits the badge id. A badge is only an id such as "wolf": the picture
+	// belongs to the game, which lists its badges in the widget config in Studio and ships
+	// the same assets with the game, so Social never stores or serves an image.
+	maxClanBadgeLen = 64
+	// maxClanTagLen limits the clan tag, the few characters shown above a member's name.
+	// The clan form allows 4; this is the contract's own limit, a little wider so the form
+	// can be widened without a migration.
+	maxClanTagLen = 8
 )
 
 // Clan is a clan as shown in clan lists.
 type Clan struct {
 	ID          string
 	Name        string
+	Description string
+	Badge       string
+	Tag         string
 	MemberCount int
 	MaxMembers  int
+}
+
+// NewClan is what a player sends when they create a clan. Only Name is required.
+type NewClan struct {
+	Name        string
+	Description string
+	Badge       string
+	Tag         string
 }
 
 // limitText is a positive whole number written with plain digits.
@@ -98,16 +121,36 @@ func (s *Service) ListClans(ctx context.Context, gameID string, in ListClansInpu
 	return clans, nil
 }
 
-// CreateClan creates a clan named name in gameID. The calling player (from the token)
-// becomes its owner and first member. The player record is created first if this is
-// the player's first request.
+// CreateClan creates a clan in gameID. The calling player (from the token) becomes its
+// owner and first member. The player record is created first if this is the player's
+// first request.
+//
+// Only in.Name is required. in.Badge is the id of a badge from the game's widget config,
+// never a picture: the developer adds the image in Studio and ships the same asset with
+// the game, so Social stores the id and nothing else.
 //
 // Errors the client can act on:
 //   - 400 invalid_clan_name: the name is not 3 to 20 characters, or has invisible characters
+//   - 400 invalid_clan_description: the description is longer than 300 characters or has
+//     invisible characters
+//   - 400 invalid_clan_badge: the badge id is too long or has characters a badge id cannot have
+//   - 400 invalid_clan_tag: the tag is longer than 8 characters or is not only letters and digits
 //   - 409 clan_name_taken: the game already has a clan with this name (ignoring upper/lower case)
 //   - 409 already_in_clan: the player is already in a clan of this game
-func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayName, name string) (Clan, error) {
-	clean, err := cleanClanName(name)
+func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayName string, in NewClan) (Clan, error) {
+	clean, err := cleanClanName(in.Name)
+	if err != nil {
+		return Clan{}, err
+	}
+	description, err := cleanClanDescription(in.Description)
+	if err != nil {
+		return Clan{}, err
+	}
+	badge, err := cleanClanBadge(in.Badge)
+	if err != nil {
+		return Clan{}, err
+	}
+	tag, err := cleanClanTag(in.Tag)
 	if err != nil {
 		return Clan{}, err
 	}
@@ -117,7 +160,12 @@ func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayNam
 		return Clan{}, fmt.Errorf("create clan: %w", err)
 	}
 
-	row, err := s.store.CreateClan(ctx, gameID, owner.ID, clean)
+	row, err := s.store.CreateClan(ctx, gameID, owner.ID, repository.NewClan{
+		Name:        clean,
+		Description: description,
+		Badge:       badge,
+		Tag:         tag,
+	})
 	switch {
 	case errors.Is(err, repository.ErrClanNameTaken):
 		return Clan{}, httpx.NewError(http.StatusConflict, "clan_name_taken", "A clan with this name already exists")
@@ -151,7 +199,15 @@ func ref(id, name string) map[string]any {
 // toClan is a clan row as the API shows it, with the game's clan size as maxMembers. A clan
 // over a lowered limit shows memberCount above maxMembers: it keeps its members, takes no one.
 func toClan(c repository.Clan, maxMembers int) Clan {
-	return Clan{ID: c.ID, Name: c.Name, MemberCount: c.MemberCount, MaxMembers: maxMembers}
+	return Clan{
+		ID:          c.ID,
+		Name:        c.Name,
+		Description: c.Description,
+		Badge:       c.Badge,
+		Tag:         c.Tag,
+		MemberCount: c.MemberCount,
+		MaxMembers:  maxMembers,
+	}
 }
 
 // cleanClanName trims the name and turns any run of spaces inside it into one space,
@@ -169,6 +225,65 @@ func cleanClanName(name string) (string, error) {
 			return "", httpx.NewError(http.StatusBadRequest, "invalid_clan_name",
 				"Clan name can only have visible characters")
 		}
+	}
+	return clean, nil
+}
+
+// cleanClanDescription trims the description and checks it; an empty one is allowed.
+// A browser textarea sends "\r\n" for a new line, so line ends are made plain "\n" first,
+// and then only line breaks are allowed among the invisible characters.
+func cleanClanDescription(description string) (string, error) {
+	clean := strings.ReplaceAll(description, "\r\n", "\n")
+	clean = strings.TrimSpace(strings.ReplaceAll(clean, "\r", "\n"))
+	if utf8.RuneCountInString(clean) > maxClanDescriptionLen {
+		return "", httpx.NewError(http.StatusBadRequest, "invalid_clan_description",
+			fmt.Sprintf("Clan description can be at most %d characters", maxClanDescriptionLen))
+	}
+	for _, r := range clean {
+		if r != '\n' && !unicode.IsPrint(r) {
+			return "", httpx.NewError(http.StatusBadRequest, "invalid_clan_description",
+				"Clan description can only have visible characters and line breaks")
+		}
+	}
+	return clean, nil
+}
+
+// badgePattern is the shape of a badge id in a game's widget config: letters and digits,
+// with the separators asset ids use.
+var badgePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
+
+// cleanClanBadge trims the badge id and checks its shape; an empty one is allowed. The id
+// is not looked up in the game's config: Studio decides which badges exist and the clan
+// form offers only those, and a game whose config cannot be read at this moment should
+// still be able to create clans.
+func cleanClanBadge(badge string) (string, error) {
+	clean := strings.TrimSpace(badge)
+	if clean == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(clean) > maxClanBadgeLen || !badgePattern.MatchString(clean) {
+		return "", httpx.NewError(http.StatusBadRequest, "invalid_clan_badge",
+			fmt.Sprintf("Clan badge must be at most %d characters of letters, digits, '-', '_', '.' or ':'",
+				maxClanBadgeLen))
+	}
+	return clean, nil
+}
+
+// tagPattern is the shape of a clan tag: letters and digits only, so a tag cannot be made
+// of spaces or punctuation that would not read as a tag above a player's name.
+var tagPattern = regexp.MustCompile(`^[A-Za-z0-9]+$`)
+
+// cleanClanTag trims the tag and checks it; an empty one is allowed, and is what a game
+// that does not use tags (clan.tags is false in its config) always sends. Upper and lower
+// case are kept as given: the clan form already writes tags in capitals.
+func cleanClanTag(tag string) (string, error) {
+	clean := strings.TrimSpace(tag)
+	if clean == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(clean) > maxClanTagLen || !tagPattern.MatchString(clean) {
+		return "", httpx.NewError(http.StatusBadRequest, "invalid_clan_tag",
+			fmt.Sprintf("Clan tag must be at most %d letters or digits", maxClanTagLen))
 	}
 	return clean, nil
 }

@@ -129,7 +129,7 @@ func TestCreateClanSavesClanAndOwner(t *testing.T) {
 	ctx := context.Background()
 	owner := newPlayer(t, r, game, "u_1")
 
-	c, err := r.CreateClan(ctx, game, owner, "Wolves")
+	c, err := r.CreateClan(ctx, game, owner, NewClan{Name: "Wolves"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,11 +154,11 @@ func TestCreateClanNameTaken(t *testing.T) {
 	defer cleanup(game, other)
 	ctx := context.Background()
 
-	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "u_1"), "Wolves"); err != nil {
+	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "u_1"), NewClan{Name: "Wolves"}); err != nil {
 		t.Fatal(err)
 	}
 	second := newPlayer(t, r, game, "u_2")
-	if _, err := r.CreateClan(ctx, game, second, "WOLVES"); !errors.Is(err, ErrClanNameTaken) {
+	if _, err := r.CreateClan(ctx, game, second, NewClan{Name: "WOLVES"}); !errors.Is(err, ErrClanNameTaken) {
 		t.Fatalf("same name, other case: err = %v, want ErrClanNameTaken", err)
 	}
 	// the failed attempt must not leave anything behind (the transaction was rolled back)
@@ -169,7 +169,7 @@ func TestCreateClanNameTaken(t *testing.T) {
 		t.Fatalf("members = %d, want 1 (the failed creator must not be a member)", n)
 	}
 	// the same name in another game is fine
-	if _, err := r.CreateClan(ctx, other, newPlayer(t, r, other, "u_1"), "Wolves"); err != nil {
+	if _, err := r.CreateClan(ctx, other, newPlayer(t, r, other, "u_1"), NewClan{Name: "Wolves"}); err != nil {
 		t.Fatalf("same name in another game: %v", err)
 	}
 }
@@ -181,17 +181,17 @@ func TestCreateClanOwnerAlreadyInClan(t *testing.T) {
 	ctx := context.Background()
 	owner := newPlayer(t, r, game, "u_1")
 
-	if _, err := r.CreateClan(ctx, game, owner, "Wolves"); err != nil {
+	if _, err := r.CreateClan(ctx, game, owner, NewClan{Name: "Wolves"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.CreateClan(ctx, game, owner, "Bears"); !errors.Is(err, ErrAlreadyInClan) {
+	if _, err := r.CreateClan(ctx, game, owner, NewClan{Name: "Bears"}); !errors.Is(err, ErrAlreadyInClan) {
 		t.Fatalf("err = %v, want ErrAlreadyInClan", err)
 	}
 	if n := countRows(t, r, "clans", game); n != 1 {
 		t.Fatalf("clans = %d, want 1 (Bears must not be saved)", n)
 	}
 	// being in a clan in one game does not matter in another game
-	if _, err := r.CreateClan(ctx, other, newPlayer(t, r, other, "u_1"), "Bears"); err != nil {
+	if _, err := r.CreateClan(ctx, other, newPlayer(t, r, other, "u_1"), NewClan{Name: "Bears"}); err != nil {
 		t.Fatalf("other game: %v", err)
 	}
 }
@@ -205,7 +205,7 @@ func TestCreateClanSamePlayerAtTheSameTime(t *testing.T) {
 	owner := newPlayer(t, r, game, "u_1")
 
 	ok, inClan := race(t, 10, func(i int) error {
-		_, err := r.CreateClan(context.Background(), game, owner, fmt.Sprintf("Clan %d", i))
+		_, err := r.CreateClan(context.Background(), game, owner, NewClan{Name: fmt.Sprintf("Clan %d", i)})
 		return err
 	}, ErrAlreadyInClan)
 	if ok != 1 || inClan != 9 {
@@ -226,7 +226,7 @@ func TestCreateClanSameNameAtTheSameTime(t *testing.T) {
 	}
 
 	ok, taken := race(t, 10, func(i int) error {
-		_, err := r.CreateClan(context.Background(), game, owners[i], "Wolves")
+		_, err := r.CreateClan(context.Background(), game, owners[i], NewClan{Name: "Wolves"})
 		return err
 	}, ErrClanNameTaken)
 	if ok != 1 || taken != 9 {
@@ -268,7 +268,7 @@ func race(t *testing.T, n int, fn func(i int) error, want error) (ok, matched in
 // ownClan creates a clan in gameID with a new owner player and returns its ID.
 func ownClan(t *testing.T, r *Repository, gameID, name string) string {
 	t.Helper()
-	c, err := r.CreateClan(context.Background(), gameID, newPlayer(t, r, gameID, "owner_"+name), name)
+	c, err := r.CreateClan(context.Background(), gameID, newPlayer(t, r, gameID, "owner_"+name), NewClan{Name: name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestMyClan(t *testing.T) {
 		t.Fatalf("player without clan: err = %v, want ErrNotInClan", err)
 	}
 
-	created, err := r.CreateClan(ctx, game, ali, "Wolves")
+	created, err := r.CreateClan(ctx, game, ali, NewClan{Name: "Wolves"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestListMembers(t *testing.T) {
 	ctx := context.Background()
 
 	owner := newPlayer(t, r, game, "u_owner")
-	c, err := r.CreateClan(ctx, game, owner, "Wolves")
+	c, err := r.CreateClan(ctx, game, owner, NewClan{Name: "Wolves"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,7 +741,7 @@ func TestLeaveClanOwnerLeavesAndTheOldestMemberTakesOver(t *testing.T) {
 	}
 	checkClanIsConsistent(t, r, clan)
 	// the old owner is a normal player again: free to start a new clan
-	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "owner_Wolves"), "Wolves Reborn"); err != nil {
+	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "owner_Wolves"), NewClan{Name: "Wolves Reborn"}); err != nil {
 		t.Fatalf("old owner creating a clan: %v", err)
 	}
 	// the new owner can leave too: the next oldest takes over
@@ -803,7 +803,7 @@ func TestLeaveClanOwnerAloneDeletesTheClan(t *testing.T) {
 	}
 	checkClanIsConsistent(t, r, other)
 	// the name and the player are free again
-	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "owner_Wolves"), "Wolves"); err != nil {
+	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "owner_Wolves"), NewClan{Name: "Wolves"}); err != nil {
 		t.Fatalf("creating the clan again: %v", err)
 	}
 	// and the deleted clan is gone for everyone
@@ -1145,4 +1145,53 @@ func TestJoinClanUsesTheLimitItIsGiven(t *testing.T) {
 		t.Fatalf("with space under limit 5: %v, want Wolves", names(list))
 	}
 	checkClanIsConsistent(t, r, clan)
+}
+
+func TestCreateClanSavesTheDescriptionAndBadge(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	made, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "u_1"),
+		NewClan{Name: "Wolves", Description: "Casual farmers", Badge: "wolf", Tag: "WOLF"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if made.Description != "Casual farmers" || made.Badge != "wolf" || made.Tag != "WOLF" {
+		t.Fatalf("create answered %+v", made)
+	}
+
+	// Both ways a player reads a clan must carry them.
+	list, err := r.ListClans(ctx, game, "", ListClansOptions{Limit: 100, MaxMembers: testMaxMembers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Description != "Casual farmers" || list[0].Badge != "wolf" || list[0].Tag != "WOLF" {
+		t.Fatalf("list gave %+v", list)
+	}
+	mine, err := r.MyClan(ctx, game, "u_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mine.Clan.Description != "Casual farmers" || mine.Clan.Badge != "wolf" || mine.Clan.Tag != "WOLF" {
+		t.Fatalf("my clan gave %+v", mine.Clan)
+	}
+}
+
+// A clan made without them - like every clan made before the columns existed, which
+// addClan writes the same way - reads back as empty, not as an error.
+func TestClanWithoutTheOptionalFieldsReadsAsEmpty(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newGameID(t)
+	defer cleanup(game)
+
+	id := addClan(t, r, game, "Bears")
+	list, err := r.ListClans(context.Background(), game, "", ListClansOptions{Limit: 100, MaxMembers: testMaxMembers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != id || list[0].Description != "" || list[0].Badge != "" || list[0].Tag != "" {
+		t.Fatalf("list gave %+v", list)
+	}
 }

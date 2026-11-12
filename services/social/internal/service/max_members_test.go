@@ -42,7 +42,7 @@ func TestClanAnswersShowTheGamesClanSize(t *testing.T) {
 	}
 
 	create := newCreatingStore()
-	if c, err := New(create).WithRules(rules).CreateClan(ctx, gameA, "u_42", "Ali", "Wolves"); err != nil || c.MaxMembers != 30 {
+	if c, err := New(create).WithRules(rules).CreateClan(ctx, gameA, "u_42", "Ali", NewClan{Name: "Wolves"}); err != nil || c.MaxMembers != 30 {
 		t.Fatalf("create: %+v, %v; want maxMembers 30", c, err)
 	}
 
