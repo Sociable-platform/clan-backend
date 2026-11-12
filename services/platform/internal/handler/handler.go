@@ -22,6 +22,9 @@ type Service interface {
 	AdminLogin(ctx context.Context, in service.LoginInput) (service.Session, error)
 	AuthenticateAdmin(ctx context.Context, token string) (adminID string, err error)
 	AdminMe(ctx context.Context, adminID string) (service.Admin, error)
+	ListDevelopers(ctx context.Context, in service.ListDevelopersInput) (service.DeveloperPage, error)
+	AdminDeveloper(ctx context.Context, developerID string) (service.AdminDeveloper, error)
+	AuditLog(ctx context.Context, in service.AuditLogInput) (service.AuditPage, error)
 	Me(ctx context.Context, developerID string) (service.Developer, error)
 	RegisterGame(ctx context.Context, developerID string, in service.RegisterGameInput) (service.Game, error)
 	ListGames(ctx context.Context, developerID string) ([]service.Game, error)
@@ -99,6 +102,9 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/developers/me", h.requireDeveloper(h.me)},
 		{http.MethodPost, "/api/v1/admin/login", h.adminLogin},
 		{http.MethodGet, "/api/v1/admin/me", h.requireAdmin(h.adminMe)},
+		{http.MethodGet, "/api/v1/admin/developers", h.requireAdmin(h.listAdminDevelopers)},
+		{http.MethodGet, "/api/v1/admin/developers/{developerID}", h.requireAdmin(h.getAdminDeveloper)},
+		{http.MethodGet, "/api/v1/admin/audit-log", h.requireAdmin(h.listAuditLog)},
 		{http.MethodGet, "/api/v1/games", h.requireDeveloper(h.listGames)},
 		{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
 		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.createAPIKey)},
