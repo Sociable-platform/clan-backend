@@ -30,7 +30,7 @@ func wantData(t *testing.T, got, want map[string]any) {
 func TestCreateClanPublishesClanCreated(t *testing.T) {
 	store := newCreatingStore()
 	svc, rec := friendService(store)
-	if _, err := svc.CreateClan(context.Background(), gameA, "u_42", "Ali", "Wolves"); err != nil {
+	if _, err := svc.CreateClan(context.Background(), gameA, "u_42", "Ali", NewClan{Name: "Wolves"}); err != nil {
 		t.Fatal(err)
 	}
 	owner := store.rows[gameA+"/u_42"]
@@ -102,10 +102,10 @@ func TestClanChangesThatFailPublishNothing(t *testing.T) {
 	creating := newCreatingStore()
 	creating.createErr = repository.ErrClanNameTaken
 	svc, rec := friendService(creating)
-	if _, err := svc.CreateClan(ctx, gameA, "u_42", "Ali", "Wolves"); err == nil {
+	if _, err := svc.CreateClan(ctx, gameA, "u_42", "Ali", NewClan{Name: "Wolves"}); err == nil {
 		t.Fatal("create should fail")
 	}
-	if _, err := svc.CreateClan(ctx, gameA, "u_42", "Ali", "x"); err == nil { // name too short
+	if _, err := svc.CreateClan(ctx, gameA, "u_42", "Ali", NewClan{Name: "x"}); err == nil { // name too short
 		t.Fatal("create with a bad name should fail")
 	}
 
@@ -142,7 +142,7 @@ func TestClanEventsHaveTheFieldsOfTheEventMessagesFile(t *testing.T) {
 	actions := map[string]func() (Store, func(*Service) error){
 		EventClanCreated: func() (Store, func(*Service) error) {
 			return newCreatingStore(), func(s *Service) error {
-				_, err := s.CreateClan(ctx, gameA, "u_42", "Ali", "Wolves")
+				_, err := s.CreateClan(ctx, gameA, "u_42", "Ali", NewClan{Name: "Wolves"})
 				return err
 			}
 		},

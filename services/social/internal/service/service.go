@@ -17,7 +17,7 @@ type Store interface {
 	Ping(ctx context.Context) error
 	UpsertPlayer(ctx context.Context, gameID, externalID, displayName string) (repository.Player, error)
 	ListClans(ctx context.Context, gameID, query string, opts repository.ListClansOptions) ([]repository.Clan, error)
-	CreateClan(ctx context.Context, gameID, ownerID, name string) (repository.Clan, error)
+	CreateClan(ctx context.Context, gameID, ownerID string, in repository.NewClan) (repository.Clan, error)
 	JoinClan(ctx context.Context, gameID, clanID, playerID string, maxMembers int, roleID string) (repository.Clan, error)
 	LeaveClan(ctx context.Context, gameID, clanID, externalID string) (repository.LeaveResult, error)
 	KickMember(ctx context.Context, gameID, clanID, actorExternalID, playerID string,

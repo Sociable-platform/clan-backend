@@ -37,7 +37,7 @@ func TestRenameClanSavesTheNewName(t *testing.T) {
 		t.Fatalf("saved name = %q", n)
 	}
 	// the old name is free for another clan now
-	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "u_new"), "Wolves"); err != nil {
+	if _, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "u_new"), NewClan{Name: "Wolves"}); err != nil {
 		t.Fatalf("creating a clan with the old name: %v", err)
 	}
 	checkClanIsConsistent(t, r, clan)

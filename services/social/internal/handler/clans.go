@@ -11,8 +11,13 @@ import (
 )
 
 type clanResponse struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Left out of the JSON when the clan has neither, so a clan made before these fields
+	// existed looks exactly as it did. A client reads a missing field as an empty one.
+	Description string `json:"description,omitempty"`
+	Badge       string `json:"badge,omitempty"`
+	Tag         string `json:"tag,omitempty"`
 	MemberCount int    `json:"memberCount"`
 	MaxMembers  int    `json:"maxMembers"`
 }
@@ -22,7 +27,15 @@ type clanListResponse struct {
 }
 
 func toClanResponse(c service.Clan) clanResponse {
-	return clanResponse{ID: c.ID, Name: c.Name, MemberCount: c.MemberCount, MaxMembers: c.MaxMembers}
+	return clanResponse{
+		ID:          c.ID,
+		Name:        c.Name,
+		Description: c.Description,
+		Badge:       c.Badge,
+		Tag:         c.Tag,
+		MemberCount: c.MemberCount,
+		MaxMembers:  c.MaxMembers,
+	}
 }
 
 // listClans handles GET /api/v1/clans?q=&limit=&sort=&hasSpace=: the clans of the caller's game,
@@ -54,11 +67,16 @@ func (h *Handler) listClans(w http.ResponseWriter, r *http.Request) {
 
 type createClanRequest struct {
 	Name string `json:"name"`
+	// Both are optional. Unknown fields are refused (httpx.DecodeJSON), so a form that
+	// sends a description to a build without these fields gets 400 invalid_json.
+	Description string `json:"description"`
+	Badge       string `json:"badge"`
+	Tag         string `json:"tag"`
 }
 
-// createClan handles POST /api/v1/clans with { "name": "..." }: the caller creates a clan
-// in their game and becomes its owner. The game and player come only from the token;
-// the body carries just the name.
+// createClan handles POST /api/v1/clans with { "name", "description", "badge", "tag" }:
+// the caller creates a clan in their game and becomes its owner. The game and player come
+// only from the token; everything but the name may be left out.
 func (h *Handler) createClan(w http.ResponseWriter, r *http.Request) {
 	caller, ok := auth.PlayerFrom(r.Context())
 	if !ok {
@@ -70,7 +88,12 @@ func (h *Handler) createClan(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	c, err := h.svc.CreateClan(r.Context(), caller.GameID, caller.ExternalID, caller.Name, req.Name)
+	c, err := h.svc.CreateClan(r.Context(), caller.GameID, caller.ExternalID, caller.Name, service.NewClan{
+		Name:        req.Name,
+		Description: req.Description,
+		Badge:       req.Badge,
+		Tag:         req.Tag,
+	})
 	if err != nil {
 		h.fail(w, r, err)
 		return
