@@ -28,6 +28,8 @@ type Store interface {
 	AdminDeveloperByID(ctx context.Context, id string) (repository.AdminDeveloper, error)
 	AdminGamesByDeveloper(ctx context.Context, developerID string) ([]repository.AdminGame, error)
 	AuditEntries(ctx context.Context, f repository.AuditFilter) ([]repository.AuditEntry, error)
+	SetDeveloperStatus(ctx context.Context, developerID string, c repository.StatusChange) (repository.AdminDeveloper, bool, error)
+	SetGameStatus(ctx context.Context, gameID string, c repository.StatusChange) (repository.AdminGame, bool, error)
 	CreateGame(ctx context.Context, developerID, name, description string) (repository.Game, error)
 	GamesByDeveloper(ctx context.Context, developerID string) ([]repository.Game, error)
 	GameOfDeveloper(ctx context.Context, gameID, developerID string) (repository.Game, error)

@@ -25,8 +25,8 @@ const (
 
 // Account statuses (developers.status and games.status).
 const (
-	StatusActive    = "active"
-	StatusSuspended = "suspended"
+	StatusActive    = repository.StatusActive
+	StatusSuspended = repository.StatusSuspended
 )
 
 // ListDevelopersInput selects a page of developers for the admin panel.
@@ -161,17 +161,25 @@ func (s *Service) AdminDeveloper(ctx context.Context, developerID string) (Admin
 	if err != nil {
 		return AdminDeveloper{}, fmt.Errorf("list games of developer %s: %w", developerID, err)
 	}
+	return toAdminDeveloper(d, games), nil
+}
+
+func toAdminDeveloper(d repository.AdminDeveloper, games []repository.AdminGame) AdminDeveloper {
 	out := AdminDeveloper{
 		ID: d.ID, Email: d.Email, Name: d.Name, Status: d.Status, StatusReason: d.StatusReason,
 		StatusChangedAt: d.StatusChangedAt, CreatedAt: d.CreatedAt, Games: make([]AdminGame, 0, len(games)),
 	}
 	for _, g := range games {
-		out.Games = append(out.Games, AdminGame{
-			ID: g.ID, Name: g.Name, Description: g.Description, Status: g.Status, StatusReason: g.StatusReason,
-			StatusChangedAt: g.StatusChangedAt, CreatedAt: g.CreatedAt,
-		})
+		out.Games = append(out.Games, toAdminGame(g))
 	}
-	return out, nil
+	return out
+}
+
+func toAdminGame(g repository.AdminGame) AdminGame {
+	return AdminGame{
+		ID: g.ID, Name: g.Name, Description: g.Description, Status: g.Status, StatusReason: g.StatusReason,
+		StatusChangedAt: g.StatusChangedAt, CreatedAt: g.CreatedAt,
+	}
 }
 
 // AuditLog returns a page of the audit log, newest first, optionally only the entries about one

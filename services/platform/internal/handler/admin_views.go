@@ -95,18 +95,26 @@ func (h *Handler) getAdminDeveloper(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
+	httpx.WriteJSON(w, http.StatusOK, toAdminDeveloperResponse(d))
+}
+
+func toAdminDeveloperResponse(d service.AdminDeveloper) adminDeveloperResponse {
 	out := adminDeveloperResponse{
 		ID: d.ID, Email: d.Email, Name: d.Name, Status: d.Status, StatusReason: nilIfEmpty(d.StatusReason),
 		StatusChangedAt: utcOrNil(d.StatusChangedAt), CreatedAt: d.CreatedAt.UTC(),
 		Games: make([]adminGameResponse, 0, len(d.Games)),
 	}
 	for _, g := range d.Games {
-		out.Games = append(out.Games, adminGameResponse{
-			ID: g.ID, Name: g.Name, Description: g.Description, Status: g.Status, StatusReason: nilIfEmpty(g.StatusReason),
-			StatusChangedAt: utcOrNil(g.StatusChangedAt), CreatedAt: g.CreatedAt.UTC(),
-		})
+		out.Games = append(out.Games, toAdminGameResponse(g))
 	}
-	httpx.WriteJSON(w, http.StatusOK, out)
+	return out
+}
+
+func toAdminGameResponse(g service.AdminGame) adminGameResponse {
+	return adminGameResponse{
+		ID: g.ID, Name: g.Name, Description: g.Description, Status: g.Status, StatusReason: nilIfEmpty(g.StatusReason),
+		StatusChangedAt: utcOrNil(g.StatusChangedAt), CreatedAt: g.CreatedAt.UTC(),
+	}
 }
 
 // listAuditLog handles GET /api/v1/admin/audit-log?targetId=&limit=&cursor=.

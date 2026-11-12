@@ -429,6 +429,173 @@ paths:
                 error:
                   code: developer_not_found
                   message: Developer not found
+  /api/v1/admin/developers/{developerID}/status:
+    put:
+      tags: [admin]
+      operationId: setDeveloperStatus
+      summary: Suspend or resume a developer
+      description: |
+        Switches a developer's access off or on. One switch turns off every game the developer owns:
+        their games keep their own status, and a game is served only when it and its developer are both
+        `active`. Nothing is deleted.
+
+        The status change and its audit-log entry are written together or not at all. Setting the status
+        the developer already has is not an error: it changes nothing and writes no audit entry.
+        `reason` (`non_payment`, `abuse`, `other`) is required when suspending; when resuming it may be
+        left out and the audit entry records the reason of the suspension that ended. `note` (at most
+        1000 characters) is internal: it is stored in the audit log only and no developer route returns it.
+      security:
+        - adminToken: []
+      parameters:
+        - name: developerID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetStatusRequest"
+            examples:
+              suspend:
+                summary: Suspend for non-payment
+                value:
+                  status: suspended
+                  reason: non_payment
+                  note: Invoice 1042 unpaid after two reminders
+              resume:
+                summary: Resume (no reason needed)
+                value:
+                  status: active
+      responses:
+        "200":
+          description: The status after the call, whether or not it changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminDeveloper"
+              example:
+                id: 6f1c1d1e-8a43-4d0e-9d57-0c2f0b1f6a10
+                email: dev@example.com
+                name: Dev One
+                status: suspended
+                statusReason: non_payment
+                statusChangedAt: "2026-11-12T12:00:00Z"
+                createdAt: "2026-11-06T10:00:00Z"
+                games:
+                  - id: 3b0f1f0e-7c1d-4e53-9d2a-5b8e6a7c9d10
+                    name: Farm Friends
+                    description: Cozy farming game
+                    status: active
+                    statusReason: null
+                    statusChangedAt: null
+                    createdAt: "2026-11-07T08:30:00Z"
+        "400":
+          description: |
+            The body is not valid JSON (`invalid_json`), or a field is not valid: `invalid_status`,
+            `reason_required` (suspending without a reason), `invalid_reason`, `invalid_note`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: reason_required
+                  message: "A reason is required when suspending: non_payment, abuse or other"
+        "401":
+          $ref: "#/components/responses/AdminUnauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such developer (`developer_not_found`); a malformed ID gives the same answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: developer_not_found
+                  message: Developer not found
+  /api/v1/admin/games/{gameID}/status:
+    put:
+      tags: [admin]
+      operationId: setGameStatus
+      summary: Suspend or resume a game
+      description: |
+        Switches one game off or on while the developer's other games keep working. Same rules as
+        `PUT /api/v1/admin/developers/{developerID}/status`: the change and its audit-log entry are written
+        together, setting the current status changes nothing, `reason` is required when suspending, and
+        `note` is internal.
+      security:
+        - adminToken: []
+      parameters:
+        - name: gameID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetStatusRequest"
+            examples:
+              suspend:
+                summary: Suspend for non-payment
+                value:
+                  status: suspended
+                  reason: non_payment
+                  note: Invoice 1042 unpaid after two reminders
+              resume:
+                summary: Resume (no reason needed)
+                value:
+                  status: active
+      responses:
+        "200":
+          description: The status after the call, whether or not it changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminGame"
+              example:
+                id: 3b0f1f0e-7c1d-4e53-9d2a-5b8e6a7c9d10
+                name: Farm Friends
+                description: Cozy farming game
+                status: suspended
+                statusReason: abuse
+                statusChangedAt: "2026-11-12T12:00:00Z"
+                createdAt: "2026-11-07T08:30:00Z"
+        "400":
+          description: |
+            The body is not valid JSON (`invalid_json`), or a field is not valid: `invalid_status`,
+            `reason_required` (suspending without a reason), `invalid_reason`, `invalid_note`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: reason_required
+                  message: "A reason is required when suspending: non_payment, abuse or other"
+        "401":
+          $ref: "#/components/responses/AdminUnauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such game (`game_not_found`); a malformed ID gives the same answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: game_not_found
+                  message: Game not found
   /api/v1/admin/audit-log:
     get:
       tags: [admin]
@@ -1292,6 +1459,21 @@ components:
         createdAt:
           type: string
           format: date-time
+    SetStatusRequest:
+      type: object
+      required: [status]
+      additionalProperties: false
+      properties:
+        status:
+          $ref: "#/components/schemas/AccountStatus"
+        reason:
+          type: string
+          enum: [non_payment, abuse, other]
+          description: Required when `status` is `suspended`. The developer sees a message for this code, never the note.
+        note:
+          type: string
+          maxLength: 1000
+          description: Internal text for the audit log. Never returned by a developer route.
     AdminDeveloperSummary:
       type: object
       required: [id, email, name, status, gameCount, createdAt]
