@@ -476,6 +476,7 @@ $env:SOCIAL_TEST_DATABASE_URL="postgres://social_user:<SOCIAL_DB_PASSWORD>@local
 go test ./services/social/internal/repository/ -v
 ```
 
+The platform repository tests use `PLATFORM_TEST_DATABASE_URL` (`postgres://platform_user:<PLATFORM_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/platform/internal/repository/`.
 The realtime repository tests work the same way with `REALTIME_TEST_DATABASE_URL`
 (`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/` (the backfill test in `./services/realtime/internal/backfill/` uses the same variable).
 
@@ -502,6 +503,9 @@ go test -run TestPublishToRealBroker -v ./pkg/events/
 | GET | `/api/v1/developers/me` | 200 with the developer; 401 unless `Authorization: Bearer <developer token>` |
 | POST | `/api/v1/admin/login` | 200 `{ token, expiresIn }` with an **admin** token; 401 `invalid_credentials` for an unknown email, a wrong password and a disabled admin alike |
 | GET | `/api/v1/admin/me` | 200 with the admin; 401 unless `Authorization: Bearer <admin token>` of an admin who is not disabled (developer and player tokens get 401) |
+| GET | `/api/v1/admin/developers` | **Admin token only.** 200 `{ developers: [{ id, email, name, status, gameCount, createdAt }], nextCursor }`, newest first. Query: `q` (part of email or name), `status` (`active` / `suspended`), `limit` (1 to 100, default 25), `cursor` (the previous `nextCursor`; `null` on the last page). 400 `invalid_query` / `invalid_status` / `invalid_limit` / `invalid_cursor` |
+| GET | `/api/v1/admin/developers/{developerID}` | **Admin token only.** 200 with the developer (`status`, `statusReason`, `statusChangedAt`) and all their `games`, each with the same three fields. 404 `developer_not_found` (also for a malformed ID) |
+| GET | `/api/v1/admin/audit-log` | **Admin token only.** 200 `{ entries: [...], nextCursor }`, newest first; `targetId` limits it to one developer or game; `limit` and `cursor` as above. `note` is internal and is never shown to developers. 400 `invalid_target_id` / `invalid_limit` / `invalid_cursor` |
 | GET | `/api/v1/games` | 200 `{ games: [...] }` with only the logged-in developer's games, newest first (each with its `allowedOrigins`); 401 without a developer token |
 | POST | `/api/v1/games` | 201 with the registered game (registers an existing game, never creates one); 400 `invalid_name` / `invalid_description`; 401 |
 | PUT | `/api/v1/games/{gameID}/allowed-origins` | Body `{ allowedOrigins: [...] }` replaces the list of websites that may open a WebSocket for the game (200 with the game). Each origin is `scheme://host[:port]` as the browser sends it, `http` or `https`, no path or trailing slash, no wildcard; hosts are lower-cased, repeats dropped, at most 20. `[]` clears it. 400 `invalid_origins` (nothing is saved); 404 `game_not_found` unless you own the game |

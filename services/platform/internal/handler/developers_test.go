@@ -229,6 +229,22 @@ type memStore struct {
 
 func (m *memStore) Ping(context.Context) error { return nil }
 
+func (m *memStore) ListDevelopers(context.Context, repository.DeveloperFilter) ([]repository.DeveloperSummary, error) {
+	return nil, nil
+}
+
+func (m *memStore) AdminDeveloperByID(context.Context, string) (repository.AdminDeveloper, error) {
+	return repository.AdminDeveloper{}, repository.ErrNotFound
+}
+
+func (m *memStore) AdminGamesByDeveloper(context.Context, string) ([]repository.AdminGame, error) {
+	return nil, nil
+}
+
+func (m *memStore) AuditEntries(context.Context, repository.AuditFilter) ([]repository.AuditEntry, error) {
+	return nil, nil
+}
+
 func (m *memStore) AdminByEmail(_ context.Context, email string) (repository.Admin, error) {
 	for _, a := range m.admins {
 		if a.Email == email {

@@ -25,6 +25,10 @@ type fakeService struct {
 	authAdmin  func(token string) (string, error)
 	adminMe    func(id string) (service.Admin, error)
 
+	listDevelopers func(service.ListDevelopersInput) (service.DeveloperPage, error)
+	adminDeveloper func(developerID string) (service.AdminDeveloper, error)
+	auditLog       func(service.AuditLogInput) (service.AuditPage, error)
+
 	registerGame func(developerID string, in service.RegisterGameInput) (service.Game, error)
 	listGames    func(developerID string) ([]service.Game, error)
 
@@ -72,6 +76,18 @@ func (f fakeService) AuthenticateAdmin(_ context.Context, token string) (string,
 
 func (f fakeService) AdminMe(_ context.Context, id string) (service.Admin, error) {
 	return f.adminMe(id)
+}
+
+func (f fakeService) ListDevelopers(_ context.Context, in service.ListDevelopersInput) (service.DeveloperPage, error) {
+	return f.listDevelopers(in)
+}
+
+func (f fakeService) AdminDeveloper(_ context.Context, id string) (service.AdminDeveloper, error) {
+	return f.adminDeveloper(id)
+}
+
+func (f fakeService) AuditLog(_ context.Context, in service.AuditLogInput) (service.AuditPage, error) {
+	return f.auditLog(in)
 }
 
 func serve(t *testing.T, svc Service, method, path string) *httptest.ResponseRecorder {
