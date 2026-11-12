@@ -3,7 +3,7 @@ info:
   title: Platform service
   version: 0.1.0
   description: |
-    Developers, registered games, API keys and player tokens.
+    Developers, registered games, API keys and player tokens, plus the admin panel's login.
 
     Conventions for every endpoint:
     - Errors always use the `Error` shape: `{ "error": { "code": "...", "message": "..." } }`.
@@ -22,6 +22,8 @@ tags:
     description: Health checks
   - name: developers
     description: Developer accounts for the dashboard
+  - name: admin
+    description: The distributor's admin panel (admin token only; there is no way to register as an admin)
   - name: games
     description: Existing games a developer has registered with the toolkit
   - name: api-keys
@@ -240,6 +242,83 @@ paths:
                 createdAt: "2026-11-06T10:00:00Z"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/admin/login:
+    post:
+      tags: [admin]
+      operationId: loginAdmin
+      summary: Log in as an admin and get an admin token
+      description: |
+        Send the token as `Authorization: Bearer <token>` on `/api/v1/admin/` endpoints. It lasts
+        `PLATFORM_ADMIN_TOKEN_TTL` (default 1 hour). An unknown email, a wrong password and a disabled
+        admin all give the same 401. Admins cannot register through the API; the first one is created
+        with `go run ./tools/createadmin`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              email: ops@example.com
+              password: correct horse
+      responses:
+        "200":
+          description: Logged in. The response is not cacheable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminLoginResponse"
+              example:
+                token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+                expiresIn: 3600
+        "400":
+          description: The body is not valid JSON (`invalid_json`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_json
+                  message: Request body must contain a single JSON object
+        "401":
+          description: Email or password is wrong, or the admin is disabled (`invalid_credentials`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_credentials
+                  message: Email or password is wrong
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/admin/me:
+    get:
+      tags: [admin]
+      operationId: getCurrentAdmin
+      summary: The signed-in admin
+      description: |
+        Accepts only an admin token. Developer tokens, player tokens and API keys are rejected, and so
+        is the token of an admin who has been disabled since it was issued.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: The admin behind the token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Admin"
+              example:
+                id: 0b7f6c52-3f64-4a53-b0a9-6d3c1c3f2a11
+                email: ops@example.com
+                name: Ops One
+                createdAt: "2026-11-12T09:00:00Z"
+        "401":
+          $ref: "#/components/responses/AdminUnauthorized"
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
   /api/v1/games:
@@ -950,6 +1029,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Developer token (typ "developer") returned by login. Used by the dashboard.
+    adminToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Admin token (typ "admin") returned by `/api/v1/admin/login`. Used by the admin panel; no other route accepts it.
     apiKey:
       type: apiKey
       in: header
@@ -1008,6 +1092,31 @@ components:
         expiresIn:
           type: integer
           description: Seconds until the token expires.
+    AdminLoginResponse:
+      type: object
+      required: [token, expiresIn]
+      properties:
+        token:
+          type: string
+          description: Admin JWT (`typ` "admin", Ed25519).
+        expiresIn:
+          type: integer
+          description: Seconds until the token expires (`PLATFORM_ADMIN_TOKEN_TTL`).
+    Admin:
+      type: object
+      required: [id, email, name, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
     Developer:
       type: object
       required: [id, email, name, createdAt]
@@ -1290,6 +1399,16 @@ components:
             error:
               code: unauthorized
               message: A valid developer token is required
+    AdminUnauthorized:
+      description: The admin token is missing, malformed, expired, of the wrong type (a developer or player token), or its admin is disabled or gone.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: unauthorized
+              message: A valid admin token is required
     NotFound:
       description: No such route.
       content:
