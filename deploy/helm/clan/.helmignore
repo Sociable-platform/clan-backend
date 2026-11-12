@@ -1,0 +1,4 @@
+# Not part of the chart package
+secrets*.yaml
+!secrets.example.yaml
+README.md
