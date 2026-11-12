@@ -1,0 +1,7 @@
+apiVersion: v2
+name: clan
+description: The clan platform on Kubernetes (k3s on the Oracle server)
+type: application
+# Version of the chart itself. The services' own versions are image tags in the values files.
+version: 0.1.0
+appVersion: "0.1.0"

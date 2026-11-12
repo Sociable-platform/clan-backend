@@ -1,0 +1,11 @@
+# A cluster on your own computer (k3d or Docker Desktop's Kubernetes): smaller limits.
+postgres:
+  storage: 1Gi
+  resources:
+    limits:
+      memory: 512Mi
+rabbitmq:
+  storage: 1Gi
+  resources:
+    limits:
+      memory: 512Mi

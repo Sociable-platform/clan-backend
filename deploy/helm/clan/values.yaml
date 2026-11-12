@@ -1,0 +1,58 @@
+# Settings of the clan chart.
+#   values-prod.yaml   the Oracle server (k3s)
+#   values-local.yaml  a cluster on your own computer (k3d, Docker Desktop)
+# Passwords and keys are NOT in these files. They come from a secrets file that is never committed
+# (copy secrets.example.yaml) and from --set-file for the JWT keys; see README.md.
+
+# Storage class of the disks (PersistentVolumeClaims). Empty means the cluster's default,
+# which is local-path on k3s: a folder on the server's own disk.
+storageClass: ""
+
+postgres:
+  image: postgres:16-alpine
+  # Admin user and database; each service gets its own user and schema from files/01-schemas.sh.
+  user: postgres
+  database: clan
+  storage: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+rabbitmq:
+  image: rabbitmq:3-management-alpine
+  user: clan
+  storage: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+  # Declares the exchange, queue and bindings of files/definitions.json after every install and
+  # upgrade, the same way rabbitmq-setup does in docker-compose.
+  setupImage: curlimages/curl:8.11.1
+
+# The GitLab container registry the service images are pulled from (they are used from part 2 on).
+registry:
+  server: registry.gitlab.com
+
+# Filled from the secrets file (never committed). Each password: at least 12 letters and digits only,
+# because the services put them inside database and broker URLs.
+secrets:
+  postgresPassword: ""
+  platformDbPassword: ""
+  socialDbPassword: ""
+  realtimeDbPassword: ""
+  rabbitmqPassword: ""
+  # Shared secrets of the /internal endpoints, at least 32 characters. Empty switches the endpoints off.
+  platformInternalToken: ""
+  socialInternalToken: ""
+  # PEM files, given with --set-file (see README.md).
+  jwtPrivateKey: ""
+  jwtPublicKey: ""
+  # A GitLab group deploy token with the read_registry scope. Empty: no pull secret is created.
+  registryUsername: ""
+  registryPassword: ""

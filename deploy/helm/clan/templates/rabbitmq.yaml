@@ -1,0 +1,161 @@
+# RabbitMQ: the event broker (exchange socialkit.events, queue realtime.events).
+{{- $sel := dict "root" . "name" "rabbitmq" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-definitions
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+data:
+  {{- (.Files.Glob "files/definitions.json").AsConfig | nindent 2 }}
+---
+# The services reach the broker at rabbitmq:5672, the same name as in docker-compose.
+# The management UI (15672) is not public: open it with kubectl port-forward (see README.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "clan.selector" $sel | nindent 4 }}
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+    - name: management
+      port: 15672
+      targetPort: management
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+    {{- include "clan.selector" $sel | nindent 4 }}
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "clan.selector" $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "clan.labels" . | nindent 8 }}
+        {{- include "clan.selector" $sel | nindent 8 }}
+    spec:
+      containers:
+        - name: rabbitmq
+          image: {{ .Values.rabbitmq.image }}
+          ports:
+            - name: amqp
+              containerPort: 5672
+            - name: management
+              containerPort: 15672
+          env:
+            # Created on the first start only (empty disk). Changing the password later needs
+            # rabbitmqctl change_password, see README.md.
+            - name: RABBITMQ_DEFAULT_USER
+              value: {{ .Values.rabbitmq.user | quote }}
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: clan-secrets
+                  key: rabbitmq-password
+          volumeMounts:
+            # The pod is always called rabbitmq-0, so the node name (rabbit@rabbitmq-0) and its data
+            # folder stay the same across restarts.
+            - name: data
+              mountPath: /var/lib/rabbitmq
+          startupProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "check_port_listener", "5672"]
+            periodSeconds: 10
+            timeoutSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.rabbitmq.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "clan.labels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.rabbitmq.storage }}
+---
+# Declares the exchange, the durable queue and its bindings from files/definitions.json (a copy of
+# deploy/rabbitmq/definitions.json) after every install and upgrade, like rabbitmq-setup in
+# docker-compose. Importing only adds what is missing, so repeating it is safe. curl retries until
+# RabbitMQ has started.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rabbitmq-setup
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "clan.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: {{ .Values.rabbitmq.setupImage }}
+          env:
+            - name: RABBITMQ_USER
+              value: {{ .Values.rabbitmq.user | quote }}
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clan-secrets
+                  key: rabbitmq-password
+          args:
+            - --fail
+            - --silent
+            - --show-error
+            - --retry
+            - "40"
+            - --retry-delay
+            - "5"
+            - --retry-all-errors
+            - --user
+            - $(RABBITMQ_USER):$(RABBITMQ_PASSWORD)
+            - --header
+            - "Content-Type: application/json"
+            - --data
+            - "@/definitions/definitions.json"
+            - http://rabbitmq:15672/api/definitions
+          volumeMounts:
+            - name: definitions
+              mountPath: /definitions
+              readOnly: true
+      volumes:
+        - name: definitions
+          configMap:
+            name: rabbitmq-definitions

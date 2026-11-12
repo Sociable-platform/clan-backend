@@ -1,0 +1,5 @@
+# The Oracle server: one k3s node, ARM, 2 OCPU / 12 GB, 100 GB disk.
+postgres:
+  storage: 20Gi
+rabbitmq:
+  storage: 2Gi

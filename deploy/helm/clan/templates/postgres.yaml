@@ -1,0 +1,127 @@
+# PostgreSQL: one database, one schema and one user per service, like in docker-compose.
+# The init script (files/01-schemas.sh, a copy of deploy/postgres/init/01-schemas.sh) runs only
+# the first time, on an empty disk.
+{{- $sel := dict "root" . "name" "postgres" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+data:
+  {{- (.Files.Glob "files/01-schemas.sh").AsConfig | nindent 2 }}
+---
+# The services reach the database at postgres:5432, the same name as in docker-compose.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "clan.selector" $sel | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+    {{- include "clan.selector" $sel | nindent 4 }}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "clan.selector" $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "clan.labels" . | nindent 8 }}
+        {{- include "clan.selector" $sel | nindent 8 }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            # A folder inside the disk, not the disk's root (which may hold lost+found).
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clan-secrets
+                  key: postgres-password
+            # Read by 01-schemas.sh to create the services' users.
+            - name: PLATFORM_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clan-secrets
+                  key: platform-db-password
+            - name: SOCIAL_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clan-secrets
+                  key: social-db-password
+            - name: REALTIME_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clan-secrets
+                  key: realtime-db-password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # pg_isready over TCP: while the init script runs, Postgres listens only on a socket, so this
+          # passes only after the schemas and users exist.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+            defaultMode: 0555
+  # The disk outlives the pod, and also `helm uninstall`: delete the PVC by hand to start from nothing.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "clan.labels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage }}
