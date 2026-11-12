@@ -63,7 +63,10 @@ images:
   before_script:
     - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
     # The default builder cannot build for two platforms at once; a BuildKit container can.
-    - docker buildx create --use --driver docker-container
+    # In Docker-in-Docker the connection comes from TLS environment variables, which buildx only
+    # accepts through a named context.
+    - docker context create tls-environment
+    - docker buildx create --use --driver docker-container tls-environment
   script:
     - |
       set -eu
