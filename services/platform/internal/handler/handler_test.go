@@ -21,6 +21,14 @@ type fakeService struct {
 	auth     func(token string) (string, error)
 	me       func(id string) (service.Developer, error)
 
+	adminLogin func(service.LoginInput) (service.Session, error)
+	authAdmin  func(token string) (string, error)
+	adminMe    func(id string) (service.Admin, error)
+
+	listDevelopers func(service.ListDevelopersInput) (service.DeveloperPage, error)
+	adminDeveloper func(developerID string) (service.AdminDeveloper, error)
+	auditLog       func(service.AuditLogInput) (service.AuditPage, error)
+
 	registerGame func(developerID string, in service.RegisterGameInput) (service.Game, error)
 	listGames    func(developerID string) ([]service.Game, error)
 
@@ -57,6 +65,30 @@ func (f fakeService) Login(_ context.Context, in service.LoginInput) (service.Se
 func (f fakeService) AuthenticateDeveloper(token string) (string, error) { return f.auth(token) }
 
 func (f fakeService) Me(_ context.Context, id string) (service.Developer, error) { return f.me(id) }
+
+func (f fakeService) AdminLogin(_ context.Context, in service.LoginInput) (service.Session, error) {
+	return f.adminLogin(in)
+}
+
+func (f fakeService) AuthenticateAdmin(_ context.Context, token string) (string, error) {
+	return f.authAdmin(token)
+}
+
+func (f fakeService) AdminMe(_ context.Context, id string) (service.Admin, error) {
+	return f.adminMe(id)
+}
+
+func (f fakeService) ListDevelopers(_ context.Context, in service.ListDevelopersInput) (service.DeveloperPage, error) {
+	return f.listDevelopers(in)
+}
+
+func (f fakeService) AdminDeveloper(_ context.Context, id string) (service.AdminDeveloper, error) {
+	return f.adminDeveloper(id)
+}
+
+func (f fakeService) AuditLog(_ context.Context, in service.AuditLogInput) (service.AuditPage, error) {
+	return f.auditLog(in)
+}
 
 func serve(t *testing.T, svc Service, method, path string) *httptest.ResponseRecorder {
 	t.Helper()

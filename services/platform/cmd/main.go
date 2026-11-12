@@ -46,10 +46,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	adminTokenTTL, err := config.Duration("PLATFORM_ADMIN_TOKEN_TTL", time.Hour)
+	if err != nil {
+		return err
+	}
 	log := logx.New(serviceName, config.String("LOG_LEVEL", "info"))
 
-	// Platform is the only service that holds the private key; it signs developer
-	// and player tokens with it.
+	// Platform is the only service that holds the private key; it signs developer,
+	// player and admin tokens with it.
 	keyFile := config.String("PLATFORM_JWT_PRIVATE_KEY_FILE", "")
 	if keyFile == "" {
 		return errors.New("PLATFORM_JWT_PRIVATE_KEY_FILE is not set (see README: JWT signing key)")
@@ -98,7 +102,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	svc.WithPublisher(events.Safe(publisher, log))
+	svc.WithAdminTokenTTL(adminTokenTTL).WithPublisher(events.Safe(publisher, log))
 
 	// The /internal routes (for realtime) need a shared secret. Without one they answer 404.
 	internalToken := config.String("PLATFORM_INTERNAL_TOKEN", "")
