@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,6 +104,68 @@ func TestExpectReportsAClosedConnection(t *testing.T) {
 	_, err := c.expect(time.Now().Add(2*time.Second), "hello", ofType("hello"))
 	if err == nil || !strings.Contains(err.Error(), "connection ended while waiting for hello") {
 		t.Errorf("err = %v, want a closed-connection error", err)
+	}
+}
+
+func TestAbsentPassesWhenNoMatchingFrameArrives(t *testing.T) {
+	c := serveFrames(t, []string{`{"type":"message.new","data":{"message":{"id":"m-1"}}}`}, true)
+	if err := c.absent(time.Now().Add(150*time.Millisecond), "m-2", ofMessage("m-2")); err != nil {
+		t.Fatal(err)
+	}
+	// The frame it skipped is still there for expect.
+	if _, err := c.expect(time.Now().Add(time.Second), "m-1", ofMessage("m-1")); err != nil {
+		t.Errorf("the skipped frame is gone: %v", err)
+	}
+}
+
+func TestAbsentFailsWhenAMatchingFrameArrivesOrWaits(t *testing.T) {
+	c := serveFrames(t, []string{
+		`{"type":"presence.update","data":{}}`,
+		`{"type":"message.new","data":{"message":{"id":"m-1"}}}`,
+	}, true)
+	if err := c.absent(time.Now().Add(time.Second), "m-1", ofMessage("m-1")); err == nil || !strings.Contains(err.Error(), "got m-1, want none") {
+		t.Errorf("arriving frame: err = %v, want it reported", err)
+	}
+
+	// A matching frame that an earlier expect skipped counts too.
+	c = serveFrames(t, []string{`{"type":"message.new","data":{"message":{"id":"m-1"}}}`, `{"type":"hello","data":{}}`}, true)
+	if _, err := c.expect(time.Now().Add(time.Second), "hello", ofType("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.absent(time.Now().Add(100*time.Millisecond), "m-1", ofMessage("m-1")); err == nil {
+		t.Error("waiting frame: err = nil, want it reported")
+	}
+}
+
+func TestClanMatchers(t *testing.T) {
+	const clan, other = "k-1", "k-2"
+	tests := []struct {
+		name  string
+		match func(frame) bool
+		frame string
+		want  bool
+	}{
+		{"the clan's room", ofClanRoom(clan), `{"type":"conversation.added","data":{"conversation":{"id":"c-1","kind":"clan","clanId":"k-1"}}}`, true},
+		{"another clan's room", ofClanRoom(clan), `{"type":"conversation.added","data":{"conversation":{"id":"c-1","kind":"clan","clanId":"k-2"}}}`, false},
+		{"a DM is no clan room", ofClanRoom(clan), `{"type":"conversation.added","data":{"conversation":{"id":"c-1","kind":"dm","clanId":null}}}`, false},
+		{"the removed conversation", ofConversationRemoved("c-1"), `{"type":"conversation.removed","data":{"conversationId":"c-1"}}`, true},
+		{"another removed conversation", ofConversationRemoved("c-1"), `{"type":"conversation.removed","data":{"conversationId":"c-2"}}`, false},
+		{"the clan's notification", ofClanNotification("clan_kicked", clan), `{"type":"notification","data":{"kind":"clan_kicked","payload":{"clanId":"k-1"}}}`, true},
+		{"another kind", ofClanNotification("clan_kicked", clan), `{"type":"notification","data":{"kind":"clan_disbanded","payload":{"clanId":"k-1"}}}`, false},
+		{"another clan", ofClanNotification("clan_kicked", other), `{"type":"notification","data":{"kind":"clan_kicked","payload":{"clanId":"k-1"}}}`, false},
+		{"the message", ofMessage("m-1"), `{"type":"message.new","data":{"message":{"id":"m-1"}}}`, true},
+		{"another message", ofMessage("m-1"), `{"type":"message.new","data":{"message":{"id":"m-2"}}}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var f frame
+			if err := json.Unmarshal([]byte(tt.frame), &f); err != nil {
+				t.Fatal(err)
+			}
+			if got := tt.match(f); got != tt.want {
+				t.Errorf("match = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

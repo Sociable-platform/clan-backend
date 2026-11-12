@@ -13,8 +13,8 @@ import (
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/service"
 )
 
-// Event types this service handles (docs/events.md). Every other type that reaches the queue
-// (clan.* is added by a later task) is acknowledged and ignored.
+// Event types this service handles (docs/events.md). Every other type that reaches the queue is
+// acknowledged and ignored.
 const (
 	typeFriendRequestSent      = "friend.request_sent"
 	typeFriendRequestCancelled = "friend.request_cancelled"
@@ -25,7 +25,19 @@ const (
 	typePlayerBlocked          = "player.blocked"
 	typePlayerUnblocked        = "player.unblocked"
 	typeConfigPublished        = "config.published"
+	typeClanCreated            = "clan.created"
+	typeClanMemberJoined       = "clan.member_joined"
+	typeClanMemberLeft         = "clan.member_left"
+	typeClanDisbanded          = "clan.disbanded"
+
+	// Realtime reads these two but has nothing to do for them: it stores neither the clan's name nor
+	// the members' roles, and the contract has no frame for either.
+	typeClanRenamed           = "clan.renamed"
+	typeClanMemberRoleChanged = "clan.member_role_changed"
 )
+
+// reasonKicked is the clan.member_left reason of a player an owner or officer removed.
+const reasonKicked = "kicked"
 
 // frameConfigUpdated is the frame every connection of a game gets when the game publishes a config.
 const frameConfigUpdated = "config.updated"
@@ -40,6 +52,10 @@ type Events interface {
 	PlayerRenamed(ctx context.Context, gameID string, p service.Player) ([]service.Push, error)
 	PlayerBlocked(ctx context.Context, gameID, blockerID, blockedID string) ([]service.Push, error)
 	PlayerUnblocked(ctx context.Context, gameID, blockerID, blockedID string) ([]service.Push, error)
+	ClanCreated(ctx context.Context, gameID, clanID string, owner service.Player) ([]service.Push, error)
+	ClanMemberJoined(ctx context.Context, gameID, clanID string, p service.Player) ([]service.Push, error)
+	ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool) ([]service.Push, error)
+	ClanDisbanded(ctx context.Context, gameID, clanID string) ([]service.Push, error)
 }
 
 // Sender writes an encoded frame to the open WebSockets of some players of a game.
@@ -121,6 +137,31 @@ type blockData struct {
 	BlockedID string `json:"blocked_id"`
 }
 
+// clanRef is a clan inside an event's data: Social's clan ID and its name.
+type clanRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// clanMemberData is the data of clan.created (player is the owner) and clan.member_joined.
+type clanMemberData struct {
+	Clan   clanRef    `json:"clan"`
+	Player playerData `json:"player"`
+}
+
+// clanMemberLeftData is the data of clan.member_left. kicked_by and new_owner are in the event too;
+// Realtime does not need them.
+type clanMemberLeftData struct {
+	Clan   clanRef    `json:"clan"`
+	Player playerData `json:"player"`
+	Reason string     `json:"reason"` // "left" or "kicked"
+}
+
+// clanDisbandedData is the data of clan.disbanded.
+type clanDisbandedData struct {
+	Clan clanRef `json:"clan"`
+}
+
 // configPublishedData is the data of config.published.
 type configPublishedData struct {
 	Version int `json:"version"`
@@ -173,6 +214,28 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 				pushes, err = d.events.PlayerUnblocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
 			}
 		}
+	case typeClanCreated, typeClanMemberJoined:
+		var data clanMemberData
+		if err = decode(env.Data, &data); err == nil {
+			if env.Type == typeClanCreated {
+				pushes, err = d.events.ClanCreated(ctx, env.GameID, data.Clan.ID, player(data.Player))
+			} else {
+				pushes, err = d.events.ClanMemberJoined(ctx, env.GameID, data.Clan.ID, player(data.Player))
+			}
+		}
+	case typeClanMemberLeft:
+		var data clanMemberLeftData
+		if err = decode(env.Data, &data); err == nil {
+			pushes, err = d.events.ClanMemberLeft(ctx, env.GameID, data.Clan.ID, data.Player.ID, data.Reason == reasonKicked)
+		}
+	case typeClanDisbanded:
+		var data clanDisbandedData
+		if err = decode(env.Data, &data); err == nil {
+			pushes, err = d.events.ClanDisbanded(ctx, env.GameID, data.Clan.ID)
+		}
+	case typeClanRenamed, typeClanMemberRoleChanged:
+		d.log.Debug("event needs nothing from realtime", "event_id", env.ID, "type", env.Type)
+		return nil
 	case typeConfigPublished:
 		if d.config == nil {
 			d.log.Debug("ignoring config.published: no config cache", "event_id", env.ID)

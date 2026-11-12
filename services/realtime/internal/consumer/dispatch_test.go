@@ -64,6 +64,26 @@ func (f *fakeEvents) PlayerUnblocked(_ context.Context, gameID, blockerID, block
 	return f.record(gameID, "unblocked "+blockerID+" -> "+blockedID)
 }
 
+func (f *fakeEvents) ClanCreated(_ context.Context, gameID, clanID string, owner service.Player) ([]service.Push, error) {
+	return f.record(gameID, "clan_created "+clanID+" "+owner.ID+"/"+owner.Name)
+}
+
+func (f *fakeEvents) ClanMemberJoined(_ context.Context, gameID, clanID string, p service.Player) ([]service.Push, error) {
+	return f.record(gameID, "clan_joined "+clanID+" "+p.ID+"/"+p.Name)
+}
+
+func (f *fakeEvents) ClanMemberLeft(_ context.Context, gameID, clanID, playerID string, kicked bool) ([]service.Push, error) {
+	how := "left"
+	if kicked {
+		how = "kicked"
+	}
+	return f.record(gameID, "clan_"+how+" "+clanID+" "+playerID)
+}
+
+func (f *fakeEvents) ClanDisbanded(_ context.Context, gameID, clanID string) ([]service.Push, error) {
+	return f.record(gameID, "clan_disbanded "+clanID)
+}
+
 type sent struct {
 	gameID string
 	ids    []string
@@ -112,6 +132,24 @@ func TestDispatchRoutesEachEventToItsHandler(t *testing.T) {
 		{"player.unblocked",
 			`{"event_id":"e6","type":"player.unblocked","game_id":"g-1","data":{"blocker_id":"u-1","blocked_id":"u-2"}}`,
 			"unblocked u-1 -> u-2"},
+		{"clan.created",
+			`{"event_id":"e7","type":"clan.created","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-1","name":"Alice"}}}`,
+			"clan_created k-1 u-1/Alice"},
+		{"clan.member_joined",
+			`{"event_id":"e8","type":"clan.member_joined","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"}}}`,
+			"clan_joined k-1 u-2/Bob"},
+		{"clan.member_left, reason left",
+			`{"event_id":"e9","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"},"reason":"left","kicked_by":null,"new_owner":null}}`,
+			"clan_left k-1 u-2"},
+		{"clan.member_left, reason kicked",
+			`{"event_id":"e9","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"},"reason":"kicked","kicked_by":{"id":"u-1","name":"Alice"},"new_owner":null}}`,
+			"clan_kicked k-1 u-2"},
+		{"clan.member_left, the owner left and someone else owns the clan now",
+			`{"event_id":"e9","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-1","name":"Alice"},"reason":"left","kicked_by":null,"new_owner":{"id":"u-2","name":"Bob"}}}`,
+			"clan_left k-1 u-1"},
+		{"clan.disbanded",
+			`{"event_id":"e10","type":"clan.disbanded","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"}}}`,
+			"clan_disbanded k-1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -198,7 +236,7 @@ func TestDispatchFrameOfAnEventWithoutATimeGetsNow(t *testing.T) {
 }
 
 func TestDispatchIgnoresEventsNobodyHandlesYet(t *testing.T) {
-	for _, typ := range []string{"clan.created", "clan.renamed", "config.published", "something.else", ""} {
+	for _, typ := range []string{"clan.renamed", "clan.member_role_changed", "config.published", "something.else", ""} {
 		ev, send := &fakeEvents{}, &fakeSender{}
 		body, _ := json.Marshal(map[string]any{"event_id": "e", "type": typ, "game_id": "g-1", "data": map[string]any{}})
 		if err := NewDispatcher(ev, send, slog.Default()).Handle(context.Background(), body); err != nil {
@@ -224,6 +262,10 @@ func TestDispatchDropsUnusableEvents(t *testing.T) {
 		{"removed with one player", `{"event_id":"e","type":"friend.removed","game_id":"g-1","data":{"players":[{"id":"u-1","name":"Emma"}],"removed_by":"u-1"}}`},
 		{"blocked with no data", `{"event_id":"e","type":"player.blocked","game_id":"g-1"}`},
 		{"unblocked with ids that are not strings", `{"event_id":"e","type":"player.unblocked","game_id":"g-1","data":{"blocker_id":1,"blocked_id":2}}`},
+		{"clan.created with no data", `{"event_id":"e","type":"clan.created","game_id":"g-1"}`},
+		{"clan.member_joined with a clan that is not an object", `{"event_id":"e","type":"clan.member_joined","game_id":"g-1","data":{"clan":"k-1","player":{"id":"u-2","name":"Bob"}}}`},
+		{"clan.member_left with a reason that is not a string", `{"event_id":"e","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"},"reason":true}}`},
+		{"clan.disbanded with an empty data object", `{"event_id":"e","type":"clan.disbanded","game_id":"g-1","data":{}}`},
 		{"cancelled with a request_id that is not a string", `{"event_id":"e","type":"friend.request_cancelled","game_id":"g-1","data":{"request_id":7,"sender":{"id":"u-1","name":"Alice"},"receiver":{"id":"u-2","name":"Bob"}}}`},
 	}
 	for _, tt := range tests {
@@ -266,6 +308,7 @@ func TestDispatchTellsInvalidFromTransientServiceErrors(t *testing.T) {
 func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 	alice := map[string]any{"id": "u-1", "name": "Alice"}
 	bob := map[string]any{"id": "u-2", "name": "Bob"}
+	wolves := map[string]any{"id": "k-1", "name": "Wolves"}
 	tests := []struct {
 		name string
 		e    events.Event
@@ -281,6 +324,19 @@ func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 			"accepted r-1 u-1/Alice u-2/Bob"},
 		{"friend.removed", events.New("friend.removed", "g-1", map[string]any{"players": []map[string]any{alice, bob}, "removed_by": "u-1"}),
 			"removed u-1 u-2 by u-1"},
+		// services/social/internal/service/clans.go
+		{"clan.created", events.New("clan.created", "g-1", map[string]any{"clan": wolves, "player": alice}),
+			"clan_created k-1 u-1/Alice"},
+		{"clan.member_joined", events.New("clan.member_joined", "g-1", map[string]any{"clan": wolves, "player": bob}),
+			"clan_joined k-1 u-2/Bob"},
+		{"clan.member_left (left)", events.New("clan.member_left", "g-1", map[string]any{
+			"clan": wolves, "player": bob, "reason": "left", "kicked_by": nil, "new_owner": nil}),
+			"clan_left k-1 u-2"},
+		{"clan.member_left (kicked)", events.New("clan.member_left", "g-1", map[string]any{
+			"clan": wolves, "player": bob, "reason": "kicked", "kicked_by": alice, "new_owner": nil}),
+			"clan_kicked k-1 u-2"},
+		{"clan.disbanded", events.New("clan.disbanded", "g-1", map[string]any{"clan": wolves}),
+			"clan_disbanded k-1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -301,7 +357,7 @@ func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 
 // docs/event-messages.md is the agreed format of every event. Each message in it must be read by
 // the dispatcher: the ones Realtime handles reach the service with the right fields, the others
-// (clans, blocks, config) are acknowledged and ignored. Change the file and this test together.
+// (clan.renamed, clan.member_role_changed, config) are acknowledged and ignored. Change the file and this test together.
 func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 	doc, err := os.ReadFile("../../../../docs/event-messages.md")
 	if err != nil {
@@ -319,6 +375,7 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 		emma   = "2c33a1b2-c3d4-4e5f-8061-728394a5b6c7"
 		oliver = "9f4bc0d1-e2f3-4a45-8b56-67788990aabb"
 		req    = "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d"
+		wolves = "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091"
 	)
 	want := map[string]string{ // type -> the call the service must get; "" = ignored
 		"friend.request_sent":      "request_sent " + req + " " + alice + "/Alice -> " + bob,
@@ -327,9 +384,13 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 		"friend.accepted":          "accepted " + req + " " + emma + "/Emma " + oliver + "/Oliver",
 		"friend.removed":           "removed " + emma + " " + oliver + " by " + emma,
 		"player.renamed":           "renamed " + alice + "/Alice Brown",
-		"clan.created":             "", "clan.member_joined": "", "clan.member_left": "", "clan.renamed": "", "clan.disbanded": "",
-		"clan.member_role_changed": "", // published by social (TEAM-169); realtime does not handle it yet
-		"player.blocked": "blocked " + alice + " -> " + bob, "player.unblocked": "unblocked " + alice + " -> " + bob, "config.published": "",
+		"clan.created":             "clan_created " + wolves + " " + alice + "/Alice",
+		"clan.member_joined":       "clan_joined " + wolves + " " + bob + "/Bob",
+		"clan.member_left":         "clan_left " + wolves + " " + bob,
+		"clan.disbanded":           "clan_disbanded " + wolves,
+		"clan.renamed":             "", // realtime stores no clan names
+		"clan.member_role_changed": "", // realtime stores no roles
+		"player.blocked":           "blocked " + alice + " -> " + bob, "player.unblocked": "unblocked " + alice + " -> " + bob, "config.published": "",
 	}
 
 	blocks := regexp.MustCompile("(?s)```json\n(.*?)\n```").FindAllSubmatch(doc, -1)
