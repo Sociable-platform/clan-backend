@@ -17,10 +17,11 @@ clan-backend/
 ├── deploy/postgres/init/      # creates the schemas and database users on first start
 ├── deploy/traefik/            # gateway: static config and the /realtime route
 ├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
+├── deploy/migrate/            # Dockerfile of the migration images (migrate/migrate + a service's migrations)
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
 ├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
 ├── tools/                     # devtoken: test tokens; e2e: end-to-end check of the realtime flow
-├── .gitlab-ci.yml             # CI: build, vet and test with the race detector
+├── .gitlab-ci.yml             # CI: build, vet and test with the race detector, then build and push the images
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
@@ -347,6 +348,43 @@ docker compose exec -T postgres psql -U platform_user -d clan -v ON_ERROR_STOP=1
   `docker compose down -v` and start again.
 - **Roll back one step:** the same command with `down 1` instead of `force ...`.
 - **Database created before this existed** (tables applied by hand): `docker compose down -v` once, then start again.
+
+## Container images
+
+Kubernetes pulls the services from this project's GitLab container registry. CI builds them (job `images` in
+`.gitlab-ci.yml`), for both `linux/amd64` and `linux/arm64`; the Oracle server is ARM.
+
+| Image | Built from | What it is |
+|---|---|---|
+| `registry.gitlab.com/clan-platform/clan-backend/platform` | `services/platform/Dockerfile` | the platform service |
+| `.../social`, `.../realtime` | `services/social/Dockerfile`, `services/realtime/Dockerfile` | the same for social and realtime |
+| `.../platform-migrate` | `deploy/migrate/Dockerfile` with `SERVICE=platform` | `migrate/migrate` plus `services/platform/migrations`; Kubernetes runs it before the service, like `platform-migrate` in docker-compose |
+| `.../social-migrate`, `.../realtime-migrate` | the same with `SERVICE=social` / `SERVICE=realtime` | the migrations of social and realtime |
+
+**When CI builds them:** after the tests pass, on every push to `develop` and `main`. On a merge request the job only
+starts when you press ▶ in the pipeline (to try a branch's images before merging).
+
+**Tags:** every image gets the short commit SHA (`social:a1b2c3d`, a fixed version to deploy and roll back to) and
+the branch name (`social:develop`, the newest build of that branch). Builds from `main` also get `latest`.
+
+**How the ARM build works:** the build stage of each service Dockerfile runs on the build machine's own CPU
+(`FROM --platform=$BUILDPLATFORM`) and Go cross-compiles with `GOOS=$TARGETOS GOARCH=$TARGETARCH`, so no ARM emulation
+is needed. The runtime stage is distroless, which has an image for each CPU.
+
+**Build one yourself** (from the repository root; the result stays on your computer):
+
+```bash
+# for your own computer, like docker compose does
+docker build -f services/social/Dockerfile -t social:dev .
+# for the ARM server (Docker Desktop has buildx)
+docker buildx build --platform linux/arm64 -f services/social/Dockerfile -t social:arm64-test .
+docker buildx build --platform linux/arm64 -f deploy/migrate/Dockerfile --build-arg SERVICE=social -t social-migrate:arm64-test .
+docker image inspect social:arm64-test --format "{{.Architecture}}"   # arm64
+```
+
+An ARM image cannot run on an Intel or AMD computer; Docker Desktop marks it with an ARM64 warning.
+
+docker-compose does not use these images: it builds the services itself and mounts the migrations folders.
 
 ## API contracts (OpenAPI)
 
