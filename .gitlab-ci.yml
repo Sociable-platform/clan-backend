@@ -28,7 +28,12 @@ test:
   variables:
     CGO_ENABLED: "1"
   rules:
+    # On a merge request the tests wait for the play button, so a draft can be pushed and
+    # looked at without spending a runner. Start them before merging: nothing else checks
+    # the branch, and develop runs them again only after the merge.
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
     - if: $CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "main"
   script:
     - go build ./...
