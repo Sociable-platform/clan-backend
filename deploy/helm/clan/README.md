@@ -254,10 +254,14 @@ log). `CrashLoopBackOff`: the service stops right after starting (see `--previou
 
 1. They send you their **public** SSH key (`~/.ssh/id_ed25519.pub`), never the private one.
 2. You add it on the server: `echo "ssh-ed25519 AAAA... name" >> ~/.ssh/authorized_keys` (on the server).
-3. They can now `ssh ubuntu@130.61.158.79` and use `kubectl` there, run `deploy/deploy.sh` (with their own copy of
-   the secrets, which you give them privately), or use `kubectl` on their laptop: copy the access file once with
-   `scp ubuntu@130.61.158.79:clan-oracle.yaml ~/.kube/` (made as in the main README), and open the tunnel
-   `ssh -N -L 16443:127.0.0.1:6443 ubuntu@130.61.158.79` whenever they use it.
+3. They can now `ssh ubuntu@130.61.158.79` and use `kubectl` there, or run `deploy/deploy.sh` (with their own copy
+   of the secrets, which you give them privately).
+4. For `kubectl` on their laptop: the access file `~/clan-oracle.yaml` on the server is k3s's
+   `/etc/rancher/k3s/k3s.yaml` with the name `clan-oracle` and the tunnel port 16443 (create it once on the server:
+   `sed -e 's/\bdefault\b/clan-oracle/g' -e 's#https://127.0.0.1:6443#https://127.0.0.1:16443#' /etc/rancher/k3s/k3s.yaml > ~/clan-oracle.yaml`).
+   They copy it with `scp ubuntu@130.61.158.79:clan-oracle.yaml ~/.kube/clan-oracle.yaml`, add it to `KUBECONFIG`,
+   and open the tunnel `ssh -N -o ServerAliveInterval=30 -L 16443:127.0.0.1:6443 ubuntu@130.61.158.79` whenever they
+   use it. The file gives full control of the cluster: treat it like a password.
 
 The server has one Linux user, so everyone with access can do everything. To take access away, delete their line from
 `~/.ssh/authorized_keys`.

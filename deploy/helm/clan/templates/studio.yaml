@@ -1,0 +1,68 @@
+# Studio (clan-frontend): nginx serving the built web app on port 8080, published at
+# https://studio.<domain> by templates/ingress.yaml.
+{{- if .Values.studio.enabled }}
+{{- $sel := dict "root" . "name" "studio" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: studio
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "clan.selector" $sel | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: studio
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+    {{- include "clan.selector" $sel | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "clan.selector" $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "clan.labels" . | nindent 8 }}
+        {{- include "clan.selector" $sel | nindent 8 }}
+    spec:
+      {{- if and .Values.secrets.registryUsername .Values.secrets.registryPassword }}
+      imagePullSecrets:
+        - name: gitlab-registry
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+      containers:
+        - name: studio
+          image: {{ printf "%s:%s" .Values.studio.image .Values.studio.tag }}
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.studio.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+{{- end }}
