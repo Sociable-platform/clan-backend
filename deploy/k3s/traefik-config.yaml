@@ -1,0 +1,26 @@
+# Settings for the Traefik that k3s installs by itself (namespace kube-system). Apply once on the
+# server; k3s then re-installs its Traefik with these values (takes about a minute):
+#   kubectl apply -f traefik-config.yaml
+#
+# The timeouts match deploy/traefik/traefik.yml of docker-compose: realtime pings an idle WebSocket
+# every 25 s and drops it after 60 s without an answer, so the gateway must keep a connection open
+# longer than that. Traefik's own defaults are close to 60 s.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    additionalArguments:
+      - --entryPoints.web.transport.respondingTimeouts.readTimeout=120s
+      - --entryPoints.web.transport.respondingTimeouts.writeTimeout=120s
+      - --entryPoints.web.transport.respondingTimeouts.idleTimeout=180s
+      - --entryPoints.websecure.transport.respondingTimeouts.readTimeout=120s
+      - --entryPoints.websecure.transport.respondingTimeouts.writeTimeout=120s
+      - --entryPoints.websecure.transport.respondingTimeouts.idleTimeout=180s
+    # No access log on purpose: the WebSocket URL carries the player token in its query string,
+    # and tokens must never be written to logs.
+    logs:
+      access:
+        enabled: false

@@ -109,3 +109,13 @@ secrets:
   # A GitLab group deploy token with the read_registry scope. Empty: no pull secret is created.
   registryUsername: ""
   registryPassword: ""
+
+# Public URLs (Traefik, the Ingress controller of k3s): platform.<domain>, social.<domain> and
+# realtime.<domain>. Empty domain: nothing is published, the services stay inside the cluster.
+ingress:
+  domain: ""
+  tls:
+    # true: HTTPS with a Let's Encrypt certificate from cert-manager, and http:// redirects to it.
+    enabled: false
+    # letsencrypt (real certificates) or letsencrypt-staging (untrusted test certificates)
+    issuer: letsencrypt

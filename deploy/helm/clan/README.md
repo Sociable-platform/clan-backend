@@ -5,8 +5,9 @@ Installs the clan platform on Kubernetes (k3s on the Oracle server). It is built
 | Part | What it adds | Ticket |
 |---|---|---|
 | 1 | PostgreSQL, RabbitMQ, the Secrets, the registry pull secret | TEAM-173 |
-| 2 | platform, social and realtime, each with its migrations | ticket 4 |
-| 3 | Ingress, domain, HTTPS; then Studio and the demo game | later |
+| 2 | platform, social and realtime, each with its migrations | TEAM-175 |
+| 3 | public URLs (Traefik IngressRoutes), HTTPS with Let's Encrypt | TEAM-176 |
+| 4 | Studio and the demo game | later |
 
 Everything is installed into the namespace `clan`, as the release `clan`.
 
@@ -49,6 +50,50 @@ golang-migrate takes a lock in Postgres and skips what already ran. A failed mig
 can roll back to, use a commit SHA: `--set image.tag=a1b2c3d` (the tags are in GitLab -> Deploy -> Container registry).
 
 The service names are the same as in docker-compose (`postgres`, `rabbitmq`), so the services' URLs do not change.
+
+## Public URLs and HTTPS
+
+With `ingress.domain` set (`values-prod.yaml`: `130-61-158-79.sslip.io`), k3s's Traefik publishes:
+
+| URL | Service |
+|---|---|
+| `https://platform.<domain>` | platform (Studio's `VITE_PLATFORM_URL`, the SDK's `platformUrl`) |
+| `https://social.<domain>` | social (the SDK's `socialUrl`, the game's `VITE_SOCIAL_URL`) |
+| `https://realtime.<domain>` | realtime: `/api/v1/...` and `wss://realtime.<domain>/api/v1/ws`; also the docker-compose gateway paths `/realtime/v1/<rest>` (rewritten to `/api/v1/<rest>`) and `/realtime/v1/healthz`, `/readyz` |
+
+- **sslip.io** answers every `*.130-61-158-79.sslip.io` with `130.61.158.79`, so no DNS setup is needed. For an own
+  domain: one DNS record `*.<domain>` -> `130.61.158.79`, then change `ingress.domain` (and the CORS origins).
+- **HTTPS** (`ingress.tls.enabled`): cert-manager gets one Let's Encrypt certificate for the three hosts (Secret
+  `clan-tls`) and renews it; `http://` answers with a permanent redirect to `https://`. Let's Encrypt checks the domain
+  over plain http, so port 80 must stay open.
+- **CORS:** `platform.corsOrigins` allows Studio (`https://studio.<domain>`), `social` and `realtime` the demo game
+  (`https://game.<domain>`); both also allow the local dev servers.
+- No access log: the WebSocket URL carries the player token.
+
+**One-time setup on the server** (before the first install with `ingress.tls.enabled`):
+
+```bash
+# 1. cert-manager: gets and renews the certificates (its own namespace, cert-manager)
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=180s
+
+# 2. Traefik's timeouts for the WebSocket (file copied from deploy/k3s/traefik-config.yaml)
+kubectl apply -f ~/traefik-config.yaml
+```
+
+Without step 1, `helm upgrade` fails with `no matches for kind "Certificate"`.
+
+**Check it** (from anywhere):
+
+```bash
+kubectl -n clan get certificate clan-tls             # READY True after about a minute
+curl -s https://social.130-61-158-79.sslip.io/health  # {"service":"social","status":"ok"}
+curl -sI http://social.130-61-158-79.sslip.io/health  # 308 Permanent Redirect to https://
+```
+
+**The certificate is not ready?** `kubectl -n clan describe certificate clan-tls` and
+`kubectl -n clan get challenges` show why. While experimenting, set `ingress.tls.issuer: letsencrypt-staging`: its
+certificates are not trusted by browsers, but its rate limits are much higher.
 
 ## Install on the Oracle server
 
