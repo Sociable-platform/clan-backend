@@ -168,3 +168,71 @@ func TestPublicWidgetConfig_StoreFailureOnTheAccessCheckIsNotAnAPIError(t *testi
 		t.Fatalf("want a plain internal error, got %v", err)
 	}
 }
+
+func TestEnsureDeveloperActive(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	ctx := context.Background()
+	dev, err := svc.Register(ctx, validRegister())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.EnsureDeveloperActive(ctx, dev.ID); err != nil {
+		t.Fatalf("active developer: %v", err)
+	}
+	store.suspendDeveloper(dev.ID)
+	err = svc.EnsureDeveloperActive(ctx, dev.ID)
+	wantError(t, err, http.StatusForbidden, "account_suspended")
+	delete(store.suspendedDevs, dev.ID)
+	if err := svc.EnsureDeveloperActive(ctx, dev.ID); err != nil {
+		t.Fatalf("after resume: %v", err)
+	}
+
+	wantError(t, svc.EnsureDeveloperActive(ctx, "dev-gone"), http.StatusUnauthorized, "unauthorized")
+}
+
+func TestEnsureDeveloperActive_StoreFailureIsNotAnAPIError(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	store.err = errors.New("connection refused")
+	var e *httpx.Error
+	if err := svc.EnsureDeveloperActive(context.Background(), "d1"); err == nil || errors.As(err, &e) {
+		t.Fatalf("want a plain internal error, got %v", err)
+	}
+}
+
+// A game suspended on its own does not stop the developer from writing: only the account switch does.
+func TestEnsureDeveloperActive_IgnoresAGameSuspension(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	dev, _ := svc.Register(context.Background(), validRegister())
+	game, _ := svc.RegisterGame(context.Background(), dev.ID, RegisterGameInput{Name: "Farm"})
+	store.suspendGame(game.ID)
+	if err := svc.EnsureDeveloperActive(context.Background(), dev.ID); err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestMeAndRegisterReportTheStatus(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	ctx := context.Background()
+	dev, err := svc.Register(ctx, validRegister())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev.Status != "active" || dev.StatusReason != "" {
+		t.Fatalf("a new developer: %+v", dev)
+	}
+	me, err := svc.Me(ctx, dev.ID)
+	if err != nil || me.Status != "active" || me.StatusReason != "" {
+		t.Fatalf("me: %+v, %v", me, err)
+	}
+
+	store.suspendDeveloper(dev.ID)
+	me, err = svc.Me(ctx, dev.ID)
+	if err != nil || me.Status != "suspended" || me.StatusReason != "non_payment" {
+		t.Fatalf("me while suspended: %+v, %v", me, err)
+	}
+	// A suspended developer can still log in.
+	if _, err := svc.Login(ctx, LoginInput{Email: "dev@example.com", Password: "correct horse"}); err != nil {
+		t.Fatalf("login while suspended: %v", err)
+	}
+}

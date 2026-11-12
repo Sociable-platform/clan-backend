@@ -53,7 +53,7 @@ func TestRegisterDeveloper_Created(t *testing.T) {
 	var got service.RegisterInput
 	svc := fakeService{register: func(in service.RegisterInput) (service.Developer, error) {
 		got = in
-		return service.Developer{ID: "d1", Email: in.Email, Name: in.Name, CreatedAt: created}, nil
+		return service.Developer{ID: "d1", Email: in.Email, Name: in.Name, CreatedAt: created, Status: "active"}, nil
 	}}
 
 	rec := call(t, svc, discardLog(), http.MethodPost, "/api/v1/developers/register",
@@ -67,7 +67,7 @@ func TestRegisterDeveloper_Created(t *testing.T) {
 	}
 	var body map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	want := map[string]any{"id": "d1", "email": "dev@example.com", "name": "Dev", "createdAt": "2026-11-06T10:00:00Z"}
+	want := map[string]any{"id": "d1", "email": "dev@example.com", "name": "Dev", "createdAt": "2026-11-06T10:00:00Z", "status": "active", "statusReason": nil}
 	if len(body) != len(want) {
 		t.Fatalf("body has unexpected fields (password or hash leaked?): %s", rec.Body.String())
 	}
@@ -222,6 +222,7 @@ type memStore struct {
 	admins []repository.Admin
 	// devStatus and gameStatus hold the status by ID; a missing entry means active.
 	devStatus  map[string]string
+	devReason  map[string]string // reason of a suspension, by developer ID
 	gameStatus map[string]string
 	games      []repository.Game
 	keys       []memKey
@@ -269,6 +270,13 @@ func (m *memStore) SetDeveloperStatus(_ context.Context, id string, c repository
 			m.devStatus = map[string]string{}
 		}
 		m.devStatus[id] = c.Status
+		if m.devReason == nil {
+			m.devReason = map[string]string{}
+		}
+		m.devReason[id] = ""
+		if c.Status == repository.StatusSuspended {
+			m.devReason[id] = c.Reason
+		}
 		out.Status = c.Status
 		return out, true, nil
 	}
@@ -332,7 +340,7 @@ func (m *memStore) CreateDeveloper(_ context.Context, email, hash, name string) 
 		}
 	}
 	// the ID is a UUID, like in the real table
-	d := repository.Developer{ID: fmt.Sprintf("00000000-0000-4000-8001-%012d", len(m.devs)+1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now()}
+	d := repository.Developer{ID: fmt.Sprintf("00000000-0000-4000-8001-%012d", len(m.devs)+1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now(), Status: "active"}
 	m.devs = append(m.devs, d)
 	return d, nil
 }
@@ -340,7 +348,7 @@ func (m *memStore) CreateDeveloper(_ context.Context, email, hash, name string) 
 func (m *memStore) DeveloperByEmail(_ context.Context, email string) (repository.Developer, error) {
 	for _, d := range m.devs {
 		if d.Email == email {
-			return d, nil
+			return m.withStatus(d), nil
 		}
 	}
 	return repository.Developer{}, repository.ErrNotFound
@@ -349,10 +357,22 @@ func (m *memStore) DeveloperByEmail(_ context.Context, email string) (repository
 func (m *memStore) DeveloperByID(_ context.Context, id string) (repository.Developer, error) {
 	for _, d := range m.devs {
 		if d.ID == id {
-			return d, nil
+			return m.withStatus(d), nil
 		}
 	}
 	return repository.Developer{}, repository.ErrNotFound
+}
+
+// withStatus applies the status the admin endpoints set, like the real table's status columns.
+func (m *memStore) withStatus(d repository.Developer) repository.Developer {
+	d.Status = m.statusOf(m.devStatus, d.ID)
+	d.StatusReason = m.devReason[d.ID]
+	return d
+}
+
+func (m *memStore) DeveloperStatusOf(_ context.Context, id string) (string, error) {
+	d, err := m.DeveloperByID(context.Background(), id)
+	return d.Status, err
 }
 
 // TestDeveloperAuthFlow runs register -> login -> me through the real handler and service.

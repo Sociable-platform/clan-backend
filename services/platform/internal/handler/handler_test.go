@@ -20,6 +20,8 @@ type fakeService struct {
 	login    func(service.LoginInput) (service.Session, error)
 	auth     func(token string) (string, error)
 	me       func(id string) (service.Developer, error)
+	// ensureDeveloperActive decides whether a developer may write; nil means every developer may.
+	ensureDeveloperActive func(developerID string) error
 
 	adminLogin func(service.LoginInput) (service.Session, error)
 	authAdmin  func(token string) (string, error)
@@ -107,6 +109,13 @@ func (f fakeService) EnsureGameServed(_ context.Context, gameID string) error {
 		return nil
 	}
 	return f.ensureGameServed(gameID)
+}
+
+func (f fakeService) EnsureDeveloperActive(_ context.Context, developerID string) error {
+	if f.ensureDeveloperActive == nil {
+		return nil
+	}
+	return f.ensureDeveloperActive(developerID)
 }
 
 func serve(t *testing.T, svc Service, method, path string) *httptest.ResponseRecorder {

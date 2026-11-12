@@ -22,6 +22,7 @@ type Store interface {
 	CreateDeveloper(ctx context.Context, email, passwordHash, name string) (repository.Developer, error)
 	DeveloperByEmail(ctx context.Context, email string) (repository.Developer, error)
 	DeveloperByID(ctx context.Context, id string) (repository.Developer, error)
+	DeveloperStatusOf(ctx context.Context, id string) (string, error)
 	AdminByEmail(ctx context.Context, email string) (repository.Admin, error)
 	AdminByID(ctx context.Context, id string) (repository.Admin, error)
 	ListDevelopers(ctx context.Context, f repository.DeveloperFilter) ([]repository.DeveloperSummary, error)

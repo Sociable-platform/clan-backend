@@ -26,6 +26,10 @@ type developerResponse struct {
 	Email     string    `json:"email"`
 	Name      string    `json:"name"`
 	CreatedAt time.Time `json:"createdAt"`
+	// Status is "active" or "suspended". StatusReason is the reason code while suspended and null
+	// otherwise. The admin's internal note is never part of a developer response.
+	Status       string  `json:"status"`
+	StatusReason *string `json:"statusReason"`
 }
 
 type loginResponse struct {
@@ -34,7 +38,10 @@ type loginResponse struct {
 }
 
 func toDeveloperResponse(d service.Developer) developerResponse {
-	return developerResponse{ID: d.ID, Email: d.Email, Name: d.Name, CreatedAt: d.CreatedAt.UTC()}
+	return developerResponse{
+		ID: d.ID, Email: d.Email, Name: d.Name, CreatedAt: d.CreatedAt.UTC(),
+		Status: d.Status, StatusReason: nilIfEmpty(d.StatusReason),
+	}
 }
 
 // registerDeveloper handles POST /api/v1/developers/register.
@@ -112,4 +119,19 @@ func bearerToken(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return token, true
+}
+
+// requireWritable wraps next, which must already be behind requireDeveloper, so it only runs while
+// the developer's account is active. A suspended developer gets 403 account_suspended: they can
+// log in and read everything, to see why, but every dashboard write is refused, before the body
+// is read. Routes that change something wrap it as h.requireDeveloper(h.requireWritable(...)); the
+// ones that only read, and revoking an API key, do not.
+func (h *Handler) requireWritable(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := h.svc.EnsureDeveloperActive(r.Context(), developerID(r.Context())); err != nil {
+			h.fail(w, r, err)
+			return
+		}
+		next(w, r)
+	}
 }

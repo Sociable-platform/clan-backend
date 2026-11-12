@@ -142,6 +142,10 @@ printf '%s\n' 'a long password' | go run ./tools/createadmin -email ops@example.
 Then `POST /api/v1/admin/login` returns `{ token, expiresIn }`. A disabled admin (`admins.disabled_at` set) cannot log in
 and its tokens stop working at once, not when they expire.
 
+**Postman collection.** `postman/platform-admin-suspension.postman_collection.json` tests the whole admin and suspension feature against a running platform (124 requests, 242 checks):
+admin login and token types, the developer list, detail and audit log, suspending and resuming a game and a developer, the 403s on `POST /players/auth` and the public widget config, and the read-only dashboard.
+Create an admin as above, set the collection variables `baseUrl`, `adminEmail` and `adminPassword`, then run the whole collection in order in the Runner; it makes its own developers and games, so it can be re-run.
+
 ### Widget config validation
 
 `PUT /api/v1/games/{gameID}/widget/draft` and `POST .../widget/publish` check the config against the
@@ -499,13 +503,19 @@ go test -run TestPublishToRealBroker -v ./pkg/events/
 
 ## Endpoints so far
 
+**Suspended developers are read-only.** While an admin has the developer's account suspended, login and every `GET` still work (so the dashboard can show why),
+but everything that changes data answers `403 account_suspended` before the body is read: register a game, create an API key, save allowed origins,
+save a widget draft, publish and roll back. Revoking an API key stays allowed (it only takes access away, so a leaked key can still be killed).
+Resuming lets writes through again at once. The check is `requireWritable` in `internal/handler`; `TestWritesRefuseASuspendedDeveloper` fails for a new write route that does not use it.
+Only the developer's own switch counts here: a game suspended on its own does not stop its developer from editing.
+
 | Method | Path | Answer |
 |---|---|---|
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
 | POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
 | POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
-| GET | `/api/v1/developers/me` | 200 with the developer; 401 unless `Authorization: Bearer <developer token>` |
+| GET | `/api/v1/developers/me` | 200 with the developer, including `status` (`active` / `suspended`) and `statusReason` (`non_payment` / `abuse` / `other`, else `null`) so the dashboard can explain a suspension; never the admin's internal note. 401 unless `Authorization: Bearer <developer token>` |
 | POST | `/api/v1/admin/login` | 200 `{ token, expiresIn }` with an **admin** token; 401 `invalid_credentials` for an unknown email, a wrong password and a disabled admin alike |
 | GET | `/api/v1/admin/me` | 200 with the admin; 401 unless `Authorization: Bearer <admin token>` of an admin who is not disabled (developer and player tokens get 401) |
 | GET | `/api/v1/admin/developers` | **Admin token only.** 200 `{ developers: [{ id, email, name, status, gameCount, createdAt }], nextCursor }`, newest first. Query: `q` (part of email or name), `status` (`active` / `suspended`), `limit` (1 to 100, default 25), `cursor` (the previous `nextCursor`; `null` on the last page). 400 `invalid_query` / `invalid_status` / `invalid_limit` / `invalid_cursor` |
