@@ -1,0 +1,159 @@
+# Public URLs, one subdomain per service, served by k3s's Traefik on ports 80 and 443:
+#   https://platform.<domain>  -> platform:8081
+#   https://social.<domain>    -> social:8082
+#   https://realtime.<domain>  -> realtime:8083 (wss://realtime.<domain>/api/v1/ws), and the gateway
+#                                  paths of docker-compose: /realtime/v1/<rest> -> /api/v1/<rest>,
+#                                  /realtime/v1/healthz and /readyz -> /health and /ready
+# Studio and the demo game take these as base URLs (VITE_PLATFORM_URL, socialUrl, ...).
+#
+# With ingress.tls.enabled, cert-manager gets one Let's Encrypt certificate for all the hosts
+# (Secret clan-tls) and plain http:// redirects to https://. cert-manager must be installed first
+# (see README.md).
+{{- with .Values.ingress }}
+{{- if .domain }}
+{{- $d := .domain }}
+{{- $tls := .tls.enabled }}
+{{- $hosts := list (printf "platform.%s" $d) (printf "social.%s" $d) (printf "realtime.%s" $d) }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: realtime-api-rewrite
+  labels:
+    {{- include "clan.labels" $ | nindent 4 }}
+spec:
+  replacePathRegex:
+    regex: ^/realtime/v1/(.*)
+    replacement: /api/v1/$1
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: realtime-probes-rewrite
+  labels:
+    {{- include "clan.labels" $ | nindent 4 }}
+spec:
+  replacePathRegex:
+    regex: ^/realtime/v1/(health|ready)z$
+    replacement: /$1
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: clan
+  labels:
+    {{- include "clan.labels" $ | nindent 4 }}
+spec:
+  entryPoints:
+    - {{ ternary "websecure" "web" $tls }}
+  routes:
+    - match: Host(`platform.{{ $d }}`)
+      kind: Rule
+      services:
+        - name: platform
+          port: 8081
+    - match: Host(`social.{{ $d }}`)
+      kind: Rule
+      services:
+        - name: social
+          port: 8082
+    - match: Host(`realtime.{{ $d }}`) && (Path(`/realtime/v1/healthz`) || Path(`/realtime/v1/readyz`))
+      kind: Rule
+      priority: 30
+      middlewares:
+        - name: realtime-probes-rewrite
+      services:
+        - name: realtime
+          port: 8083
+    - match: Host(`realtime.{{ $d }}`) && PathPrefix(`/realtime/v1/`)
+      kind: Rule
+      priority: 20
+      middlewares:
+        - name: realtime-api-rewrite
+      services:
+        - name: realtime
+          port: 8083
+    - match: Host(`realtime.{{ $d }}`)
+      kind: Rule
+      priority: 10
+      services:
+        - name: realtime
+          port: 8083
+  {{- if $tls }}
+  tls:
+    secretName: clan-tls
+  {{- end }}
+{{- if $tls }}
+---
+# Plain http:// on the same hosts answers with a permanent redirect to https://.
+# priority 1 (the lowest): Traefik ranks routes by rule length otherwise, and this rule is about as
+# long as the temporary route cert-manager adds for /.well-known/acme-challenge/. That route must win,
+# because Let's Encrypt checks the domain over plain http.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  labels:
+    {{- include "clan.labels" $ | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: clan-http
+  labels:
+    {{- include "clan.labels" $ | nindent 4 }}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`platform.{{ $d }}`) || Host(`social.{{ $d }}`) || Host(`realtime.{{ $d }}`)
+      kind: Rule
+      priority: 1
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: platform
+          port: 8081
+---
+# One certificate for all the hosts, renewed by cert-manager before it expires (every 60 days).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: clan-tls
+  labels:
+    {{- include "clan.labels" $ | nindent 4 }}
+spec:
+  secretName: clan-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: {{ printf "%s-%s" $.Release.Name .tls.issuer }}
+  dnsNames:
+    {{- toYaml $hosts | nindent 4 }}
+---
+# Let's Encrypt accounts. "letsencrypt" gives real certificates; "letsencrypt-staging" gives test
+# certificates that browsers do not trust, with much higher rate limits: use it while trying things.
+# Both prove the domain over http (HTTP-01) through Traefik.
+{{- range $name, $server := dict "letsencrypt" "https://acme-v02.api.letsencrypt.org/directory" "letsencrypt-staging" "https://acme-staging-v02.api.letsencrypt.org/directory" }}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ printf "%s-%s" $.Release.Name $name }}
+  labels:
+    {{- include "clan.labels" $ | nindent 4 }}
+spec:
+  acme:
+    server: {{ $server }}
+    privateKeySecretRef:
+      name: {{ printf "%s-%s-account" $.Release.Name $name }}
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
