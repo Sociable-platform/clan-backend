@@ -1,0 +1,61 @@
+# platform, social and realtime: a Deployment and a Service each, named like in docker-compose,
+# so the services reach each other at http://platform:8081, http://social:8082 and
+# http://realtime:8083. Before a pod's service starts, its init container applies the service's
+# pending SQL migrations (the <service>-migrate image), like the *-migrate jobs in docker-compose.
+{{- $root := . }}
+{{- $db := printf "@postgres:5432/%s?sslmode=disable" .Values.postgres.database }}
+{{- $amqp := printf "amqp://%s:$(RABBITMQ_PASSWORD)@rabbitmq:5672/" .Values.rabbitmq.user }}
+
+{{- /* platform */}}
+{{- $env := list
+  (dict "name" "PLATFORM_PORT" "value" "8081")
+  (dict "name" "DB_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "platform-db-password")))
+  (dict "name" "PLATFORM_DATABASE_URL" "value" (printf "postgres://platform_user:$(DB_PASSWORD)%s" $db))
+  (dict "name" "RABBITMQ_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "rabbitmq-password")))
+  (dict "name" "PLATFORM_RABBITMQ_URL" "value" $amqp)
+  (dict "name" "PLATFORM_CORS_ORIGINS" "value" .Values.platform.corsOrigins)
+  (dict "name" "PLATFORM_JWT_PRIVATE_KEY_FILE" "value" "/run/secrets/platform_jwt_private.pem")
+  (dict "name" "PLATFORM_DEVELOPER_TOKEN_TTL" "value" .Values.platform.developerTokenTtl)
+  (dict "name" "PLATFORM_INTERNAL_TOKEN" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "platform-internal-token")))
+  (dict "name" "LOG_LEVEL" "value" .Values.logLevel)
+}}
+{{- include "clan.goService" (dict "root" $root "name" "platform" "port" 8081 "replicas" .Values.platform.replicas
+      "resources" .Values.platform.resources "env" $env "dbURLVar" "PLATFORM_DATABASE_URL"
+      "keySecret" "clan-jwt-private" "keyFile" "platform_jwt_private.pem") }}
+
+{{- /* social */}}
+{{- $env = list
+  (dict "name" "SOCIAL_PORT" "value" "8082")
+  (dict "name" "DB_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "social-db-password")))
+  (dict "name" "SOCIAL_DATABASE_URL" "value" (printf "postgres://social_user:$(DB_PASSWORD)%s" $db))
+  (dict "name" "RABBITMQ_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "rabbitmq-password")))
+  (dict "name" "SOCIAL_RABBITMQ_URL" "value" $amqp)
+  (dict "name" "SOCIAL_CORS_ORIGINS" "value" .Values.social.corsOrigins)
+  (dict "name" "SOCIAL_JWT_PUBLIC_KEY_FILE" "value" "/run/secrets/platform_jwt_public.pem")
+  (dict "name" "SOCIAL_INTERNAL_TOKEN" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "social-internal-token")))
+  (dict "name" "SOCIAL_PLATFORM_URL" "value" "http://platform:8081")
+  (dict "name" "SOCIAL_CONFIG_CACHE_TTL" "value" .Values.social.configCacheTtl)
+  (dict "name" "LOG_LEVEL" "value" .Values.logLevel)
+}}
+{{- include "clan.goService" (dict "root" $root "name" "social" "port" 8082 "replicas" .Values.social.replicas
+      "resources" .Values.social.resources "env" $env "dbURLVar" "SOCIAL_DATABASE_URL"
+      "keySecret" "clan-jwt-public" "keyFile" "platform_jwt_public.pem") }}
+
+{{- /* realtime */}}
+{{- $env = list
+  (dict "name" "REALTIME_PORT" "value" "8083")
+  (dict "name" "DB_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "realtime-db-password")))
+  (dict "name" "REALTIME_DATABASE_URL" "value" (printf "postgres://realtime_user:$(DB_PASSWORD)%s" $db))
+  (dict "name" "RABBITMQ_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "rabbitmq-password")))
+  (dict "name" "REALTIME_RABBITMQ_URL" "value" $amqp)
+  (dict "name" "REALTIME_CORS_ORIGINS" "value" .Values.realtime.corsOrigins)
+  (dict "name" "REALTIME_JWT_PUBLIC_KEY_FILE" "value" "/run/secrets/platform_jwt_public.pem")
+  (dict "name" "REALTIME_SOCIAL_URL" "value" "http://social:8082")
+  (dict "name" "REALTIME_PLATFORM_URL" "value" "http://platform:8081")
+  (dict "name" "REALTIME_BACKFILL" "value" (toString .Values.realtime.backfill))
+  (dict "name" "REALTIME_INTERNAL_TOKEN" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "social-internal-token")))
+  (dict "name" "LOG_LEVEL" "value" .Values.logLevel)
+}}
+{{- include "clan.goService" (dict "root" $root "name" "realtime" "port" 8083 "replicas" 1 "recreate" true
+      "resources" .Values.realtime.resources "env" $env "dbURLVar" "REALTIME_DATABASE_URL"
+      "keySecret" "clan-jwt-public" "keyFile" "platform_jwt_public.pem") }}
