@@ -6,7 +6,7 @@ Backend for the clan platform: three Go services in one repository (realtime is 
 |---|---|---|---|
 | `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
 | `services/social` | Players, clans, clan members | 8082 | `social` |
-| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, friend events from RabbitMQ that create and remove DM conversations, sending messages, and presence with a 10 s offline grace) | 8083 | `realtime` |
+| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, friend events from RabbitMQ that create and remove DM conversations, clan events that create and remove clan chat rooms, sending messages, and presence with a 10 s offline grace) | 8083 | `realtime` |
 
 ## Layout
 
@@ -290,7 +290,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
 `name` the display name at the time of the event.
 
-**Realtime reads six of them** (the others that reach `realtime.events` are acknowledged and ignored until their tasks exist):
+**What realtime does with the friend, player and clan events** (`player.blocked` and `player.unblocked` are kept as a copy of the blocks, see `docs/events.md`; `clan.renamed` and `clan.member_role_changed` are acknowledged and need nothing, because realtime stores no clan names or roles; any other type is acknowledged and ignored):
 
 | Event | Realtime does |
 |---|---|
@@ -300,6 +300,10 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `friend.accepted` | creates the DM conversation of the two `players` and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both. Exactly two players are required. The notification carries `requestId` (`null` when the event has no `request_id`). |
 | `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both, with no notification. Exactly two `players` are required and `removed_by` must be one of them. |
 | `player.renamed` | stores the new name with the player's memberships in that game. No frame is sent; messages keep the name their sender had when writing them. |
+| `clan.created` | creates the clan's chat room (a conversation of `kind` `clan` with the clan's `clanId`) with the owner (`player`) as its first member, and sends `conversation.added` to the owner. |
+| `clan.member_joined` | adds the `player` to the clan's room (and creates the room if `clan.created` was never seen), sends `conversation.added` with the room to the player and a `clan_joined` notification to the other members. The room comes with its **whole history**, also the messages written before the player joined or while they were away; their unread count starts from the start of the history. |
+| `clan.member_left` | removes the `player` from the room (the messages stay for the others, and for the player if they join again) and sends `conversation.removed` to that player; when `reason` is `kicked`, also a `clan_kicked` notification. The members who stay are not told. |
+| `clan.disbanded` | deletes the room with its members and messages, and sends `conversation.removed` and a `clan_disbanded` notification to everybody who was still in it (Social publishes only this event when the last member leaves). |
 
 A field Realtime needs that is missing or malformed makes it drop that event (logged as `dropping unusable event`).
 So **Social and Realtime must keep these field names in step**; `TestDispatchReadsEventsAsSocialPublishesThem` in
@@ -455,7 +459,11 @@ It needs no database or broker: the unit tests use fakes, and the tests that nee
 the developer registers, creates a game and an API key and publishes config version 1; two players get tokens and
 connect, and each gets `hello`; player A asks B to be friends and B accepts (both get `conversation.added`); A sends a
 direct message (A gets `message.ack`, both get `message.new`); the developer publishes config version 2 (both get
-`config.updated`). Every frame must arrive within 2 seconds of the action that causes it.
+`config.updated`). Then clan chat: A creates a clan and gets its room; B joins (B gets the room, A gets `clan_joined`);
+A writes in the room (both get `message.new`); B leaves (`conversation.removed`) and does not get the next message; B
+joins again and gets the room with the whole history, the missed message included; A kicks B (`conversation.removed`
+and `clan_kicked`); A, the last member, leaves (`conversation.removed` and `clan_disbanded`). Every frame must arrive
+within 2 seconds of the action that causes it. The published configs turn `clan.enabled` and `chat.clanChat` on.
 
 ```bash
 docker compose up -d --build
@@ -669,6 +677,14 @@ Errors come back as `error` frames with `replyTo` and nothing is stored or sent:
 **Message rules.** `message.send` is checked in this order, and the first failure answers (full table in `openapi/realtime-ws.md`): rate limit of the connection (5 in 5 s; three refused in a row close it with `1008`), not empty, member, the game's chat switches (`chat.enabled`, `directMessages`, `clanChat`), not blocked (DMs), `chat.maxMessageLength` in characters, slow mode (`chat.slowModeSeconds` per player across all tabs), then the profanity filter (`chat.profanityFilter`, whole words, replaced with `***`; the list is `services/realtime/internal/profanity/words.txt`). The game's rules come from its published config (kept in memory, updated on `config.published`); a game without a published config has the permissive defaults. Blocks come from the `player.blocked` and `player.unblocked` events into Realtime's own `blocks` table (Social publishes them on block and unblock).
 Presence: a player is online while one of their WebSockets is open. When the last one closes, realtime waits 10 s; if the player did not connect again, the friends who are connected get `presence.update { playerId, status: "offline" }`, so a page refresh never shows as offline. Connecting sends friends nothing (they read `hello.onlineFriends`), and a new friendship between two online players gives each a `presence.update` `online` for the other. The 10 s timers are in memory of the one process: if realtime restarts during them, nobody is told that player went offline.
 Slow mode and the rate limit live in the memory of the one Realtime process (a restart forgets them).
+
+**Clan chat.** Realtime makes each clan's chat room from Social's clan events, so creating or joining a clan with a player token
+(`POST http://localhost:8082/api/v1/clans` with `{"name":"Wolves"}`, `POST http://localhost:8082/api/v1/clans/<clan id>/join`) is all it
+takes: that player's tab gets `conversation.added` with `kind: "clan"` and the `clanId`, and the members already in the clan get a
+`clan_joined` notification. Send `message.send` with the room's conversation id exactly as in a DM; every member gets `message.new`.
+Blocks do not apply in a clan room, and `chat.clanChat: false` in the published config answers `feature_disabled`. Leaving or being
+kicked gives `conversation.removed` (and `clan_kicked`); joining again brings the room back with its whole history. In a clan room,
+`online` in `members` is the state when the room was sent; live `presence.update` frames go to friends only.
 
 **Postman collection and flow diagrams.** `postman/realtime-chat.postman_collection.json` runs the whole flow against a local stack: it makes its own developer, game, three players and a friendship, then checks the conversation, the history, paging, unread and the error cases (103 checks). The two things that need a WebSocket (sending messages and `conversation.read`) are two manual steps that show the exact frames to send in the Visualize tab; the collection description says how to run it. Folder 9 (TEAM-150) tries every `message.send` rule: it sets the game's rules through Platform (draft and Publish), puts `player.blocked` / `player.unblocked` on RabbitMQ (set the collection variables `rabbitUser` and `rabbitPassword`), and its STEP requests show the frames that give `rate_limited` (and the `1008` close), `feature_disabled`, `blocked`, `too_long`, `slow_mode`, `empty` and `not_member`. How everything flows, as UML diagrams: [`docs/realtime-flow.md`](docs/realtime-flow.md).
 

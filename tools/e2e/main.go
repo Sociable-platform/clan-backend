@@ -6,7 +6,12 @@
 //  2. two players get tokens from Platform and connect to Realtime, each receives hello;
 //  3. player A asks B to be friends, B accepts, and both receive conversation.added;
 //  4. A sends a direct message: A receives message.ack, A and B receive message.new;
-//  5. the developer publishes a new config: both players receive config.updated.
+//  5. the developer publishes a new config: both players receive config.updated;
+//  6. clan chat: A creates a clan and gets its room; B joins and gets the room, A gets clan_joined;
+//     A writes in the room (ack for A, message.new for both); B leaves (conversation.removed) and
+//     misses a message; B joins again and gets the whole history, the missed message included;
+//     A kicks B (conversation.removed and clan_kicked for B); A, the last member, leaves and gets
+//     conversation.removed and clan_disbanded.
 //
 // Every frame must arrive within 2 seconds of the action that causes it. The exit code is 0 when
 // every step passes and 1 otherwise. Start the stack first (see README, "End-to-end test"):
@@ -132,10 +137,15 @@ func (s *scenario) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.sendDirectMessage(ctx, a, b, conversationID); err != nil {
+	start := time.Now()
+	if _, err := s.sendMessage(ctx, a, []*player{b, a}, conversationID, "e2e-1", "gg from the e2e test"); err != nil {
 		return err
 	}
+	pass("DM: ack for the sender, message.new for both", time.Since(start))
 	if err := s.publishConfig(ctx, game, 2, a, b); err != nil {
+		return err
+	}
+	if err := s.clanChat(ctx, a, b); err != nil {
 		return err
 	}
 
@@ -212,7 +222,8 @@ func (s *scenario) setupGame(ctx context.Context) (game, error) {
 
 // saveAndPublish saves the template config as the draft, with the given chat.maxMessageLength, and
 // publishes it. It returns the published version. Platform needs a complete config, so the script
-// carries one (config.json, a copy of a valid example) and changes only game_id and that one value.
+// carries one (config.json, a copy of a valid example) and changes only game_id, that one value, and
+// turns clans and clan chat on (the example has them off).
 func (s *scenario) saveAndPublish(ctx context.Context, g game, maxMessageLength int) (int, error) {
 	base := s.cfg.platformURL + "/api/v1/games/" + g.id + "/widget"
 
@@ -225,6 +236,12 @@ func (s *scenario) saveAndPublish(ctx context.Context, g game, maxMessageLength 
 		return 0, errors.New("config.json has no chat section")
 	}
 	chat["maxMessageLength"] = maxMessageLength
+	chat["clanChat"] = true
+	clan, ok := draft["clan"].(map[string]any)
+	if !ok {
+		return 0, errors.New("config.json has no clan section")
+	}
+	clan["enabled"] = true
 	draft["game_id"] = g.id
 
 	if err := s.api.call(ctx, http.MethodPut, base+"/draft", g.developerHeader(), map[string]any{"config": draft}, nil, http.StatusOK); err != nil {
@@ -340,12 +357,9 @@ func (s *scenario) becomeFriends(ctx context.Context, a, b *player) (string, err
 	return ids[0], nil
 }
 
-// sendDirectMessage sends a message from a and checks the ack for a and message.new for both.
-func (s *scenario) sendDirectMessage(ctx context.Context, a, b *player, conversationID string) error {
-	const (
-		frameID = "e2e-1"
-		text    = "gg from the e2e test"
-	)
+// sendMessage sends a message from a into the conversation and checks the ack for a and message.new
+// for every player in to (the sender included, when they should get it). It returns the message ID.
+func (s *scenario) sendMessage(ctx context.Context, a *player, to []*player, conversationID, frameID, text string) (string, error) {
 	start := time.Now()
 	send := map[string]any{
 		"type": "message.send",
@@ -353,28 +367,28 @@ func (s *scenario) sendDirectMessage(ctx context.Context, a, b *player, conversa
 		"data": map[string]string{"conversationId": conversationID, "body": text},
 	}
 	if err := a.ws.send(ctx, send); err != nil {
-		return err
+		return "", err
 	}
 
 	ack, err := a.ws.expect(start.Add(s.cfg.deadline), "message.ack", ofType("message.ack"))
 	if err != nil {
-		return err
+		return "", err
 	}
 	var ackData struct {
 		ReplyTo   string `json:"replyTo"`
 		MessageID string `json:"messageId"`
 	}
 	if err := json.Unmarshal(ack.Data, &ackData); err != nil {
-		return fmt.Errorf("%s: read message.ack: %w", a.name, err)
+		return "", fmt.Errorf("%s: read message.ack: %w", a.name, err)
 	}
 	if ackData.ReplyTo != frameID || ackData.MessageID == "" {
-		return fmt.Errorf("%s: message.ack = %+v, want replyTo %q and a message ID", a.name, ackData, frameID)
+		return "", fmt.Errorf("%s: message.ack = %+v, want replyTo %q and a message ID", a.name, ackData, frameID)
 	}
 
-	for _, p := range []*player{b, a} {
-		f, err := p.ws.expect(start.Add(s.cfg.deadline), "message.new", ofType("message.new"))
+	for _, p := range to {
+		f, err := p.ws.expect(start.Add(s.cfg.deadline), "message.new", ofMessage(ackData.MessageID))
 		if err != nil {
-			return err
+			return "", err
 		}
 		var msg struct {
 			ConversationID string `json:"conversationId"`
@@ -385,15 +399,14 @@ func (s *scenario) sendDirectMessage(ctx context.Context, a, b *player, conversa
 			} `json:"message"`
 		}
 		if err := json.Unmarshal(f.Data, &msg); err != nil {
-			return fmt.Errorf("%s: read message.new: %w", p.name, err)
+			return "", fmt.Errorf("%s: read message.new: %w", p.name, err)
 		}
 		if msg.ConversationID != conversationID || msg.Message.Body != text ||
 			msg.Message.SenderID != a.socialID || msg.Message.ID != ackData.MessageID {
-			return fmt.Errorf("%s: message.new = %+v, does not match the message that was sent", p.name, msg)
+			return "", fmt.Errorf("%s: message.new = %+v, does not match the message that was sent", p.name, msg)
 		}
 	}
-	pass("DM: ack for the sender, message.new for both", time.Since(start))
-	return nil
+	return ackData.MessageID, nil
 }
 
 // publishConfig publishes a new config and checks that every player gets config.updated.
@@ -535,6 +548,21 @@ func ofNotification(kind string) func(frame) bool {
 	}
 }
 
+// ofMessage matches the message.new frame of one message.
+func ofMessage(id string) func(frame) bool {
+	return func(f frame) bool {
+		if f.Type != "message.new" {
+			return false
+		}
+		var m struct {
+			Message struct {
+				ID string `json:"id"`
+			} `json:"message"`
+		}
+		return json.Unmarshal(f.Data, &m) == nil && m.Message.ID == id
+	}
+}
+
 // wsClient is one WebSocket connection to realtime. A goroutine reads the frames into a channel;
 // expect, called from one goroutine only, takes them out and keeps the ones it skipped.
 type wsClient struct {
@@ -630,6 +658,32 @@ func (c *wsClient) expect(deadline time.Time, desc string, match func(frame) boo
 			c.pending = append(c.pending, f)
 		case <-timer.C:
 			return frame{}, fmt.Errorf("%s: no %s arrived in time", c.name, desc)
+		}
+	}
+}
+
+// absent waits until deadline and fails when a frame that match accepts is waiting already or arrives
+// before it. Frames that do not match stay for later calls, as with expect.
+func (c *wsClient) absent(deadline time.Time, desc string, match func(frame) bool) error {
+	for _, f := range c.pending {
+		if match(f) {
+			return fmt.Errorf("%s: got %s, want none", c.name, desc)
+		}
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	for {
+		select {
+		case f, ok := <-c.frames:
+			if !ok {
+				return fmt.Errorf("%s: connection ended while checking that no %s arrives: %w", c.name, desc, c.readErr)
+			}
+			if match(f) {
+				return fmt.Errorf("%s: got %s, want none", c.name, desc)
+			}
+			c.pending = append(c.pending, f)
+		case <-timer.C:
+			return nil
 		}
 	}
 }

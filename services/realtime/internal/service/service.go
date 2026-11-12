@@ -20,6 +20,12 @@ type Store interface {
 	UpsertDM(ctx context.Context, gameID, dmKey string, a, b repository.Member) (repository.DM, error)
 	// RemoveDMMembers deletes both memberships; safe to repeat. found is false without such a conversation.
 	RemoveDMMembers(ctx context.Context, gameID, dmKey string) (conversationID string, found bool, err error)
+	// JoinClanRoom makes the clan's conversation and the player's membership; safe to repeat.
+	JoinClanRoom(ctx context.Context, gameID, clanID string, m repository.Member) (repository.ClanRoom, error)
+	// LeaveClanRoom deletes the player's membership; safe to repeat. found is false without a room for the clan.
+	LeaveClanRoom(ctx context.Context, gameID, clanID, playerID string) (conversationID string, found bool, err error)
+	// DeleteClanRoom deletes the clan's conversation and returns who its members were. found is false without one.
+	DeleteClanRoom(ctx context.Context, gameID, clanID string) (conversationID string, memberIDs []string, found bool, err error)
 	// RenamePlayer stores a new display name for the player's memberships in the game; safe to repeat.
 	RenamePlayer(ctx context.Context, gameID, playerID, name string) error
 	// ListConversations returns the player's conversations in the game, most recently active first.

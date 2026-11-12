@@ -67,7 +67,7 @@ What each hop guarantees:
 | Exchange, queue and bindings | `deploy/rabbitmq/definitions.json`, applied by the `rabbitmq-setup` job in `docker-compose.yml` |
 | Consumer loop (connect, ack, retry, reconnect) | `services/realtime/internal/consumer/consumer.go` |
 | Decoding and routing by event type | `services/realtime/internal/consumer/dispatch.go` |
-| Rules and DB work per event | `services/realtime/internal/service/events.go`, `services/realtime/internal/repository/conversations.go` |
+| Rules and DB work per event | `services/realtime/internal/service/events.go`, `services/realtime/internal/repository/conversations.go`; clan rooms in `services/realtime/internal/service/clans.go` and `services/realtime/internal/repository/clans.go` |
 | Realtime wiring (`REALTIME_RABBITMQ_URL`, shared hub) | `services/realtime/cmd/main.go` |
 | What the player's browser receives | `openapi/realtime-ws.md` |
 | Every message, without explanation (events, then the clan chat frames) | `docs/event-messages.md` |
@@ -367,6 +367,26 @@ Cancel and decline are two event types because they have different recipients; a
 - The cache is filled lazily too: the first `hello` of a game (or the first message rule that needs it) loads the config, and
   every later call reads memory. `hello` carries the cached `configVersion`.
 
+### The clan events: `clan.created`, `clan.member_joined`, `clan.member_left`, `clan.disbanded`
+
+- **Published by Social** (`services/social/internal/service/clans.go`); the full messages are in
+  [`event-messages.md`](event-messages.md). `clan` is `{ id, name }` with Social's clan ID, `player` is `{ id, name }`.
+- **Realtime does:** each clan has one chat room, a conversation of `kind` `clan` with the clan's ID in `clan_id`
+  (one per game and clan).
+  - `clan.created`: makes the room with the owner (`player`) as its first member and sends `conversation.added` to the owner.
+  - `clan.member_joined`: adds the `player` (and makes the room if `clan.created` was never seen), sends `conversation.added` to
+    the player and a `clan_joined` notification to the other members. The room comes with its **whole history**: what was written
+    before the player joined, and while they were away if they were a member before. Their read position went with their
+    membership, so the other members' messages count as unread.
+  - `clan.member_left`: deletes the player's membership (the messages stay) and sends `conversation.removed` to that player;
+    when `reason` is `kicked`, also a `clan_kicked` notification (even if Realtime never had the room). `kicked_by` and
+    `new_owner` are not needed. The members who stay are not told.
+  - `clan.disbanded`: deletes the room with its members and messages and sends `conversation.removed` and a `clan_disbanded`
+    notification to everybody who was still in it. Social publishes only this event when the last member leaves, so that member is told here.
+- **A redelivered event** changes nothing in the database (upserts and deletes); the frames are sent again and the SDK ignores a
+  conversation ID it knows. A `clan.disbanded` that comes again finds no room and sends nothing.
+- A missing or malformed `clan.id` or `player` (not a UUID, no name) makes Realtime drop the event.
+
 ## 6. Events that arrive but are not handled yet
 
 The queue is bound to `config.published`, `friend.*`, `player.*` and `clan.*`. Realtime **acknowledges and ignores** any type it has no
@@ -375,12 +395,8 @@ handler for (it logs them at debug level), so they never block the queue. The fu
 
 | Event | `data` | Task |
 |---|---|---|
-| `clan.created` | `clan`, `player` (the owner) | clan chat rooms (TEAM-147) |
-| `clan.member_joined` | `clan`, `player` | clan chat rooms (TEAM-147) |
-| `clan.member_left` | `clan`, `player`, `reason` (`left` or `kicked`), `kicked_by` (player or `null`), `new_owner` (player or `null`) | clan chat rooms (TEAM-147) |
-| `clan.renamed` | `clan` (the new name), `previous_name` | clan chat rooms (TEAM-147) |
-| `clan.disbanded` | `clan` (only this event is published when the last member leaves) | clan chat rooms (TEAM-147) |
-| `clan.member_role_changed` | `clan`, `player`, `role`, `previous_role` (role ids of the game's `clan.roles`), `changed_by` | not handled yet: a member list frame, if the SDK needs roles live (published by Social since TEAM-169) |
+| `clan.renamed` | `clan` (the new name), `previous_name` | acknowledged with nothing to do: Realtime stores no clan names, and the room is found by the clan's ID |
+| `clan.member_role_changed` | `clan`, `player`, `role`, `previous_role` (role ids of the game's `clan.roles`), `changed_by` | acknowledged with nothing to do: Realtime stores no roles. A member list frame could come later, if the SDK needs roles live (published by Social since TEAM-169) |
 | `player.blocked` | `blocker_id`, `blocked_id` | Realtime stores the block in its own `blocks` table (idempotent); nothing is sent to anybody (TEAM-150). Social publishes it after `POST /api/v1/players/{playerID}/block`, only for a new block (TEAM-154). |
 | `player.unblocked` | `blocker_id`, `blocked_id` | Realtime deletes the block (idempotent); nothing is sent (TEAM-150). Social publishes it after `DELETE /api/v1/players/{playerID}/block`, only when a block was removed (TEAM-154). |
 
@@ -528,6 +544,8 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 | An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until it is backfilled | Done for friendships: start Realtime once with `REALTIME_BACKFILL=true` (README "Realtime backfill"). It only adds, so a lost `friend.removed` is not repaired. Still open: transactional outbox in Social and a dead-letter queue. |
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
+| Clan rooms are not backfilled | A clan made before Realtime ran, or whose `clan.created` / `clan.member_joined` was lost, has no room (or misses that member) until the next join; a lost `clan.member_left` leaves the player in the room | A backfill like the friendships one: needs an internal Social endpoint that lists clan members (Social has none yet), then a clan pass in `REALTIME_BACKFILL`. |
+| The members who stay in a clan are not told when someone leaves | Open tabs list the old members until they reload the conversations | A frame for it, if the SDK needs it live (the contract has none). |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
 | A lost `player.blocked` (no outbox yet) | The blocked player can still message the blocker | Transactional outbox in Social, and a backfill of the blocks: Social stores them now (TEAM-154) but has no internal endpoint that lists them, like `/internal/v1/friendships` (the friendships backfill of TEAM-151 does not cover blocks). |
 | Slow mode and the rate limit are in the memory of the one Realtime process | A restart gives everybody a fresh start | Fine while Realtime is one process. |

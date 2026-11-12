@@ -13,8 +13,9 @@ WebSocket. The two REST reads (conversation list and history) are in [`realtime.
   In `hello`, `configVersion` is the version of the game's published config (`0` when the game has none or Platform did not answer within a second)
   and `onlineFriends` lists the friends who are online. `config.updated` is sent when the game publishes a new config.
   `presence.update` tells a friend went offline (after a 10 second grace period) or, for a new friendship, that the other one is online.
-  Not built yet: the clan notifications,
-  clan conversations (so `clan_chat` cannot be tried end to end yet), the 5-connections-per-player limit, and `4003`.
+  Clan rooms: `conversation.added` and `conversation.removed` for a clan's chat room, and the `clan_joined`, `clan_kicked`
+  and `clan_disbanded` notifications, made from Social's clan events.
+  Not built yet: the 5-connections-per-player limit, and `4003`.
 - **Endpoint:** `GET /api/v1/ws?token=<player token>` on the realtime service (`ws://localhost:8083/api/v1/ws` locally).
 - **Format:** every frame is one JSON object in a WebSocket **text** frame. Binary frames are a `bad_frame` error.
 - **Names:** frame types are lowercase with dots (`message.new`), JSON fields are camelCase, error codes are `snake_case`.
@@ -261,9 +262,9 @@ Something happened that the SDK should show as a notice. `kind` says what; `payl
 | `friend_request_cancelled` | the player who received the request, on every open tab | `{ "requestId": "...", "from": { "id": "...", "name": "..." } }`: the sender took the request back. Remove the `friend_request` with this `requestId`. |
 | `friend_request_declined` | the player who received the request, on every open tab | `{ "requestId": "...", "from": { "id": "...", "name": "..." } }`: this player declined (maybe in another tab). Remove the `friend_request` with this `requestId`. The sender is **not** told. |
 | `friend_accepted` | both players | `{ "player": { "id": "...", "name": "..." }, "requestId": "..." }` (`player` is the other player; `requestId` is the request that was accepted, `null` until Social puts it in its event; remove the matching `friend_request`) |
-| `clan_joined` | the clan's members | `{ "clanId": "...", "player": { "id": "...", "name": "..." } }` |
+| `clan_joined` | the other members of the clan (the player who joined gets `conversation.added` instead) | `{ "clanId": "...", "player": { "id": "...", "name": "..." } }` |
 | `clan_kicked` | the player who was removed | `{ "clanId": "..." }` |
-| `clan_disbanded` | the clan's members | `{ "clanId": "..." }` |
+| `clan_disbanded` | everybody who was still in the clan, the last member included | `{ "clanId": "..." }` |
 
 The SDK must ignore a `kind` it does not know, so new kinds can be added later without breaking old SDKs.
 A notification can arrive twice (events are delivered at least once); showing it twice is acceptable, but a
@@ -275,6 +276,14 @@ The list of conversations changed: a friendship started, the player joined or cr
 `conversation.added` carries the full `conversation` object. The SDK ignores an `added` for an ID it already has.
 In `members`, `online` is true while the player has an open WebSocket or closed the last one less than 10 seconds ago. `conversation.removed` carries only the `conversationId`; remove it from the list. Messages stay in the history
 on the server, and a conversation returns with its history if the players become friends again.
+
+A clan room (`kind` `clan`, with the clan's `clanId`) is added when the player creates or joins the clan, and removed
+when they leave or are kicked. It comes with its whole history: the messages written before the player joined, and
+while they were away if they were a member before; `unread` counts the other members' messages from the start of the
+history. The members who stay get no frame when someone leaves (their list is right on the next
+`GET /api/v1/conversations`). When the clan is disbanded the room is deleted with its messages and everybody still in
+it gets `conversation.removed`. In a clan room `online` is the state when the room was sent: live `presence.update`
+frames go to friends only.
 
 ```json
 {

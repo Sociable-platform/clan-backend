@@ -48,6 +48,14 @@ type memStore struct {
 	hasMore   bool
 	readErr   error // what ListMessages and MarkRead return
 	readCalls []string
+
+	// the clan rooms (clans_test.go)
+	room        repository.ClanRoom // what JoinClanRoom returns
+	roomID      string              // what LeaveClanRoom and DeleteClanRoom return
+	roomFound   bool
+	roomMembers []string // what DeleteClanRoom returns
+	clanCalls   []string // "join game|clan|player|name", "leave game|clan|player", "delete game|clan"
+	clanErr     error
 }
 
 type upsertCall struct {
