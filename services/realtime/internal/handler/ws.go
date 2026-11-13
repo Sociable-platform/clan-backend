@@ -41,6 +41,10 @@ type WSOptions struct {
 	// Config tells the version of the game's published config for the hello frame. Optional: nil, or a
 	// game whose config is not known, gives configVersion 0.
 	Config ConfigVersions
+	// Suspension tells whether a game is suspended. A connection of a suspended game is accepted and
+	// closed at once with 4403 and the reason game_suspended, before anything else happens. Optional:
+	// nil never refuses a game.
+	Suspension GameSuspension
 	// Presence follows who is online (the grace period, friends). Optional: nil means nobody is told
 	// anything, and hello lists no online friends.
 	Presence Presence
@@ -74,6 +78,12 @@ type ConfigVersions interface {
 	Version(ctx context.Context, gameID string) int
 }
 
+// GameSuspension tells whether a game is suspended, for a connection that is about to open.
+// gameconfig.Cache implements it. It must not fail: when it cannot tell, it says false (fail open).
+type GameSuspension interface {
+	Suspended(ctx context.Context, gameID string) bool
+}
+
 // Presence is what the WebSocket endpoint needs from the presence tracker. presence.Tracker implements it.
 type Presence interface {
 	// Connected is called after the player's connection was added to the hub.
@@ -91,6 +101,10 @@ const onlineFriendsTimeout = 2 * time.Second
 // configVersionTimeout limits how long a new connection waits for the config version (the first
 // connection of a game, when the cache is empty). After it hello says 0 and the connection goes on.
 const configVersionTimeout = time.Second
+
+// suspensionTimeout limits how long a new connection waits to learn whether its game is suspended
+// (the first connection of a game, or one after the status expired). After it the game is served.
+const suspensionTimeout = time.Second
 
 // resolveTimeout limits the call to social that happens before the upgrade.
 const resolveTimeout = 3 * time.Second
@@ -119,6 +133,14 @@ func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.conns.Done()
+
+	// A suspended game is refused before anything else, and before social is asked: social refuses
+	// the requests of a suspended game too, which would look like an outage to the SDK, while 4403
+	// tells it to stop.
+	if h.gameSuspended(r.Context(), player.GameID) {
+		h.refuseSuspended(w, r, player.GameID)
+		return
+	}
 
 	// Social's player ID is what conversations, members and events use. Asking before the
 	// upgrade means a failure is a plain HTTP error the SDK can retry with backoff.
@@ -170,6 +192,11 @@ func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.hub.Register(conn)
+	// The game may have been suspended while this connection was being set up: the event closed the
+	// connections it knew of, and this one was not among them yet. The status is in memory by now.
+	if h.gameSuspended(r.Context(), player.GameID) {
+		conn.Close(hub.CloseGameSuspendedCode, hub.GameSuspendedReason)
+	}
 	defer func() {
 		// The last tab closing starts the grace period; friends hear "offline" only if nobody comes back.
 		if h.hub.Unregister(conn) && h.wsOpts.Presence != nil {
@@ -190,6 +217,30 @@ func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 
 	code, reason := conn.CloseInfo()
 	log.Info("websocket disconnected", "code", int(code), "reason", reason)
+}
+
+// gameSuspended reports whether the game is suspended; false when it cannot tell or no source is set.
+func (h *Handler) gameSuspended(ctx context.Context, gameID string) bool {
+	if h.wsOpts.Suspension == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, suspensionTimeout)
+	defer cancel()
+	return h.wsOpts.Suspension.Suspended(ctx, gameID)
+}
+
+// refuseSuspended upgrades the request and closes it at once with 4403 and the reason game_suspended.
+// A close code can only be sent on a WebSocket, so the connection is accepted first (the origin is
+// checked by Accept, like for any other connection). No hello is sent, nothing is registered, and
+// nobody is told the player came online.
+func (h *Handler) refuseSuspended(w http.ResponseWriter, r *http.Request, gameID string) {
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.wsOpts.Origins})
+	if err != nil {
+		h.log.Debug("websocket upgrade refused", "error", err)
+		return
+	}
+	h.log.Info("websocket refused, the game is suspended", "game_id", gameID)
+	_ = ws.Close(hub.CloseGameSuspendedCode, hub.GameSuspendedReason)
 }
 
 // onlineFriends lists the friends of the player who are online, for hello. It never fails: when the

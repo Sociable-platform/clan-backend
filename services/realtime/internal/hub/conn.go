@@ -18,10 +18,15 @@ import (
 
 // Close codes the protocol defines (see openapi/realtime-ws.md).
 const (
-	CloseTokenExpired websocket.StatusCode = 4001                            // the player token passed its exp
-	CloseSlowClient   websocket.StatusCode = 4002                            // the send queue is full
-	ClosePolicy       websocket.StatusCode = websocket.StatusPolicyViolation // 1008: the client broke a rule (too many rate-limited messages)
+	CloseTokenExpired websocket.StatusCode = 4001 // the player token passed its exp
+	CloseSlowClient   websocket.StatusCode = 4002 // the send queue is full
+	// CloseGameSuspendedCode: an admin suspended the game (or its developer). Not a network drop: the SDK must not retry.
+	CloseGameSuspendedCode websocket.StatusCode = 4403
+	ClosePolicy            websocket.StatusCode = websocket.StatusPolicyViolation // 1008: the client broke a rule (too many rate-limited messages)
 )
+
+// GameSuspendedReason is the close reason that goes with CloseGameSuspendedCode.
+const GameSuspendedReason = "game_suspended"
 
 // flushTimeout is how long a connection that is closing with its queue flushed may take to write it.
 const flushTimeout = 2 * time.Second

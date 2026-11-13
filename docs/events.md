@@ -63,7 +63,7 @@ What each hop guarantees:
 | Where Social publishes `player.renamed` | `services/social/internal/service/players.go` (`EnsurePlayer`) |
 | Where Social publishes clan events | `services/social/internal/service/clans.go` (leave and kick both go through `publishLeave`; `clan.renamed` from `RenameClan`); `clan.member_role_changed` in `services/social/internal/service/roles.go` |
 | Where Platform publishes `config.published` | `services/platform/internal/service/widget.go` (`addWidgetVersion`), wired in `services/platform/cmd/main.go` |
-| Where Platform publishes `game.suspended` / `game.resumed` | `services/platform/internal/service/admin_status.go` (`SetGameStatus`, `SetDeveloperStatus`) |
+| Where Platform publishes `game.suspended` / `game.resumed` | `services/platform/internal/service/admin_status.go` (`SetGameStatus`, `SetDeveloperStatus`); Realtime handles them in `services/realtime/internal/consumer/dispatch.go` (`gameStatusChanged`) |
 | Social wiring (`SOCIAL_RABBITMQ_URL`) | `services/social/cmd/main.go` |
 | Exchange, queue and bindings | `deploy/rabbitmq/definitions.json`, applied by the `rabbitmq-setup` job in `docker-compose.yml` |
 | Consumer loop (connect, ack, retry, reconnect) | `services/realtime/internal/consumer/consumer.go` |
@@ -381,7 +381,17 @@ Cancel and decline are two event types because they have different recipients; a
     is skipped: it is off before and after, and a `game.resumed` for it would let it through.
 - **If the broker is down** the admin's request still succeeds and the event is lost (logged). The internal config says the same
   thing as the event, so a consumer that wants the truth reads `GET /internal/v1/games/{gameID}/config`.
-- **Realtime does:** nothing yet. It acknowledges and ignores both (section 6).
+- **Realtime does:**
+  - `game.suspended`: records the game as suspended at once, then closes **every open connection of that game, and of no other**,
+    with close code `4403` and reason `game_suspended` (the same hub reach as `config.updated`). A new connection is refused the same
+    way, before `hello` (see `openapi/realtime-ws.md`, section 6). The event is trusted as it is: it is the latest thing Realtime knows.
+  - `game.resumed`: asks Platform for the game's config (`GET /api/v1/public/games/{gameID}/widget-config`), which has the final say,
+    and keeps the answer. If Platform says the game is served, new connections succeed and the config version in `hello` is the newest
+    (the game may have published while it was suspended; that `config.published` had nothing to refresh and is acknowledged). If
+    Platform says it is still suspended (the event was old), nothing changes. If Platform cannot be reached the event is tried once
+    more, and until then the last known status stays.
+  - **A lost event** is caught by the status expiring: a new connection asks Platform again after `gameconfig.Options.StatusTTL`
+    (30 s). **Platform down** keeps the last status seen, and a game Realtime has never seen is served (fail open).
 
 ```json
 {
@@ -427,7 +437,6 @@ handler for (it logs them at debug level), so they never block the queue. The fu
 | `clan.member_role_changed` | `clan`, `player`, `role`, `previous_role` (role ids of the game's `clan.roles`), `changed_by` | acknowledged with nothing to do: Realtime stores no roles. A member list frame could come later, if the SDK needs roles live (published by Social since TEAM-169) |
 | `player.blocked` | `blocker_id`, `blocked_id` | Realtime stores the block in its own `blocks` table (idempotent); nothing is sent to anybody (TEAM-150). Social publishes it after `POST /api/v1/players/{playerID}/block`, only for a new block (TEAM-154). |
 | `player.unblocked` | `blocker_id`, `blocked_id` | Realtime deletes the block (idempotent); nothing is sent (TEAM-150). Social publishes it after `DELETE /api/v1/players/{playerID}/block`, only when a block was removed (TEAM-154). |
-| `game.suspended`, `game.resumed` | `status` (`suspended` or `active`) | acknowledged with nothing to do: a game that is switched off is cut off by a later task, which will read the status of `GET /internal/v1/games/{gameID}/config` when it needs the truth. Platform publishes them since TEAM-206 (see section 5). |
 
 ## 7. What the player's browser receives
 
@@ -493,7 +502,8 @@ Who gets what:
 | `friend.removed` | both: `conversation.removed` |
 | `player.renamed` | nobody |
 | `config.published` | every connection of the game: `config.updated` |
-| `game.suspended`, `game.resumed` | nobody (not handled yet) |
+| `game.suspended` | no frame: every connection of the game is closed with `4403` `game_suspended` |
+| `game.resumed` | nobody (the game accepts connections again) |
 
 Chat messages are **not** events: they travel over the WebSocket only (`message.send` / `message.new`, see `openapi/realtime-ws.md`).
 

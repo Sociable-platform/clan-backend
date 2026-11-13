@@ -25,6 +25,8 @@ const (
 	typePlayerBlocked          = "player.blocked"
 	typePlayerUnblocked        = "player.unblocked"
 	typeConfigPublished        = "config.published"
+	typeGameSuspended          = "game.suspended"
+	typeGameResumed            = "game.resumed"
 	typeClanCreated            = "clan.created"
 	typeClanMemberJoined       = "clan.member_joined"
 	typeClanMemberLeft         = "clan.member_left"
@@ -71,6 +73,21 @@ type ConfigCache interface {
 	Published(ctx context.Context, gameID string, version int) (current int, send bool, err error)
 }
 
+// GameStatus is what the dispatcher needs to answer game.suspended and game.resumed.
+// gameconfig.Cache implements it.
+type GameStatus interface {
+	// SetSuspended records at once what the event said, so the next connection sees it.
+	SetSuspended(gameID string, suspended bool)
+	// Resumed asks Platform, which has the final say, and keeps the answer. An error means try the event again.
+	Resumed(ctx context.Context, gameID string) error
+}
+
+// GameCloser closes every open WebSocket of a game with the suspended close code (4403). The hub does
+// this; it never blocks. It returns how many connections it closed.
+type GameCloser interface {
+	CloseGameSuspended(gameID string) int
+}
+
 // Broadcaster writes an encoded frame to every open WebSocket of a game. The hub does this; it never blocks.
 type Broadcaster interface {
 	SendToGame(gameID string, frame []byte)
@@ -85,6 +102,9 @@ type Dispatcher struct {
 
 	config    ConfigCache // nil: config.published is acknowledged and ignored
 	broadcast Broadcaster
+
+	gameStatus GameStatus // nil: game.suspended and game.resumed are acknowledged and ignored
+	closer     GameCloser
 }
 
 // NewDispatcher returns a Dispatcher.
@@ -95,6 +115,13 @@ func NewDispatcher(events Events, send Sender, log *slog.Logger) *Dispatcher {
 // WithConfig makes the dispatcher handle config.published: refresh cache, then tell every connection of the game.
 func (d *Dispatcher) WithConfig(cache ConfigCache, to Broadcaster) *Dispatcher {
 	d.config, d.broadcast = cache, to
+	return d
+}
+
+// WithGameStatus makes the dispatcher handle game.suspended (close every connection of the game) and
+// game.resumed (refresh its status).
+func (d *Dispatcher) WithGameStatus(status GameStatus, closer GameCloser) *Dispatcher {
+	d.gameStatus, d.closer = status, closer
 	return d
 }
 
@@ -242,6 +269,12 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 			return nil
 		}
 		return d.configPublished(ctx, env)
+	case typeGameSuspended, typeGameResumed:
+		if d.gameStatus == nil {
+			d.log.Debug("ignoring game status event: no game status", "event_id", env.ID, "type", env.Type)
+			return nil
+		}
+		return d.gameStatusChanged(ctx, env)
 	default:
 		d.log.Debug("ignoring event nobody handles yet", "event_id", env.ID, "type", env.Type)
 		return nil
@@ -280,6 +313,12 @@ func (d *Dispatcher) configPublished(ctx context.Context, env events.Event) erro
 		return fmt.Errorf("event %s (%s): %w: version must be 1 or more", env.ID, env.Type, ErrDrop)
 	}
 	current, send, err := d.config.Published(ctx, env.GameID, data.Version)
+	if errors.Is(err, gameconfig.ErrSuspended) {
+		// Platform gives no config of a suspended game, and its connections are closed anyway. The
+		// version is picked up when the game is resumed (see GameStatus.Resumed), so there is nothing to retry.
+		d.log.Info("event handled, the game is suspended", "event_id", env.ID, "type", env.Type, "game_id", env.GameID)
+		return nil
+	}
 	if err != nil {
 		if errors.Is(err, gameconfig.ErrInvalidGame) {
 			err = fmt.Errorf("%w: %w", ErrDrop, err)
@@ -296,6 +335,34 @@ func (d *Dispatcher) configPublished(ctx context.Context, env events.Event) erro
 	}
 	d.broadcast.SendToGame(env.GameID, encoded)
 	d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "version", current)
+	return nil
+}
+
+// gameStatusChanged handles game.suspended and game.resumed. The event's type is the whole message:
+// its data (status) only repeats it.
+//
+// game.suspended is trusted at once: the status is recorded first, so a connection that is just being
+// opened sees it, and then every open connection of that game, and no other, is closed with 4403.
+// game.resumed is not: the cache asks Platform, so an old event that is delivered again after a newer
+// suspension cannot open the game by mistake. When Platform cannot be asked the error makes the
+// consumer try once more, and the status expires by itself after a while.
+func (d *Dispatcher) gameStatusChanged(ctx context.Context, env events.Event) error {
+	if env.GameID == "" {
+		return fmt.Errorf("event %s (%s): %w: no game_id", env.ID, env.Type, ErrDrop)
+	}
+	if env.Type == typeGameSuspended {
+		d.gameStatus.SetSuspended(env.GameID, true)
+		closed := d.closer.CloseGameSuspended(env.GameID)
+		d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "closed", closed)
+		return nil
+	}
+	if err := d.gameStatus.Resumed(ctx, env.GameID); err != nil {
+		if errors.Is(err, gameconfig.ErrInvalidGame) {
+			err = fmt.Errorf("%w: %w", ErrDrop, err)
+		}
+		return fmt.Errorf("event %s (%s): %w", env.ID, env.Type, err)
+	}
+	d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID)
 	return nil
 }
 

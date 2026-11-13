@@ -325,3 +325,44 @@ func TestCloseAfterFlushWritesTheQueuedFramesBeforeTheCloseFrame(t *testing.T) {
 	}
 	<-served
 }
+
+func TestCloseGameClosesEveryConnectionOfThatGameOnly(t *testing.T) {
+	h := New()
+	a1, a2, a3 := detached("game-a", "p1", 4), detached("game-a", "p1", 4), detached("game-a", "p2", 4)
+	b1 := detached("game-b", "p1", 4)
+	for _, c := range []*Conn{a1, a2, a3, b1} {
+		h.Register(c)
+	}
+
+	if n := h.CloseGameSuspended("game-a"); n != 3 {
+		t.Fatalf("closed %d connections, want 3", n)
+	}
+	for i, c := range []*Conn{a1, a2, a3} {
+		select {
+		case <-c.Done():
+		default:
+			t.Fatalf("connection %d of game-a is still open", i)
+		}
+		if code, reason := c.CloseInfo(); code != 4403 || reason != "game_suspended" {
+			t.Errorf("connection %d closed with %d %q, want 4403 game_suspended", i, code, reason)
+		}
+	}
+	select {
+	case <-b1.Done():
+		t.Fatal("a connection of another game was closed")
+	default:
+	}
+	if h.CloseGameSuspended("nobody") != 0 {
+		t.Fatal("a game without connections has nothing to close")
+	}
+}
+
+func TestCloseGameUsesTheGivenCode(t *testing.T) {
+	h := New()
+	c := detached("game-a", "p1", 4)
+	h.Register(c)
+	h.CloseGame("game-a", websocket.StatusGoingAway, "maintenance")
+	if code, reason := c.CloseInfo(); code != websocket.StatusGoingAway || reason != "maintenance" {
+		t.Fatalf("closed with %d %q", code, reason)
+	}
+}
