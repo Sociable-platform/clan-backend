@@ -126,7 +126,12 @@ func run() error {
 
 	mux := http.NewServeMux()
 	// Every /api/v1 route requires a player token signed by platform (checked with verifyKey).
+	// After the token check, a game that an admin suspended is refused with 403 game_suspended.
+	// The answer comes from the same platform call and cache as the clan rules, so it applies
+	// (and lifts) within SOCIAL_CONFIG_CACHE_TTL. Without SOCIAL_PLATFORM_URL nothing is suspended.
+	isSuspended := func(ctx context.Context, gameID string) bool { return rules.Rules(ctx, gameID).Suspended }
 	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now), log).
+		WithGameGate(auth.RequireServedGame(isSuspended)).
 		WithInternal(httpx.RequireInternal(internalToken)).
 		Register(mux)
 

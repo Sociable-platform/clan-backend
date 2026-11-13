@@ -6,6 +6,7 @@
 //
 // RequirePlayer verifies the token with platform's public key (no call to platform),
 // answers 401 for anything else, and stores the player in the request context.
+// RequireServedGame then refuses the requests of a suspended game with 403.
 // Handlers read the caller with PlayerFrom. The game ID used in every database query
 // comes from there, never from the request body or URL, so a player can only ever
 // see and change data of their own game.
@@ -79,6 +80,32 @@ func RequirePlayer(key ed25519.PublicKey, now func() time.Time) httpx.Middleware
 				Name:       claims.Name,
 			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, player)))
+		})
+	}
+}
+
+// RequireServedGame returns middleware that refuses a request with 403 game_suspended while the
+// caller's game is suspended. It must run after RequirePlayer, so the token is proven first: a
+// stranger without a valid token gets 401 and learns nothing about any game. isSuspended gets
+// the game ID of the token and must never fail: when it cannot tell, it says false (fail open).
+//
+// Nothing is changed or deleted for a suspended game; its friends, clans and players stay as
+// they were and work again as soon as the game is resumed.
+func RequireServedGame(isSuspended func(ctx context.Context, gameID string) bool) httpx.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			player, ok := PlayerFrom(r.Context())
+			if !ok {
+				// RequirePlayer did not run first: a wiring mistake, never a client error.
+				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Something went wrong")
+				return
+			}
+			if isSuspended(r.Context(), player.GameID) {
+				// Same code and message as Platform, so a player never learns whose switch is off.
+				httpx.WriteError(w, http.StatusForbidden, "game_suspended", "This game is suspended")
+				return
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }
