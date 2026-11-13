@@ -150,10 +150,11 @@ func TestGameResponsesAlwaysHaveAnAllowedOriginsList(t *testing.T) {
 
 func TestInternalGameConfig_Handler(t *testing.T) {
 	published := service.InternalGameConfig{
-		GameID: someGameID, Version: 3, Config: json.RawMessage(`{"schemaVersion":1}`),
+		GameID: someGameID, Version: 3, Status: "active", Config: json.RawMessage(`{"schemaVersion":1}`),
 		AllowedOrigins: []string{"https://play.example.com"},
 	}
-	never := service.InternalGameConfig{GameID: someGameID, AllowedOrigins: []string{}}
+	never := service.InternalGameConfig{GameID: someGameID, Status: "active", AllowedOrigins: []string{}}
+	suspended := service.InternalGameConfig{GameID: someGameID, Version: 3, Status: "suspended", Config: json.RawMessage(`{"schemaVersion":1}`), AllowedOrigins: []string{}}
 	guard := httpx.RequireInternal(internalToken)
 
 	tests := []struct {
@@ -161,8 +162,9 @@ func TestInternalGameConfig_Handler(t *testing.T) {
 		cfg  service.InternalGameConfig
 		want string
 	}{
-		{"published", published, `{"gameId":"` + someGameID + `","version":3,"config":{"schemaVersion":1},"allowedOrigins":["https://play.example.com"]}`},
-		{"never published: config is null", never, `{"gameId":"` + someGameID + `","version":0,"config":null,"allowedOrigins":[]}`},
+		{"published", published, `{"gameId":"` + someGameID + `","version":3,"status":"active","config":{"schemaVersion":1},"allowedOrigins":["https://play.example.com"]}`},
+		{"never published: config is null", never, `{"gameId":"` + someGameID + `","version":0,"status":"active","config":null,"allowedOrigins":[]}`},
+		{"suspended: the status says so and the rest is unchanged", suspended, `{"gameId":"` + someGameID + `","version":3,"status":"suspended","config":{"schemaVersion":1},"allowedOrigins":[]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

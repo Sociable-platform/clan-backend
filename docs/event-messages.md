@@ -303,6 +303,34 @@
 }
 ```
 
+## game.suspended
+
+```json
+{
+  "event_id": "5e0a9c3f-2b71-4d84-9a16-7c3d8e1f0b42",
+  "type": "game.suspended",
+  "occurred_at": "2026-11-13T10:15:02.118Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "status": "suspended"
+  }
+}
+```
+
+## game.resumed
+
+```json
+{
+  "event_id": "b7d41e68-9c02-4f35-8a7e-3d1c5f6a2e90",
+  "type": "game.resumed",
+  "occurred_at": "2026-11-13T10:42:51.607Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "status": "active"
+  }
+}
+```
+
 # WebSocket frames
 
 ## conversation.added: clan room for the owner (clan.created)

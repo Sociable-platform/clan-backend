@@ -1335,10 +1335,18 @@ paths:
     get:
       tags: [internal]
       operationId: getInternalGameConfig
-      summary: A game's active config and allowed origins (for realtime)
+      summary: A game's status, active config and allowed origins (for realtime)
       description: |
         For other services, not for browsers or the SDK: realtime reads it to check the `Origin` of a
-        WebSocket against the game's `allowedOrigins` and to know the game's chat rules.
+        WebSocket against the game's `allowedOrigins`, to know the game's chat rules and to know whether
+        the game is served at all.
+
+        `status` is the **effective** status, worked out here so that other services never need to know
+        about developers: `suspended` when the game or its developer is suspended, otherwise `active`
+        (the same rule that gives a game's keys a 403 on `POST /api/v1/players/auth`). It is read
+        fresh on every call. A change is also announced on `socialkit.events` as `game.suspended` or
+        `game.resumed` (see the README, "RabbitMQ events"), but this answer is the truth to check
+        when an event was missed.
         Needs `X-Internal-Token` (the value of `PLATFORM_INTERNAL_TOKEN`); a developer or player token
         is not accepted. While `PLATFORM_INTERNAL_TOKEN` is not set, this route answers 404 `not_found`,
         like an unknown route.
@@ -1353,7 +1361,7 @@ paths:
         - internalToken: []
       responses:
         "200":
-          description: The game's active config and allowed origins.
+          description: The game's status, active config and allowed origins.
           content:
             application/json:
               schema:
@@ -1361,6 +1369,7 @@ paths:
               example:
                 gameId: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
                 version: 3
+                status: active
                 config: *validConfig
                 allowedOrigins: ["https://play.example.com", "http://localhost:5174"]
         "401":
@@ -1728,7 +1737,7 @@ components:
             maxLength: 255
     InternalGameConfig:
       type: object
-      required: [gameId, version, config, allowedOrigins]
+      required: [gameId, version, status, config, allowedOrigins]
       properties:
         gameId:
           type: string
@@ -1736,6 +1745,12 @@ components:
         version:
           type: integer
           description: The newest published version, 0 when the game was never published.
+        status:
+          type: string
+          enum: [active, suspended]
+          description: |
+            Whether the game is served. `suspended` when the game or its developer is suspended; which of
+            the two is not revealed. The config and origins are still returned for a suspended game.
         config:
           type: object
           nullable: true

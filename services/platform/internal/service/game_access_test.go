@@ -13,6 +13,9 @@ import (
 
 // GameAccessOf derives the statuses from the fake's games and its two suspended sets.
 func (f *fakeStore) GameAccessOf(_ context.Context, gameID string) (repository.GameAccess, error) {
+	if f.accessErr != nil {
+		return repository.GameAccess{}, f.accessErr
+	}
 	if f.err != nil {
 		return repository.GameAccess{}, f.err
 	}

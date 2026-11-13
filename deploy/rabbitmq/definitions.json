@@ -24,6 +24,7 @@
     { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "config.published", "arguments": {} },
     { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "friend.*", "arguments": {} },
     { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "player.*", "arguments": {} },
-    { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "clan.*", "arguments": {} }
+    { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "clan.*", "arguments": {} },
+    { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "game.*", "arguments": {} }
   ]
 }
