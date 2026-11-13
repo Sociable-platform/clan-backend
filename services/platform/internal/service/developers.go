@@ -31,6 +31,10 @@ type Developer struct {
 	Email     string
 	Name      string
 	CreatedAt time.Time
+	// Status is "active" or "suspended". StatusReason (non_payment, abuse, other) says why while
+	// suspended and is empty otherwise. The admin's internal note is never part of this.
+	Status       string
+	StatusReason string
 }
 
 // RegisterInput is what a new developer sends.
@@ -134,7 +138,10 @@ func (s *Service) Me(ctx context.Context, id string) (Developer, error) {
 }
 
 func toDeveloper(d repository.Developer) Developer {
-	return Developer{ID: d.ID, Email: d.Email, Name: d.Name, CreatedAt: d.CreatedAt}
+	return Developer{
+		ID: d.ID, Email: d.Email, Name: d.Name, CreatedAt: d.CreatedAt,
+		Status: d.Status, StatusReason: d.StatusReason,
+	}
 }
 
 func normalizeEmail(email string) string {

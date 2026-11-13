@@ -1,0 +1,85 @@
+# The OpenTelemetry Collector that sends everything this cluster produces to Datadog.
+# Its own Helm release, not part of the clan chart, so deploy.sh and the production release
+# are untouched by it. Install and upgrade it by hand from the server (see README.md):
+#   helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
+#     -n datadog -f deploy/otel/values.yaml
+#
+# Why a Collector and not the Datadog Agent: our services speak plain OTLP and contain no
+# Datadog code, so another backend later means changing the exporter below, nothing else.
+#
+# Namespace "datadog" because that is where the API key secret lives, and a pod can only
+# read secrets from its own namespace:
+#   kubectl -n datadog create secret generic datadog-secret --from-file=api-key=/dev/stdin
+
+# One Collector per node, next to the pods whose logs it reads. The cluster has one node.
+mode: daemonset
+
+image:
+  # The datadog exporter is only in the contrib distribution. It is multi-arch, so it runs
+  # on the ARM server.
+  repository: otel/opentelemetry-collector-contrib
+
+# The presets add the receivers, the volume mounts and the RBAC each of these needs.
+# clusterMetrics and kubernetesEvents are left out on purpose: they need mode: deployment,
+# so they would be a second release.
+presets:
+  hostMetrics: { enabled: true }          # the node: cpu, memory, disk, filesystem, network
+  kubeletMetrics: { enabled: true }       # per pod and per container
+  kubernetesAttributes: { enabled: true } # pod, namespace and node names on every signal
+  logsCollection:                         # every container's stdout from /var/log/pods
+    enabled: true
+    includeCollectorLogs: false           # otherwise the Collector logs its own logging
+
+extraEnvs:
+  - name: DD_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: datadog-secret
+        key: api-key
+
+# The node has 2 OCPU and 12 GB and already runs Postgres, RabbitMQ, the three Go services
+# and Studio, so the Collector is given a ceiling rather than the chart's defaults.
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    memory: 512Mi
+
+config:
+  exporters:
+    datadog:
+      api:
+        site: datadoghq.com
+        key: ${env:DD_API_KEY}
+
+  processors:
+    # First in every pipeline: it drops data instead of letting the Collector be killed
+    # for using too much memory.
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 80
+      spike_limit_percentage: 20
+    # Required, not optional: Datadog refuses payloads that are too large (413), and one
+    # request per span would be slow and expensive.
+    batch:
+      send_batch_size: 100
+      send_batch_max_size: 1000
+      timeout: 10s
+
+  service:
+    pipelines:
+      # otlp is empty until the services are instrumented (OTEL_EXPORTER_OTLP_ENDPOINT).
+      # The metrics and the logs below need no change in any service.
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, batch]
+        exporters: [datadog]
+      metrics:
+        receivers: [otlp, hostmetrics, kubeletstats]
+        processors: [memory_limiter, k8sattributes, batch]
+        exporters: [datadog]
+      logs:
+        receivers: [otlp, filelog]
+        processors: [memory_limiter, k8sattributes, batch]
+        exporters: [datadog]

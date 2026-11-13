@@ -25,13 +25,17 @@ type Service interface {
 	ListDevelopers(ctx context.Context, in service.ListDevelopersInput) (service.DeveloperPage, error)
 	AdminDeveloper(ctx context.Context, developerID string) (service.AdminDeveloper, error)
 	AuditLog(ctx context.Context, in service.AuditLogInput) (service.AuditPage, error)
+	SetDeveloperStatus(ctx context.Context, actor, developerID string, in service.SetStatusInput) (service.AdminDeveloper, error)
+	SetGameStatus(ctx context.Context, actor, gameID string, in service.SetStatusInput) (service.AdminGame, error)
 	Me(ctx context.Context, developerID string) (service.Developer, error)
+	EnsureDeveloperActive(ctx context.Context, developerID string) error
 	RegisterGame(ctx context.Context, developerID string, in service.RegisterGameInput) (service.Game, error)
 	ListGames(ctx context.Context, developerID string) ([]service.Game, error)
 	CreateAPIKey(ctx context.Context, developerID, gameID string) (service.NewAPIKey, error)
 	ListAPIKeys(ctx context.Context, developerID, gameID string) ([]service.APIKey, error)
 	RevokeAPIKey(ctx context.Context, developerID, keyID string) error
 	GameForAPIKey(ctx context.Context, key string) (gameID string, err error)
+	EnsureGameServed(ctx context.Context, gameID string) error
 	IssuePlayerToken(gameID string, in service.PlayerTokenInput) (service.PlayerToken, error)
 	WidgetDraft(ctx context.Context, developerID, gameID string) (service.WidgetDraft, error)
 	SaveWidgetDraft(ctx context.Context, developerID, gameID string, config json.RawMessage) (service.WidgetDraft, error)
@@ -77,7 +81,14 @@ type Route struct {
 // a logged-in developer are wrapped with h.requireDeveloper; the one endpoint a game's own
 // server calls (/players/auth) is wrapped with h.requireAPIKey. For example:
 //
-//	{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
+//	{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.requireWritable(h.registerGame))},
+//
+// Endpoints that change something for a developer (register a game, create an API key, save
+// origins, save a draft, publish, roll back) are wrapped with h.requireWritable inside
+// h.requireDeveloper, so a suspended developer can read everything but change nothing. Revoking an
+// API key is left out on purpose: it only takes access away, and a developer must be able to kill
+// a leaked key. TestWritesRefuseASuspendedDeveloper lists every write route and fails for a new one
+// that is not guarded.
 //
 // Endpoints under /api/v1/admin/ are for the distributor's admin panel. Every one except
 // /admin/login is wrapped with h.requireAdmin, which accepts only an admin token.
@@ -104,19 +115,21 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/admin/me", h.requireAdmin(h.adminMe)},
 		{http.MethodGet, "/api/v1/admin/developers", h.requireAdmin(h.listAdminDevelopers)},
 		{http.MethodGet, "/api/v1/admin/developers/{developerID}", h.requireAdmin(h.getAdminDeveloper)},
+		{http.MethodPut, "/api/v1/admin/developers/{developerID}/status", h.requireAdmin(h.setDeveloperStatus)},
+		{http.MethodPut, "/api/v1/admin/games/{gameID}/status", h.requireAdmin(h.setGameStatus)},
 		{http.MethodGet, "/api/v1/admin/audit-log", h.requireAdmin(h.listAuditLog)},
 		{http.MethodGet, "/api/v1/games", h.requireDeveloper(h.listGames)},
-		{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.registerGame)},
-		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.createAPIKey)},
+		{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.requireWritable(h.registerGame))},
+		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.requireWritable(h.createAPIKey))},
 		{http.MethodGet, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.listAPIKeys)},
 		{http.MethodDelete, "/api/v1/api-keys/{keyID}", h.requireDeveloper(h.revokeAPIKey)},
-		{http.MethodPut, "/api/v1/games/{gameID}/allowed-origins", h.requireDeveloper(h.setAllowedOrigins)},
+		{http.MethodPut, "/api/v1/games/{gameID}/allowed-origins", h.requireDeveloper(h.requireWritable(h.setAllowedOrigins))},
 		{http.MethodGet, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.getWidgetDraft)},
-		{http.MethodPut, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.saveWidgetDraft)},
-		{http.MethodPost, "/api/v1/games/{gameID}/widget/publish", h.requireDeveloper(h.publishWidget)},
+		{http.MethodPut, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.requireWritable(h.saveWidgetDraft))},
+		{http.MethodPost, "/api/v1/games/{gameID}/widget/publish", h.requireDeveloper(h.requireWritable(h.publishWidget))},
 		{http.MethodGet, "/api/v1/games/{gameID}/widget/versions", h.requireDeveloper(h.listWidgetVersions)},
 		{http.MethodGet, "/api/v1/games/{gameID}/widget/versions/{version}", h.requireDeveloper(h.getWidgetVersion)},
-		{http.MethodPost, "/api/v1/games/{gameID}/widget/versions/{version}/rollback", h.requireDeveloper(h.rollbackWidget)},
+		{http.MethodPost, "/api/v1/games/{gameID}/widget/versions/{version}/rollback", h.requireDeveloper(h.requireWritable(h.rollbackWidget))},
 		{http.MethodGet, "/api/v1/public/games/{gameID}/widget-config", h.getPublicWidgetConfig},
 		{http.MethodPost, "/api/v1/players/auth", h.requireAPIKey(h.authPlayer)},
 		{http.MethodGet, "/internal/v1/games/{gameID}/config", h.internal(h.getInternalGameConfig)},

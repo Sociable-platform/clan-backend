@@ -18,7 +18,7 @@ type Service interface {
 	Ready(ctx context.Context) error
 	EnsurePlayer(ctx context.Context, gameID, externalID, displayName string) (service.Player, error)
 	ListClans(ctx context.Context, gameID string, in service.ListClansInput) ([]service.Clan, error)
-	CreateClan(ctx context.Context, gameID, externalID, displayName, name string) (service.Clan, error)
+	CreateClan(ctx context.Context, gameID, externalID, displayName string, in service.NewClan) (service.Clan, error)
 	JoinClan(ctx context.Context, gameID, externalID, displayName, clanID string) (service.Clan, error)
 	LeaveClan(ctx context.Context, gameID, externalID, clanID string) error
 	KickMember(ctx context.Context, gameID, externalID, clanID, playerID string) error

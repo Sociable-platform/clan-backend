@@ -15,8 +15,16 @@ import (
 // clan may have is not stored per clan: it is the game's rule (clan.maxMembers in its
 // published config), which the service passes in where it matters.
 type Clan struct {
-	ID          string
-	Name        string
+	ID   string
+	Name string
+	// Description is free text the owner wrote about the clan; empty when they wrote none.
+	Description string
+	// Badge is the id of a badge from the game's widget config, never a picture; empty
+	// when no badge was chosen.
+	Badge string
+	// Tag is the clan's short tag, shown above its members' names; empty when the game
+	// does not use tags.
+	Tag         string
 	MemberCount int
 }
 
@@ -51,7 +59,7 @@ func (r *Repository) ListClans(ctx context.Context, gameID, query string, opts L
 		order = orderClansByMembers
 	}
 	rows, err := r.pool.Query(ctx,
-		`select id::text, name, member_count
+		`select id::text, name, description, badge, tag, member_count
 		 from clans
 		 where game_id = $1
 		   and ($2 = '' or strpos(lower(name), lower($2)) > 0)
@@ -68,7 +76,7 @@ func (r *Repository) ListClans(ctx context.Context, gameID, query string, opts L
 	clans := make([]Clan, 0)
 	for rows.Next() {
 		var c Clan
-		if err := rows.Scan(&c.ID, &c.Name, &c.MemberCount); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Badge, &c.Tag, &c.MemberCount); err != nil {
 			return nil, fmt.Errorf("list clans: %w", err)
 		}
 		clans = append(clans, c)
@@ -93,12 +101,21 @@ const (
 	uniqueClanPerPlayer = "clan_members_game_id_player_id_key" // 000003: one clan per player per game
 )
 
+// NewClan is what a player chose for the clan they are creating. The service has already
+// cleaned and checked all three; Description and Badge may be empty.
+type NewClan struct {
+	Name        string
+	Description string
+	Badge       string
+	Tag         string
+}
+
 // CreateClan creates a clan in gameID owned by ownerID (social's player ID) and adds the
 // owner as its first member, in one transaction: either both rows are saved or neither is.
 //
 // It returns ErrAlreadyInClan if the owner is already in a clan of this game, and
 // ErrClanNameTaken if the game already has a clan with this name.
-func (r *Repository) CreateClan(ctx context.Context, gameID, ownerID, name string) (Clan, error) {
+func (r *Repository) CreateClan(ctx context.Context, gameID, ownerID string, in NewClan) (Clan, error) {
 	if r.pool == nil {
 		return Clan{}, ErrNoDatabase
 	}
@@ -122,12 +139,12 @@ func (r *Repository) CreateClan(ctx context.Context, gameID, ownerID, name strin
 		return Clan{}, ErrAlreadyInClan
 	}
 
-	c := Clan{Name: name}
+	c := Clan{Name: in.Name, Description: in.Description, Badge: in.Badge, Tag: in.Tag}
 	err = tx.QueryRow(ctx,
-		`insert into clans (game_id, name, owner_id)
-		 values ($1, $2, $3)
+		`insert into clans (game_id, name, description, badge, tag, owner_id)
+		 values ($1, $2, $3, $4, $5, $6)
 		 returning id::text, member_count`,
-		gameID, name, ownerID).Scan(&c.ID, &c.MemberCount)
+		gameID, in.Name, in.Description, in.Badge, in.Tag, ownerID).Scan(&c.ID, &c.MemberCount)
 	if err != nil {
 		return Clan{}, createClanError(err)
 	}
@@ -191,11 +208,11 @@ func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID stri
 	// 1. Lock the clan. "and game_id = $2" makes another game's clan look like it does not exist.
 	c := Clan{ID: clanID}
 	err = tx.QueryRow(ctx,
-		`select name, member_count
+		`select name, description, badge, tag, member_count
 		 from clans
 		 where id = $1 and game_id = $2
 		 for update`,
-		clanID, gameID).Scan(&c.Name, &c.MemberCount)
+		clanID, gameID).Scan(&c.Name, &c.Description, &c.Badge, &c.Tag, &c.MemberCount)
 	if err != nil {
 		return Clan{}, joinClanError(err)
 	}
@@ -272,13 +289,14 @@ func (r *Repository) MyClan(ctx context.Context, gameID, externalID string) (Pla
 	}
 	var pc PlayerClan
 	err := r.pool.QueryRow(ctx,
-		`select c.id::text, c.name, c.member_count, m.role
+		`select c.id::text, c.name, c.description, c.badge, c.tag, c.member_count, m.role
 		 from players p
 		 join clan_members m on m.player_id = p.id and m.game_id = p.game_id
 		 join clans c        on c.id = m.clan_id
 		 where p.game_id = $1 and p.external_id = $2`,
 		gameID, externalID,
-	).Scan(&pc.Clan.ID, &pc.Clan.Name, &pc.Clan.MemberCount, &pc.Role)
+	).Scan(&pc.Clan.ID, &pc.Clan.Name, &pc.Clan.Description, &pc.Clan.Badge, &pc.Clan.Tag,
+		&pc.Clan.MemberCount, &pc.Role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PlayerClan{}, ErrNotInClan
 	}
@@ -714,9 +732,9 @@ func (r *Repository) RenameClan(ctx context.Context, gameID, clanID, ownerExtern
 	var res RenameResult
 	c := &res.Clan
 	err = tx.QueryRow(ctx,
-		`select id::text, name, member_count from clans
+		`select id::text, name, description, badge, tag, member_count from clans
 		 where id = $1 and game_id = $2 for update`,
-		clanID, gameID).Scan(&c.ID, &c.Name, &c.MemberCount)
+		clanID, gameID).Scan(&c.ID, &c.Name, &c.Description, &c.Badge, &c.Tag, &c.MemberCount)
 	if err != nil {
 		return RenameResult{}, leaveClanError(err)
 	}

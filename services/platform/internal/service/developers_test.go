@@ -30,11 +30,23 @@ type fakeStore struct {
 	auditRows   []repository.AuditEntry
 	devFilter   repository.DeveloperFilter
 	auditFilter repository.AuditFilter
-	games       []repository.Game
-	keys        []storedKey
-	drafts      map[string]repository.WidgetDraft     // by game ID
-	versions    map[string][]repository.WidgetVersion // by game ID, oldest first
-	err         error                                 // returned by every call when set
+
+	// What the status changes return, and the call they were last made with.
+	statusDev    repository.AdminDeveloper
+	statusGame   repository.AdminGame
+	statusCalls  int
+	statusTarget string
+	statusChange repository.StatusChange
+
+	// IDs of suspended games and developers, for GameAccessOf.
+	suspendedGames map[string]bool
+	suspendedDevs  map[string]bool
+
+	games    []repository.Game
+	keys     []storedKey
+	drafts   map[string]repository.WidgetDraft     // by game ID
+	versions map[string][]repository.WidgetVersion // by game ID, oldest first
+	err      error                                 // returned by every call when set
 }
 
 func newFakeStore() *fakeStore {
@@ -50,7 +62,7 @@ func (f *fakeStore) CreateDeveloper(_ context.Context, email, hash, name string)
 	if _, ok := f.byEmail[email]; ok {
 		return repository.Developer{}, repository.ErrEmailTaken
 	}
-	d := repository.Developer{ID: "dev-" + strconv.Itoa(len(f.byEmail)+1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now()}
+	d := repository.Developer{ID: "dev-" + strconv.Itoa(len(f.byEmail)+1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now(), Status: "active"}
 	f.byEmail[email] = d
 	return d, nil
 }
@@ -63,7 +75,7 @@ func (f *fakeStore) DeveloperByEmail(_ context.Context, email string) (repositor
 	if !ok {
 		return repository.Developer{}, repository.ErrNotFound
 	}
-	return d, nil
+	return f.withStatus(d), nil
 }
 
 func (f *fakeStore) DeveloperByID(_ context.Context, id string) (repository.Developer, error) {
@@ -72,10 +84,24 @@ func (f *fakeStore) DeveloperByID(_ context.Context, id string) (repository.Deve
 	}
 	for _, d := range f.byEmail {
 		if d.ID == id {
-			return d, nil
+			return f.withStatus(d), nil
 		}
 	}
 	return repository.Developer{}, repository.ErrNotFound
+}
+
+// withStatus applies the suspendedDevs set to d, like the real table's status columns.
+func (f *fakeStore) withStatus(d repository.Developer) repository.Developer {
+	d.Status, d.StatusReason = "active", ""
+	if f.suspendedDevs[d.ID] {
+		d.Status, d.StatusReason = "suspended", "non_payment"
+	}
+	return d
+}
+
+func (f *fakeStore) DeveloperStatusOf(_ context.Context, id string) (string, error) {
+	d, err := f.DeveloperByID(context.Background(), id)
+	return d.Status, err
 }
 
 func newTestService(t *testing.T) (*Service, *fakeStore, ed25519.PrivateKey) {

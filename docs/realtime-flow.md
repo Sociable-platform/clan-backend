@@ -15,7 +15,7 @@ Names come from the code. If you change a flow, change the diagram in the same m
 | 7 Request cancelled or declined, friend removed | the other friend events |
 | 8 Conversation lifecycle | a DM as a state machine |
 | 9 Frame and event envelope | the classes behind every message |
-| 10 Clan rooms (planned) | TEAM-147, **not built yet** |
+| 10 Clan rooms | a clan's chat room made from Social's clan events |
 | 11 Live re-skin | a published config reaches every open connection of the game (TEAM-148) |
 | 12 Presence | who is online, the 10 second grace period, and what friends are told (TEAM-149) |
 
@@ -403,9 +403,9 @@ classDiagram
 
 Frames the client sends have no envelope: `{ "type", "id", "data" }`.
 
-## 10 Clan rooms (planned, TEAM-147, not built yet)
+## 10 Clan rooms
 
-This is the intended flow. The frames are in [`event-messages.md`](event-messages.md) under "WebSocket frames". Today Realtime acknowledges and ignores the `clan.*` events.
+Realtime builds a clan's chat room from Social's clan events (`services/realtime/internal/service/clans.go`). The frames are in [`event-messages.md`](event-messages.md) under "WebSocket frames". A joiner gets the whole history, also what was written while they were away; `clan.renamed` and `clan.member_role_changed` need nothing from Realtime.
 
 ```mermaid
 sequenceDiagram
@@ -430,7 +430,7 @@ sequenceDiagram
     Social-)MQ: clan.member_joined
     MQ->>RT: deliver
     RT->>DB: add the member
-    RT->>Hub: conversation.added for the joiner, notification clan_joined for the clan
+    RT->>Hub: conversation.added for the joiner, notification clan_joined for the other members
     Hub-->>J: the clan room with its history
     Hub-->>M: clan_joined
 

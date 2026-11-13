@@ -6,7 +6,7 @@ Backend for the clan platform: three Go services in one repository (realtime is 
 |---|---|---|---|
 | `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
 | `services/social` | Players, clans, clan members | 8082 | `social` |
-| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, friend events from RabbitMQ that create and remove DM conversations, sending messages, and presence with a 10 s offline grace) | 8083 | `realtime` |
+| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, friend events from RabbitMQ that create and remove DM conversations, clan events that create and remove clan chat rooms, sending messages, and presence with a 10 s offline grace) | 8083 | `realtime` |
 
 ## Layout
 
@@ -108,6 +108,11 @@ curl -s -X POST http://localhost:8081/api/v1/players/auth \
 
 A missing, wrong or revoked key gets `401 invalid_api_key`. The token's game is always the key's game.
 
+A valid key of a game that is not **effectively active** gets `403` and no token: `account_suspended` when the developer is suspended
+(all their games are), `game_suspended` when only that game is. A game is served only when the game and its developer are both `active`
+(see the admin endpoints below). The check is on the game, so every key of it is refused, old or new, and all work again at once
+when the admin resumes it. The key is checked first: a wrong key still gets 401, so a stranger learns nothing about a game.
+
 ### Test tokens without platform
 
 To test social alone, make a token with the same private key:
@@ -136,6 +141,10 @@ printf '%s\n' 'a long password' | go run ./tools/createadmin -email ops@example.
 
 Then `POST /api/v1/admin/login` returns `{ token, expiresIn }`. A disabled admin (`admins.disabled_at` set) cannot log in
 and its tokens stop working at once, not when they expire.
+
+**Postman collection.** `postman/platform-admin-suspension.postman_collection.json` tests the whole admin and suspension feature against a running platform (124 requests, 242 checks):
+admin login and token types, the developer list, detail and audit log, suspending and resuming a game and a developer, the 403s on `POST /players/auth` and the public widget config, and the read-only dashboard.
+Create an admin as above, set the collection variables `baseUrl`, `adminEmail` and `adminPassword`, then run the whole collection in order in the Runner; it makes its own developers and games, so it can be re-run.
 
 ### Widget config validation
 
@@ -281,7 +290,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
 `name` the display name at the time of the event.
 
-**Realtime reads six of them** (the others that reach `realtime.events` are acknowledged and ignored until their tasks exist):
+**What realtime does with the friend, player and clan events** (`player.blocked` and `player.unblocked` are kept as a copy of the blocks, see `docs/events.md`; `clan.renamed` and `clan.member_role_changed` are acknowledged and need nothing, because realtime stores no clan names or roles; any other type is acknowledged and ignored):
 
 | Event | Realtime does |
 |---|---|
@@ -291,6 +300,10 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `friend.accepted` | creates the DM conversation of the two `players` and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both. Exactly two players are required. The notification carries `requestId` (`null` when the event has no `request_id`). |
 | `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both, with no notification. Exactly two `players` are required and `removed_by` must be one of them. |
 | `player.renamed` | stores the new name with the player's memberships in that game. No frame is sent; messages keep the name their sender had when writing them. |
+| `clan.created` | creates the clan's chat room (a conversation of `kind` `clan` with the clan's `clanId`) with the owner (`player`) as its first member, and sends `conversation.added` to the owner. |
+| `clan.member_joined` | adds the `player` to the clan's room (and creates the room if `clan.created` was never seen), sends `conversation.added` with the room to the player and a `clan_joined` notification to the other members. The room comes with its **whole history**, also the messages written before the player joined or while they were away; their unread count starts from the start of the history. |
+| `clan.member_left` | removes the `player` from the room (the messages stay for the others, and for the player if they join again) and sends `conversation.removed` to that player; when `reason` is `kicked`, also a `clan_kicked` notification. The members who stay are not told. |
+| `clan.disbanded` | deletes the room with its members and messages, and sends `conversation.removed` and a `clan_disbanded` notification to everybody who was still in it (Social publishes only this event when the last member leaves). |
 
 A field Realtime needs that is missing or malformed makes it drop that event (logged as `dropping unusable event`).
 So **Social and Realtime must keep these field names in step**; `TestDispatchReadsEventsAsSocialPublishesThem` in
@@ -446,7 +459,11 @@ It needs no database or broker: the unit tests use fakes, and the tests that nee
 the developer registers, creates a game and an API key and publishes config version 1; two players get tokens and
 connect, and each gets `hello`; player A asks B to be friends and B accepts (both get `conversation.added`); A sends a
 direct message (A gets `message.ack`, both get `message.new`); the developer publishes config version 2 (both get
-`config.updated`). Every frame must arrive within 2 seconds of the action that causes it.
+`config.updated`). Then clan chat: A creates a clan and gets its room; B joins (B gets the room, A gets `clan_joined`);
+A writes in the room (both get `message.new`); B leaves (`conversation.removed`) and does not get the next message; B
+joins again and gets the room with the whole history, the missed message included; A kicks B (`conversation.removed`
+and `clan_kicked`); A, the last member, leaves (`conversation.removed` and `clan_disbanded`). Every frame must arrive
+within 2 seconds of the action that causes it. The published configs turn `clan.enabled` and `chat.clanChat` on.
 
 ```bash
 docker compose up -d --build
@@ -494,17 +511,25 @@ go test -run TestPublishToRealBroker -v ./pkg/events/
 
 ## Endpoints so far
 
+**Suspended developers are read-only.** While an admin has the developer's account suspended, login and every `GET` still work (so the dashboard can show why),
+but everything that changes data answers `403 account_suspended` before the body is read: register a game, create an API key, save allowed origins,
+save a widget draft, publish and roll back. Revoking an API key stays allowed (it only takes access away, so a leaked key can still be killed).
+Resuming lets writes through again at once. The check is `requireWritable` in `internal/handler`; `TestWritesRefuseASuspendedDeveloper` fails for a new write route that does not use it.
+Only the developer's own switch counts here: a game suspended on its own does not stop its developer from editing.
+
 | Method | Path | Answer |
 |---|---|---|
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
 | POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
 | POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
-| GET | `/api/v1/developers/me` | 200 with the developer; 401 unless `Authorization: Bearer <developer token>` |
+| GET | `/api/v1/developers/me` | 200 with the developer, including `status` (`active` / `suspended`) and `statusReason` (`non_payment` / `abuse` / `other`, else `null`) so the dashboard can explain a suspension; never the admin's internal note. 401 unless `Authorization: Bearer <developer token>` |
 | POST | `/api/v1/admin/login` | 200 `{ token, expiresIn }` with an **admin** token; 401 `invalid_credentials` for an unknown email, a wrong password and a disabled admin alike |
 | GET | `/api/v1/admin/me` | 200 with the admin; 401 unless `Authorization: Bearer <admin token>` of an admin who is not disabled (developer and player tokens get 401) |
 | GET | `/api/v1/admin/developers` | **Admin token only.** 200 `{ developers: [{ id, email, name, status, gameCount, createdAt }], nextCursor }`, newest first. Query: `q` (part of email or name), `status` (`active` / `suspended`), `limit` (1 to 100, default 25), `cursor` (the previous `nextCursor`; `null` on the last page). 400 `invalid_query` / `invalid_status` / `invalid_limit` / `invalid_cursor` |
 | GET | `/api/v1/admin/developers/{developerID}` | **Admin token only.** 200 with the developer (`status`, `statusReason`, `statusChangedAt`) and all their `games`, each with the same three fields. 404 `developer_not_found` (also for a malformed ID) |
+| PUT | `/api/v1/admin/developers/{developerID}/status` | **Admin token only.** Body `{ status, reason, note }`: `status` is `active` or `suspended`; `reason` (`non_payment`, `abuse`, `other`) is **required when suspending** (400 `reason_required`; `invalid_reason`, `invalid_status`, `invalid_note` for bad values); `note` (up to 1000 characters) is internal and lives in the audit log only. 200 with the developer and their games, as `GET .../developers/{developerID}`. Suspending a developer turns off all their games without changing the game rows. The status and its audit row are written in one transaction. Setting the status the developer already has changes nothing and writes no audit row. Resuming needs no reason (the audit row then records the reason of the suspension it ends). 404 `developer_not_found` |
+| PUT | `/api/v1/admin/games/{gameID}/status` | **Admin token only.** Same body and rules for one game; 200 with the game (`status`, `statusReason`, `statusChangedAt`). 404 `game_not_found` |
 | GET | `/api/v1/admin/audit-log` | **Admin token only.** 200 `{ entries: [...], nextCursor }`, newest first; `targetId` limits it to one developer or game; `limit` and `cursor` as above. `note` is internal and is never shown to developers. 400 `invalid_target_id` / `invalid_limit` / `invalid_cursor` |
 | GET | `/api/v1/games` | 200 `{ games: [...] }` with only the logged-in developer's games, newest first (each with its `allowedOrigins`); 401 without a developer token |
 | POST | `/api/v1/games` | 201 with the registered game (registers an existing game, never creates one); 400 `invalid_name` / `invalid_description`; 401 |
@@ -518,7 +543,7 @@ go test -run TestPublishToRealBroker -v ./pkg/events/
 | GET | `/api/v1/games/{gameID}/widget/versions` | 200 `{ versions: [...] }`, newest first, without configs; an empty list if never published. 404 unless you own the game |
 | GET | `/api/v1/games/{gameID}/widget/versions/{version}` | 200 with that version and its `config`. 404 `widget_version_not_found` (also for a number that is not a positive whole number) |
 | POST | `/api/v1/games/{gameID}/widget/versions/{version}/rollback` | 201 with a **new** version that has the old version's config; nothing is deleted and the draft is untouched. 404 `widget_version_not_found` |
-| GET | `/api/v1/public/games/{gameID}/widget-config` | **No login, open to every website.** 200 `{ version, config }`: the latest **published** version (never a draft), with a strong `ETag` (`"v3"`) and `Cache-Control: public, max-age=60`. Send `If-None-Match` to get 304. 404 `widget_not_published` (also for an unknown game ID). Not rate-limited in the service: put a CDN or proxy limit in front of `/api/v1/public/` |
+| GET | `/api/v1/public/games/{gameID}/widget-config` | **No login, open to every website.** 200 `{ version, config }`: the latest **published** version (never a draft), with a strong `ETag` (`"v3"`) and `Cache-Control: public, max-age=60`. Send `If-None-Match` to get 304. 404 `widget_not_published` (also for an unknown game ID). **403 `game_suspended`** (with `Cache-Control: no-store`) when the game or its developer is suspended, whichever it is, so players never see a billing message; the SDK then removes the panel. Not rate-limited in the service: put a CDN or proxy limit in front of `/api/v1/public/` |
 | GET | `/internal/v1/games/{gameID}/config` | **For other services, not browsers.** Needs `X-Internal-Token: <PLATFORM_INTERNAL_TOKEN>` (401 `invalid_internal_token`; 404 `not_found` while the secret is not set). 200 `{ gameId, version, config, allowedOrigins }`: the newest **published** config and the game's allowed origins, never cached. A game never published has `version: 0` and `config: null` but still its origins. 404 `game_not_found` for an unknown game |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |
@@ -652,6 +677,14 @@ Errors come back as `error` frames with `replyTo` and nothing is stored or sent:
 **Message rules.** `message.send` is checked in this order, and the first failure answers (full table in `openapi/realtime-ws.md`): rate limit of the connection (5 in 5 s; three refused in a row close it with `1008`), not empty, member, the game's chat switches (`chat.enabled`, `directMessages`, `clanChat`), not blocked (DMs), `chat.maxMessageLength` in characters, slow mode (`chat.slowModeSeconds` per player across all tabs), then the profanity filter (`chat.profanityFilter`, whole words, replaced with `***`; the list is `services/realtime/internal/profanity/words.txt`). The game's rules come from its published config (kept in memory, updated on `config.published`); a game without a published config has the permissive defaults. Blocks come from the `player.blocked` and `player.unblocked` events into Realtime's own `blocks` table (Social publishes them on block and unblock).
 Presence: a player is online while one of their WebSockets is open. When the last one closes, realtime waits 10 s; if the player did not connect again, the friends who are connected get `presence.update { playerId, status: "offline" }`, so a page refresh never shows as offline. Connecting sends friends nothing (they read `hello.onlineFriends`), and a new friendship between two online players gives each a `presence.update` `online` for the other. The 10 s timers are in memory of the one process: if realtime restarts during them, nobody is told that player went offline.
 Slow mode and the rate limit live in the memory of the one Realtime process (a restart forgets them).
+
+**Clan chat.** Realtime makes each clan's chat room from Social's clan events, so creating or joining a clan with a player token
+(`POST http://localhost:8082/api/v1/clans` with `{"name":"Wolves"}`, `POST http://localhost:8082/api/v1/clans/<clan id>/join`) is all it
+takes: that player's tab gets `conversation.added` with `kind: "clan"` and the `clanId`, and the members already in the clan get a
+`clan_joined` notification. Send `message.send` with the room's conversation id exactly as in a DM; every member gets `message.new`.
+Blocks do not apply in a clan room, and `chat.clanChat: false` in the published config answers `feature_disabled`. Leaving or being
+kicked gives `conversation.removed` (and `clan_kicked`); joining again brings the room back with its whole history. In a clan room,
+`online` in `members` is the state when the room was sent; live `presence.update` frames go to friends only.
 
 **Postman collection and flow diagrams.** `postman/realtime-chat.postman_collection.json` runs the whole flow against a local stack: it makes its own developer, game, three players and a friendship, then checks the conversation, the history, paging, unread and the error cases (103 checks). The two things that need a WebSocket (sending messages and `conversation.read`) are two manual steps that show the exact frames to send in the Visualize tab; the collection description says how to run it. Folder 9 (TEAM-150) tries every `message.send` rule: it sets the game's rules through Platform (draft and Publish), puts `player.blocked` / `player.unblocked` on RabbitMQ (set the collection variables `rabbitUser` and `rabbitPassword`), and its STEP requests show the frames that give `rate_limited` (and the `1008` close), `feature_disabled`, `blocked`, `too_long`, `slow_mode`, `empty` and `not_member`. How everything flows, as UML diagrams: [`docs/realtime-flow.md`](docs/realtime-flow.md).
 

@@ -414,6 +414,9 @@ paths:
               $ref: "#/components/schemas/CreateClanRequest"
             example:
               name: Wolves
+              description: Casual farmers. Everyone welcome.
+              badge: wolf
+              tag: WOLF
       responses:
         "201":
           description: The new clan.
@@ -424,10 +427,18 @@ paths:
               example:
                 id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
                 name: Wolves
+                description: Casual farmers. Everyone welcome.
+                badge: wolf
+                tag: WOLF
                 memberCount: 1
                 maxMembers: 10
         "400":
-          description: The body is not valid JSON (invalid_json), or the name is not 3 to 20 visible characters (invalid_clan_name).
+          description: |
+            The body is not valid JSON (invalid_json), the name is not 3 to 20 visible
+            characters (invalid_clan_name), the description is too long or has invisible
+            characters (invalid_clan_description), the badge id has a character it cannot
+            have (invalid_clan_badge), or the tag is not 1 to 8 letters or digits
+            (invalid_clan_tag).
           content:
             application/json:
               schema:
@@ -480,7 +491,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateClanRequest"
+              $ref: "#/components/schemas/RenameClanRequest"
             example:
               name: Grey Wolves
       responses:
@@ -1379,6 +1390,27 @@ components:
           format: uuid
         name:
           type: string
+        description:
+          type: string
+          maxLength: 300
+          description: |
+            What the clan says about itself. Left out when the clan has none, so a client
+            reads a missing `description` as an empty one.
+        badge:
+          type: string
+          maxLength: 64
+          description: |
+            The id of a badge from the game's published widget config, such as `wolf`. Social
+            stores only the id: the picture belongs to the game, which lists its badges in
+            Studio and ships the same assets with the game itself. Left out when the clan
+            has no badge.
+        tag:
+          type: string
+          maxLength: 8
+          description: |
+            The clan's short tag, shown above its members' names, such as `WOLF`. Left out
+            when the clan has none, which is every clan of a game whose config has
+            `clan.tags: false`.
         memberCount:
           type: integer
           description: How many players are in the clan now.
@@ -1399,6 +1431,39 @@ components:
           minLength: 3
           maxLength: 20
           description: Clan name, 3 to 20 characters after trimming.
+        description:
+          type: string
+          maxLength: 300
+          description: |
+            Optional. What the clan is about, at most 300 characters after trimming. Line
+            breaks are kept; other invisible characters give 400 invalid_clan_description.
+        badge:
+          type: string
+          maxLength: 64
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          description: |
+            Optional. The id of a badge from the game's widget config, such as `wolf`. It is
+            not looked up in that config: Studio decides which badges a game has and the clan
+            form offers only those, so a game whose config cannot be read at this moment can
+            still create clans. Social never stores the picture.
+        tag:
+          type: string
+          maxLength: 8
+          pattern: "^[A-Za-z0-9]+$"
+          description: |
+            Optional. The clan's short tag, letters and digits only. The clan form allows 4
+            characters and writes them in capitals; the contract allows up to 8 so the form
+            can be widened later. Sent empty by a game whose config has `clan.tags: false`.
+    RenameClanRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 20
+          description: The clan's new name, 3 to 20 characters after trimming.
     MyClan:
       type: object
       required: [clan, role]
