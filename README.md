@@ -86,8 +86,8 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `PLATFORM_INTERNAL_TOKEN` | none | Shared secret of platform's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops platform at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
 | `SOCIAL_INTERNAL_TOKEN` | none | Shared secret of social's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops social at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
-| `SOCIAL_PLATFORM_URL` | none (docker compose: `http://platform:8081`) | Where social reads each game's clan rules: `clan.maxMembers` from the game's published config (`GET /api/v1/public/games/{gameID}/widget-config`). Empty: every game gets 10 members. |
-| `SOCIAL_CONFIG_CACHE_TTL` | `30s` | How long social keeps a game's clan rules. A new limit published in Studio applies within this time. If platform cannot be reached, the last known rules (or 10) are used and a warning is logged; requests never fail because of it. |
+| `SOCIAL_PLATFORM_URL` | none (docker compose: `http://platform:8081`) | Where social reads each game's clan rules: `clan.maxMembers` from the game's published config (`GET /api/v1/public/games/{gameID}/widget-config`), and whether the game is suspended (the same call answers 403 `game_suspended`). Empty: every game gets 10 members and none is ever refused as suspended. |
+| `SOCIAL_CONFIG_CACHE_TTL` | `30s` | How long social keeps a game's clan rules **and its suspended or active status**. A new limit published in Studio, a suspension and a resume all apply within this time. If platform cannot be reached, the last known rules and status (or 10 members, not suspended) are used and a warning is logged; requests never fail because of it. |
 | `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
 | `REALTIME_SOCIAL_URL` | `http://localhost:8082` | Where realtime reaches the social service to learn each connecting player's own ID. Docker Compose sets it to `http://social:8082`. |
 | `REALTIME_BACKFILL` | `false` | `true` makes realtime read every friendship from social's `/internal/v1/friendships` once at startup, before it reads events, and store the DM conversation of each pair (see "Realtime backfill"). Needs `REALTIME_INTERNAL_TOKEN`; without it realtime stops at startup. Anything but a boolean is an error. |
@@ -553,6 +553,13 @@ Only the developer's own switch counts here: a game suspended on its own does no
 
 Every `/api/v1/` route needs `Authorization: Bearer <player token>`. The game and the player
 always come from the token, never from the URL or the body.
+
+**Suspended games are refused.** While an admin has the game, or its developer, switched off, every `/api/v1/` route answers
+`403 game_suspended` (checked after the token, so an invalid token still gets 401; `/health` and `/ready` are not affected).
+Social learns it from the call it already makes for the clan rules: the platform's public widget config answers 403
+`game_suspended` for a suspended game. The answer is kept for `SOCIAL_CONFIG_CACHE_TTL`, so a suspension and a resume both
+take effect within that time. Nothing is changed or deleted: friends, clans, blocks and players stay as they were. If
+the platform cannot be reached, Social keeps the last status it saw, and a game it has never seen is served (fail open).
 
 | Method | Path | Answer |
 |---|---|---|

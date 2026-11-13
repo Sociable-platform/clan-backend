@@ -3,9 +3,13 @@
 // widget config, read from Platform's public endpoint
 // (GET /api/v1/public/games/{gameID}/widget-config), the one Realtime and the SDK use too.
 //
+// The same answer says whether the game is suspended: Platform refuses that endpoint with 403
+// game_suspended when the game, or its developer, is switched off by an admin. Social turns that
+// into Rules.Suspended and refuses the game's player requests (see package auth).
+//
 // The answer is kept in memory for a short time (TTL), so a busy game costs Platform at most
-// one request per TTL. Platform being down never breaks a request: the last rules seen are
-// used, or the defaults when there are none.
+// one request per TTL. Platform being down never breaks a request: the last rules and the last
+// suspension status seen are used, or the defaults (not suspended) when there are none.
 package gameconfig
 
 import (
@@ -50,6 +54,10 @@ type Rules struct {
 	Roles []Role
 	// Published is false when these are the defaults, not a published config.
 	Published bool
+	// Suspended is true while Platform refuses the game's config with game_suspended, that is
+	// when the game or its developer is switched off. A game Social has never been able to ask
+	// about is not suspended: the check fails open.
+	Suspended bool
 }
 
 // Defaults are the rules of a game that has published no config.
@@ -107,6 +115,13 @@ func NewClient(baseURL string, timeout, ttl time.Duration, log *slog.Logger) (*C
 // errNotPublished is Platform's own answer for a game with no published config.
 var errNotPublished = errors.New("the game has no published config")
 
+// errSuspended is Platform's own answer for a game that is switched off (403 game_suspended).
+var errSuspended = errors.New("the game is suspended")
+
+// codeGameSuspended is the error code Platform uses for both a suspended game and a suspended
+// developer, so players never see whose contract is behind it.
+const codeGameSuspended = "game_suspended"
+
 // Rules returns the game's rules, from memory while they are fresh, else from Platform.
 // If Platform cannot be asked, it keeps the last rules it had for the game (or the defaults)
 // and asks again after ttl, so a Platform that is down is not asked on every request.
@@ -123,13 +138,28 @@ func (c *Client) Rules(ctx context.Context, gameID string) Rules {
 	switch {
 	case errors.Is(err, errNotPublished):
 		rules = Defaults()
+	case errors.Is(err, errSuspended):
+		// Platform gives no config for a suspended game; its requests are refused, so the clan
+		// rules are not needed until it is resumed and the next answer brings them back.
+		rules = Defaults()
+		rules.Suspended = true
 	case err != nil:
 		rules = Defaults()
 		if known {
 			rules = old.rules
 		}
+		if ctx.Err() != nil {
+			// The caller hung up, which says nothing about Platform. Do not remember this guess:
+			// for a game never seen it would serve a suspended game for a whole TTL.
+			return rules
+		}
 		c.log.Warn("cannot read the game's clan rules from platform, using the last known ones",
 			"game_id", gameID, "max_members", rules.MaxMembers, "error", err)
+	}
+	if err == nil || errors.Is(err, errNotPublished) || errors.Is(err, errSuspended) {
+		if rules.Suspended != (known && old.rules.Suspended) {
+			c.log.Info("game suspension changed", "game_id", gameID, "suspended", rules.Suspended)
+		}
 	}
 	c.mu.Lock()
 	c.games[gameID] = cached{rules: rules, expires: now.Add(c.ttl)}
@@ -161,15 +191,17 @@ func (c *Client) fetch(ctx context.Context, gameID string) (Rules, error) {
 	case http.StatusOK:
 	case http.StatusNotFound:
 		// Only Platform's own "not published" answer counts; any other 404 is a wrong address.
-		var e struct {
-			Error struct {
-				Code string `json:"code"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(body, &e) == nil && e.Error.Code == "widget_not_published" {
+		if errorCode(body) == "widget_not_published" {
 			return Rules{}, errNotPublished
 		}
 		return Rules{}, errors.New("platform answered 404")
+	case http.StatusForbidden:
+		// Only Platform's own "suspended" answer counts. Any other 403 is not a verdict on the
+		// game, so it is a failure like a 500: the last known status stays.
+		if errorCode(body) == codeGameSuspended {
+			return Rules{}, errSuspended
+		}
+		return Rules{}, errors.New("platform answered 403")
 	default:
 		return Rules{}, fmt.Errorf("platform answered %d", resp.StatusCode)
 	}
@@ -190,4 +222,17 @@ func (c *Client) fetch(ctx context.Context, gameID string) (Rules, error) {
 		return Rules{}, errors.New("platform answer has no valid clan.maxMembers")
 	}
 	return Rules{MaxMembers: *clan.MaxMembers, Roles: clan.Roles, Published: true}, nil
+}
+
+// errorCode reads error.code from Platform's standard error body; "" when it is not one.
+func errorCode(body []byte) string {
+	var e struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &e) != nil {
+		return ""
+	}
+	return e.Error.Code
 }
