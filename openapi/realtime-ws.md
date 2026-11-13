@@ -4,7 +4,7 @@ The live half of the realtime service: new messages, presence, notifications and
 WebSocket. The two REST reads (conversation list and history) are in [`realtime.yaml`](realtime.yaml).
 
 - **Status:** contract for the SDK. Every frame the server sends has the envelope of a queue event (section 2). Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
-  the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1008`, `1009`, `4001` and `4002`,
+  the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1008`, `1009`, `4001`, `4002` and `4403`,
   the friend frames (`conversation.added`, `conversation.removed`, the `friend_request`, `friend_request_cancelled`, `friend_request_declined` and `friend_accepted` notifications), and
   `message.send` with `message.ack` and `message.new`, and `conversation.read`.
   `message.send` follows the game's message rules (see `message.send` below): a rate limit per connection, the game's chat switches, blocks,
@@ -50,6 +50,11 @@ needs Platform to store and serve it and is added later.
 
 The body is the usual `{ "error": { "code": "...", "message": "..." } }`. After a successful upgrade the server
 sends `hello` (below). Send nothing before you have received it.
+
+**A suspended game.** When an admin has switched the game (or its developer) off, the upgrade still succeeds, because a
+close code can only be sent on a WebSocket, but the server closes the connection at once with code `4403` and reason
+`game_suspended`, and sends **no** `hello`. The same close ends every connection of the game that is open when the game is
+suspended, within seconds. See section 6.
 
 Never log the full URL: the token is in it.
 
@@ -364,6 +369,7 @@ Errors are for client frames only. Problems before the upgrade are plain HTTP er
 | `4001` | Token expired | Get a new token from the game (`getToken()`) and reconnect now |
 | `4002` | Slow client: the server could not send fast enough (64 frames were waiting) | Reconnect with backoff |
 | `4003` | The game's config turned chat off | Do not reconnect. Fetch the public config again later (for example on the next page load) and connect only if chat is on |
+| `4403` | The game is suspended (reason `game_suspended`): an admin switched off the game or its developer. Sent instead of `hello` to a new connection, and to every open connection when the suspension happens. It is not a network drop | Do not reconnect in a loop: remove the panel and stop. Try again on the next page load. If the game was resumed, that connects normally |
 
 The close reason text is for humans only. Backoff starts at 1 s, doubles to at most 30 s, and adds random jitter; reset it
 after a connection stays open for 10 s.

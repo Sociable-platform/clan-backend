@@ -114,13 +114,14 @@ func run() error {
 	log.Info("social", "url", socialURL)
 
 	hdl := handler.New(serviceName, svc, handler.WSOptions{
-		Verifier: auth.NewVerifier(verifyKey, time.Now),
-		Players:  socialClient,
-		Config:   configCache,
-		Presence: tracker,
-		Hub:      connections,
-		Origins:  origins,
-		Shutdown: ctx, // on SIGTERM every open socket is closed with 1001
+		Verifier:   auth.NewVerifier(verifyKey, time.Now),
+		Players:    socialClient,
+		Config:     configCache,
+		Suspension: configCache, // a connection of a suspended game is closed with 4403
+		Presence:   tracker,
+		Hub:        connections,
+		Origins:    origins,
+		Shutdown:   ctx, // on SIGTERM every open socket is closed with 1001
 	}, log)
 	mux := http.NewServeMux()
 	hdl.Register(mux)
@@ -165,7 +166,7 @@ func run() error {
 		log.Warn("not reading events: there is no database to store them in")
 		close(consumerDone)
 	default:
-		cons, err := consumer.New(consumer.Config{URL: brokerURL}, consumer.NewDispatcher(svc, connections, log).WithConfig(configCache, connections), log)
+		cons, err := consumer.New(consumer.Config{URL: brokerURL}, consumer.NewDispatcher(svc, connections, log).WithConfig(configCache, connections).WithGameStatus(configCache, connections), log)
 		if err != nil {
 			return fmt.Errorf("REALTIME_RABBITMQ_URL: %w", err)
 		}

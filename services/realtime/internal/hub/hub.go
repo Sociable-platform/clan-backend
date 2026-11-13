@@ -1,6 +1,10 @@
 package hub
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/coder/websocket"
+)
 
 // Hub knows every open connection, grouped by game and player. A player can have several
 // (one per tab). Games never see each other's connections: every lookup starts with the game ID.
@@ -95,6 +99,29 @@ func (h *Hub) SendToGame(gameID string, frame []byte) {
 	for _, c := range targets {
 		c.Enqueue(frame)
 	}
+}
+
+// CloseGame closes every open connection of the game with the given close code and reason, and
+// returns how many it asked to close. It never blocks, like SendToGame: each connection's own writer
+// sends the close frame. Other games are not touched.
+func (h *Hub) CloseGame(gameID string, code websocket.StatusCode, reason string) int {
+	var targets []*Conn
+	h.mu.RLock()
+	for _, tabs := range h.conns[gameID] {
+		targets = append(targets, tabs...)
+	}
+	h.mu.RUnlock()
+
+	for _, c := range targets {
+		c.Close(code, reason)
+	}
+	return len(targets)
+}
+
+// CloseGameSuspended closes every open connection of a game that an admin suspended, with
+// CloseGameSuspendedCode and the reason GameSuspendedReason, and returns how many there were.
+func (h *Hub) CloseGameSuspended(gameID string) int {
+	return h.CloseGame(gameID, CloseGameSuspendedCode, GameSuspendedReason)
 }
 
 // Online reports whether the player has at least one open connection in the game.

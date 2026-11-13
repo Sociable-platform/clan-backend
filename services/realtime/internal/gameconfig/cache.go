@@ -14,22 +14,33 @@ import (
 // published. The event was ahead of the data, so the caller should try again shortly.
 var ErrStale = errors.New("platform has not got the published version yet")
 
-// Cache holds the newest config version realtime has seen of each game. It is safe for concurrent use.
+// Cache holds the newest config version realtime has seen of each game, and whether the game is
+// suspended. It is safe for concurrent use.
 type Cache struct {
-	src     Source
-	now     func() time.Time
-	failFor time.Duration // how long a failed or empty load is remembered
-	timeout time.Duration // limit of one load, whoever asked
+	src       Source
+	now       func() time.Time
+	failFor   time.Duration // how long a failed or empty load is remembered
+	timeout   time.Duration // limit of one load, whoever asked
+	statusTTL time.Duration // how long a status is trusted before the next new connection checks again
 
 	mu      sync.Mutex
 	configs map[string]Config  // game ID -> newest version seen
 	failed  map[string]failure // game ID -> why the last lazy load failed
+	status  map[string]status  // game ID -> last known suspension status
 	loads   singleflight.Group // one request to Platform at a time per game and kind
 }
 
 type failure struct {
 	at  time.Time
 	err error
+}
+
+// status is what realtime last learned about whether a game is suspended.
+type status struct {
+	suspended bool
+	// until is when a new connection asks Platform again. Events set the status at once; this only
+	// bounds how long a lost event (or a game never asked about) can leave it wrong.
+	until time.Time
 }
 
 // Options tune a Cache. Zero values give the defaults.
@@ -39,6 +50,10 @@ type Options struct {
 	FailFor time.Duration
 	// Timeout limits one load from the source (default 5 s).
 	Timeout time.Duration
+	// StatusTTL is how long a game's suspended or active status is trusted before the next new
+	// connection checks Platform again (default 30 s). Events change it at once; this is the safety
+	// net for an event that never arrived.
+	StatusTTL time.Duration
 	// Now is the clock (default time.Now).
 	Now func() time.Time
 }
@@ -51,12 +66,15 @@ func NewCache(src Source, opts Options) *Cache {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Second
 	}
+	if opts.StatusTTL <= 0 {
+		opts.StatusTTL = 30 * time.Second
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
 	return &Cache{
-		src: src, now: opts.Now, failFor: opts.FailFor, timeout: opts.Timeout,
-		configs: make(map[string]Config), failed: make(map[string]failure),
+		src: src, now: opts.Now, failFor: opts.FailFor, timeout: opts.Timeout, statusTTL: opts.StatusTTL,
+		configs: make(map[string]Config), failed: make(map[string]failure), status: make(map[string]status),
 	}
 }
 
@@ -146,11 +164,86 @@ func (c *Cache) store(gameID string, cfg Config) Config {
 }
 
 // fetchNow asks the source once. The request does not stop when the caller that started it gives up
-// (other callers may be waiting for it), but it has a limit of its own.
+// (other callers may be waiting for it), but it has a limit of its own. Whatever the answer says
+// about the game being suspended is remembered.
 func (c *Cache) fetchNow(ctx context.Context, gameID string) (Config, error) {
 	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.timeout)
 	defer cancel()
-	return c.src.Fetch(lctx, gameID)
+	cfg, err := c.src.Fetch(lctx, gameID)
+	c.learn(gameID, err)
+	return cfg, err
+}
+
+// learn records what an answer of Platform says about the game's status. A config (or "not
+// published") means the game is served, ErrSuspended means it is not. Anything else is trouble and
+// says nothing: the last known status stays, and Platform is not asked again for a few seconds. A
+// game never seen is taken as served, so a Platform that is down never locks players out.
+func (c *Cache) learn(gameID string, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case err == nil || errors.Is(err, ErrNotPublished):
+		c.status[gameID] = status{suspended: false, until: c.now().Add(c.statusTTL)}
+	case errors.Is(err, ErrSuspended):
+		c.status[gameID] = status{suspended: true, until: c.now().Add(c.statusTTL)}
+	case errors.Is(err, ErrInvalidGame):
+		// nothing to remember about a game ID that is not a game
+	default:
+		old := c.status[gameID] // the zero value (served) for a game never seen
+		c.status[gameID] = status{suspended: old.suspended, until: c.now().Add(c.failFor)}
+	}
+}
+
+// Suspended reports whether the game is suspended, for a connection that is about to open. It is
+// answered from memory while the status is fresh (events keep it so); otherwise Platform is asked
+// once, shared by everyone who asks at the same time. It never fails: when Platform cannot be
+// reached or ctx ends first, the last known status is used, or "not suspended" for a game never seen.
+func (c *Cache) Suspended(ctx context.Context, gameID string) bool {
+	c.mu.Lock()
+	st, known := c.status[gameID]
+	c.mu.Unlock()
+	if known && c.now().Before(st.until) {
+		return st.suspended
+	}
+
+	// The answer also tells the config, so keep it: the hello that follows then finds it in memory.
+	cfg, err := c.wait(ctx, c.loads.DoChan("refresh:"+gameID, func() (any, error) {
+		return c.fetchNow(ctx, gameID)
+	}))
+	if err == nil {
+		c.store(gameID, cfg)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.status[gameID].suspended
+}
+
+// SetSuspended records what an event said: the game was just suspended (or resumed). The change is
+// seen by the next connection at once, without asking Platform.
+func (c *Cache) SetSuspended(gameID string, suspended bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.status[gameID] = status{suspended: suspended, until: c.now().Add(c.statusTTL)}
+}
+
+// Resumed is called when the game was resumed. It asks Platform, which has the final say, and keeps
+// the answer: new connections succeed again, and the config version they are told is the newest
+// one (the game may have published while it was suspended, and that event had nothing to refresh).
+// If Platform says the game is still suspended (the event was old), nothing else is needed. An
+// error means Platform could not be asked, so the caller should try the event again; until it
+// works the last known status stays and the safety net of StatusTTL applies.
+func (c *Cache) Resumed(ctx context.Context, gameID string) error {
+	cfg, err := c.wait(ctx, c.loads.DoChan("refresh:"+gameID, func() (any, error) {
+		return c.fetchNow(ctx, gameID)
+	}))
+	switch {
+	case err == nil:
+		c.store(gameID, cfg)
+		return nil
+	case errors.Is(err, ErrNotPublished), errors.Is(err, ErrSuspended):
+		return nil
+	}
+	return fmt.Errorf("fetch config of game %s: %w", gameID, err)
 }
 
 // wait returns the result of a shared load, or an error wrapping ErrUnavailable when ctx ends first.
