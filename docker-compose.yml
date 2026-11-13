@@ -127,7 +127,7 @@ services:
       PLATFORM_ADMIN_TOKEN_TTL: ${PLATFORM_ADMIN_TOKEN_TTL:-1h}
       # Shared secret of platform's /internal endpoints (realtime reads each game's allowed origins there). Empty: switched off.
       PLATFORM_INTERNAL_TOKEN: ${PLATFORM_INTERNAL_TOKEN:-}
-      # Events for the other services: config.published after a publish or rollback (README "RabbitMQ events")
+      # Events for the other services: config.published after a publish or rollback, game.suspended / game.resumed after an admin changes a status (README "RabbitMQ events")
       PLATFORM_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:

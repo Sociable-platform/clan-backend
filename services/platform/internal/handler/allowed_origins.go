@@ -31,11 +31,12 @@ func (h *Handler) setAllowedOrigins(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, toGameResponse(g))
 }
 
-// internalGameConfigResponse is what realtime gets: the game's active config and the origins that
-// may connect. Config is null while the game has no published version (version 0).
+// internalGameConfigResponse is what realtime gets: whether the game is served, its active config
+// and the origins that may connect. Config is null while the game has no published version (version 0).
 type internalGameConfigResponse struct {
 	GameID         string          `json:"gameId"`
 	Version        int             `json:"version"`
+	Status         string          `json:"status"`
 	Config         json.RawMessage `json:"config"`
 	AllowedOrigins []string        `json:"allowedOrigins"`
 }
@@ -54,6 +55,6 @@ func (h *Handler) getInternalGameConfig(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Cache-Control", "no-store") // the caller keeps its own cache and learns of changes from events
 	httpx.WriteJSON(w, http.StatusOK, internalGameConfigResponse{
-		GameID: c.GameID, Version: c.Version, Config: cfg, AllowedOrigins: c.AllowedOrigins,
+		GameID: c.GameID, Version: c.Version, Status: c.Status, Config: cfg, AllowedOrigins: c.AllowedOrigins,
 	})
 }

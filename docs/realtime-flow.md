@@ -62,7 +62,7 @@ flowchart LR
     RT_HTTP -->|"GET /players/me with the player's token"| Social
     Social -->|"publish after commit"| MQ
     Platform -->|"config.published"| MQ
-    MQ -->|"friend.*, player.*, clan.*, config.published"| RT_Consumer
+    MQ -->|"friend.*, player.*, clan.*, config.published, game.*"| RT_Consumer
     RT_Consumer --> RT_Service
     RT_HTTP --> RT_Service
     RT_Service --> RT_Repo

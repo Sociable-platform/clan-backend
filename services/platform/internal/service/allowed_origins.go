@@ -24,6 +24,9 @@ const (
 // must only go to a caller that proved it is another service.
 type InternalGameConfig struct {
 	GameID string
+	// Status is StatusSuspended when the game or its developer is suspended, else StatusActive.
+	// Other services never see the developer: this is the one word they act on.
+	Status string
 	// Version is the newest published version, 0 when the game was never published.
 	Version int
 	// Config is that version's config; nil when Version is 0.
@@ -106,7 +109,8 @@ func normalizeOrigin(raw string) (string, error) {
 // InternalGameConfig returns the published config and the allowed origins of a game, for another
 // service. The game ID is not secret, so an unknown ID and a malformed one both give 404
 // game_not_found. A game that exists but was never published is not an error: its Version is 0,
-// because realtime needs the origins of such a game too.
+// because realtime needs the origins of such a game too. Status is the effective one, the same
+// rule that decides whether a game gets a player token.
 func (s *Service) InternalGameConfig(ctx context.Context, gameID string) (InternalGameConfig, error) {
 	if !uuidPattern.MatchString(gameID) {
 		return InternalGameConfig{}, errGameNotFound()
@@ -119,7 +123,16 @@ func (s *Service) InternalGameConfig(ctx context.Context, gameID string) (Intern
 		return InternalGameConfig{}, fmt.Errorf("find game %s: %w", gameID, err)
 	}
 
-	out := InternalGameConfig{GameID: g.ID, AllowedOrigins: toGame(g).AllowedOrigins}
+	why, err := s.suspension(ctx, gameID)
+	if err != nil {
+		return InternalGameConfig{}, err
+	}
+	status := StatusActive
+	if why != notSuspended {
+		status = StatusSuspended
+	}
+
+	out := InternalGameConfig{GameID: g.ID, Status: status, AllowedOrigins: toGame(g).AllowedOrigins}
 	v, err := s.store.LatestWidgetVersion(ctx, gameID)
 	switch {
 	case errors.Is(err, repository.ErrNotFound):

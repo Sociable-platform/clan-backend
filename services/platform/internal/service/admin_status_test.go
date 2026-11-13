@@ -20,7 +20,7 @@ func (f *fakeStore) SetDeveloperStatus(_ context.Context, id string, c repositor
 	if f.statusDev.ID != id {
 		return repository.AdminDeveloper{}, false, repository.ErrNotFound
 	}
-	return f.statusDev, true, nil
+	return f.statusDev, !f.statusUnchanged, nil
 }
 
 func (f *fakeStore) SetGameStatus(_ context.Context, id string, c repository.StatusChange) (repository.AdminGame, bool, error) {
@@ -31,7 +31,7 @@ func (f *fakeStore) SetGameStatus(_ context.Context, id string, c repository.Sta
 	if f.statusGame.ID != id {
 		return repository.AdminGame{}, false, repository.ErrNotFound
 	}
-	return f.statusGame, true, nil
+	return f.statusGame, !f.statusUnchanged, nil
 }
 
 func TestSetDeveloperStatus_Suspend(t *testing.T) {

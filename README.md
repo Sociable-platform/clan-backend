@@ -233,7 +233,7 @@ runs the one-shot `rabbitmq-setup` job, which imports `deploy/rabbitmq/definitio
 
 | Queue (durable) | Bound to routing keys |
 |---|---|
-| `realtime.events` | `config.published`, `friend.*`, `player.*`, `clan.*` |
+| `realtime.events` | `config.published`, `friend.*`, `player.*`, `clan.*`, `game.*` |
 
 The queue exists before the Realtime service does, so events published today wait in it instead of being lost.
 Open http://localhost:15672, go to **Queues**, and watch `realtime.events` count them.
@@ -286,6 +286,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `clan.renamed` | social, `PATCH /api/v1/clans/{clanID}` (200) when the name changed | `{ "clan": { "id", "name" }, "previous_name" }`; `clan.name` is the new name. Sending the same name publishes nothing |
 | `player.blocked`, `player.unblocked` | social, `POST` / `DELETE /api/v1/players/{playerID}/block` (204), only when a block was really added or removed | `{ "blocker_id", "blocked_id" }`. A block also publishes `friend.removed` (`removed_by` = the blocker) when the two were friends, and `friend.request_cancelled` or `friend.request_declined` when one had a pending request to the other |
 | `config.published` | platform, `POST /api/v1/games/{gameID}/widget/publish` and `.../widget/versions/{version}/rollback` (200); realtime then sends `config.updated` to the game's connections | `{ "version" }`, the new version number (a rollback saves a new version, so it is that number) |
+| `game.suspended`, `game.resumed` | platform, `PUT /api/v1/admin/games/{gameID}/status` and `PUT /api/v1/admin/developers/{developerID}/status` (200), after the change is saved and only when it changed whether the game is served. A developer-level change publishes one event for each game of theirs that is on by its own switch; a game suspended on its own is skipped, because it stays off when the developer is resumed. A game-level change while its developer is suspended publishes nothing. Nothing handles them yet: realtime acknowledges and ignores them | `{ "status" }`: `suspended` or `active`, the same word as `status` in `GET /internal/v1/games/{gameID}/config`. Never the reason or the admin's note |
 
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
 `name` the display name at the time of the event.
@@ -544,7 +545,7 @@ Only the developer's own switch counts here: a game suspended on its own does no
 | GET | `/api/v1/games/{gameID}/widget/versions/{version}` | 200 with that version and its `config`. 404 `widget_version_not_found` (also for a number that is not a positive whole number) |
 | POST | `/api/v1/games/{gameID}/widget/versions/{version}/rollback` | 201 with a **new** version that has the old version's config; nothing is deleted and the draft is untouched. 404 `widget_version_not_found` |
 | GET | `/api/v1/public/games/{gameID}/widget-config` | **No login, open to every website.** 200 `{ version, config }`: the latest **published** version (never a draft), with a strong `ETag` (`"v3"`) and `Cache-Control: public, max-age=60`. Send `If-None-Match` to get 304. 404 `widget_not_published` (also for an unknown game ID). **403 `game_suspended`** (with `Cache-Control: no-store`) when the game or its developer is suspended, whichever it is, so players never see a billing message; the SDK then removes the panel. Not rate-limited in the service: put a CDN or proxy limit in front of `/api/v1/public/` |
-| GET | `/internal/v1/games/{gameID}/config` | **For other services, not browsers.** Needs `X-Internal-Token: <PLATFORM_INTERNAL_TOKEN>` (401 `invalid_internal_token`; 404 `not_found` while the secret is not set). 200 `{ gameId, version, config, allowedOrigins }`: the newest **published** config and the game's allowed origins, never cached. A game never published has `version: 0` and `config: null` but still its origins. 404 `game_not_found` for an unknown game |
+| GET | `/internal/v1/games/{gameID}/config` | **For other services, not browsers.** Needs `X-Internal-Token: <PLATFORM_INTERNAL_TOKEN>` (401 `invalid_internal_token`; 404 `not_found` while the secret is not set). 200 `{ gameId, version, status, config, allowedOrigins }`: the newest **published** config, the game's allowed origins and its **effective** `status` (`suspended` when the game or its developer is, else `active`; a suspended game still gets its config), never cached. A game never published has `version: 0` and `config: null` but still its origins. 404 `game_not_found` for an unknown game |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |
 

@@ -391,6 +391,7 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 		"clan.renamed":             "", // realtime stores no clan names
 		"clan.member_role_changed": "", // realtime stores no roles
 		"player.blocked":           "blocked " + alice + " -> " + bob, "player.unblocked": "unblocked " + alice + " -> " + bob, "config.published": "",
+		"game.suspended": "", "game.resumed": "", // not handled yet: acknowledged and ignored
 	}
 
 	blocks := regexp.MustCompile("(?s)```json\n(.*?)\n```").FindAllSubmatch(doc, -1)

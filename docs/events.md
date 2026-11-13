@@ -27,7 +27,7 @@ If you change an event, change both files, the producer, the consumer and their 
                     │ AMQP, persistent message, routing key = event type, publisher confirm
                     ▼
         RabbitMQ  exchange  socialkit.events  (topic, durable)
-                    │  bindings: config.published, friend.*, player.*, clan.*
+                    │  bindings: config.published, friend.*, player.*, clan.*, game.*
                     ▼
         queue  realtime.events  (durable)
                     │  one consumer, prefetch 20, manual ack
@@ -63,6 +63,7 @@ What each hop guarantees:
 | Where Social publishes `player.renamed` | `services/social/internal/service/players.go` (`EnsurePlayer`) |
 | Where Social publishes clan events | `services/social/internal/service/clans.go` (leave and kick both go through `publishLeave`; `clan.renamed` from `RenameClan`); `clan.member_role_changed` in `services/social/internal/service/roles.go` |
 | Where Platform publishes `config.published` | `services/platform/internal/service/widget.go` (`addWidgetVersion`), wired in `services/platform/cmd/main.go` |
+| Where Platform publishes `game.suspended` / `game.resumed` | `services/platform/internal/service/admin_status.go` (`SetGameStatus`, `SetDeveloperStatus`) |
 | Social wiring (`SOCIAL_RABBITMQ_URL`) | `services/social/cmd/main.go` |
 | Exchange, queue and bindings | `deploy/rabbitmq/definitions.json`, applied by the `rabbitmq-setup` job in `docker-compose.yml` |
 | Consumer loop (connect, ack, retry, reconnect) | `services/realtime/internal/consumer/consumer.go` |
@@ -71,7 +72,7 @@ What each hop guarantees:
 | Realtime wiring (`REALTIME_RABBITMQ_URL`, shared hub) | `services/realtime/cmd/main.go` |
 | What the player's browser receives | `openapi/realtime-ws.md` |
 | Every message, without explanation (events, then the clan chat frames) | `docs/event-messages.md` |
-| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile`, and in `clan_events_test.go`: `TestClanEventsHaveTheFieldsOfTheEventMessagesFile`, in `member_roles_test.go`: `TestClanMemberRoleChangedHasTheFieldsOfTheEventMessagesFile`, in `player_events_test.go`: `TestPlayerRenamedHasTheFieldsOfTheEventMessagesFile`, and in `blocks_test.go`: `TestBlockEventsHaveTheFieldsOfTheEventMessagesFile`. Platform, in `services/platform/internal/service/config_events_test.go`: `TestConfigPublishedHasTheFieldsOfTheEventMessagesFile` |
+| Tests that pin the field names | Realtime, in `services/realtime/internal/consumer/dispatch_test.go`: `TestDispatchReadsEventsAsSocialPublishesThem` (what Social publishes) and `TestDispatchReadsEveryMessageInTheEventMessagesFile` (the agreed format). Social, in `services/social/internal/service/friend_events_test.go`: `TestFriendEventsHaveTheFieldsOfTheEventMessagesFile`, and in `clan_events_test.go`: `TestClanEventsHaveTheFieldsOfTheEventMessagesFile`, in `member_roles_test.go`: `TestClanMemberRoleChangedHasTheFieldsOfTheEventMessagesFile`, in `player_events_test.go`: `TestPlayerRenamedHasTheFieldsOfTheEventMessagesFile`, and in `blocks_test.go`: `TestBlockEventsHaveTheFieldsOfTheEventMessagesFile`. Platform, in `services/platform/internal/service/config_events_test.go`: `TestConfigPublishedHasTheFieldsOfTheEventMessagesFile` and, in `game_status_events_test.go`, `TestGameStatusEventsHaveTheFieldsOfTheEventMessagesFile` |
 
 Realtime decodes the same `events.Event` struct that Social encodes, so a renamed envelope field breaks both sides at
 compile time. The `data` fields are plain maps and are **not** checked by the compiler: that is what the two tests above are for.
@@ -83,7 +84,7 @@ compile time. The `data` fields are plain maps and are **not** checked by the co
 | `socialkit.events` | exchange, type `topic`, durable | Every service publishes here. The routing key is the event `type`. |
 | `realtime.events` | queue, durable | Realtime's own queue. |
 
-Bindings from `socialkit.events` to `realtime.events`: `config.published`, `friend.*`, `player.*`, `clan.*`.
+Bindings from `socialkit.events` to `realtime.events`: `config.published`, `friend.*`, `player.*`, `clan.*`, `game.*`.
 So Realtime also receives events it does not handle yet (see section 6); it acknowledges and ignores them.
 
 `docker compose up` runs the one-shot `rabbitmq-setup` job, which imports `deploy/rabbitmq/definitions.json` through the
@@ -367,6 +368,33 @@ Cancel and decline are two event types because they have different recipients; a
 - The cache is filled lazily too: the first `hello` of a game (or the first message rule that needs it) loads the config, and
   every later call reads memory. `hello` carries the cached `configVersion`.
 
+### `game.suspended` and `game.resumed`
+
+- **Published by Platform** after an admin suspends or resumes a game, or a whole developer, and the change is saved
+  (`services/platform/internal/service/admin_status.go`). The full messages are in [`event-messages.md`](event-messages.md).
+- **`data`:** `status`, `suspended` or `active`: the game's **effective** status after the change, the same word as `status` in
+  `GET /internal/v1/games/{gameID}/config`. Never the reason or the admin's note.
+- **When it is published:** only when a change was saved, so a repeated request publishes nothing. A game is served when the game
+  **and** its developer are both active, so an event goes out only when that answer flips:
+  - a game-level change publishes one event for that game, unless its developer is suspended (the game was off before and stays off);
+  - a developer-level change publishes one event for each game of theirs whose own switch is on. A game that was suspended on its own
+    is skipped: it is off before and after, and a `game.resumed` for it would let it through.
+- **If the broker is down** the admin's request still succeeds and the event is lost (logged). The internal config says the same
+  thing as the event, so a consumer that wants the truth reads `GET /internal/v1/games/{gameID}/config`.
+- **Realtime does:** nothing yet. It acknowledges and ignores both (section 6).
+
+```json
+{
+  "event_id": "5e0a9c3f-2b71-4d84-9a16-7c3d8e1f0b42",
+  "type": "game.suspended",
+  "occurred_at": "2026-11-13T10:15:02.118Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "status": "suspended"
+  }
+}
+```
+
 ### The clan events: `clan.created`, `clan.member_joined`, `clan.member_left`, `clan.disbanded`
 
 - **Published by Social** (`services/social/internal/service/clans.go`); the full messages are in
@@ -389,7 +417,7 @@ Cancel and decline are two event types because they have different recipients; a
 
 ## 6. Events that arrive but are not handled yet
 
-The queue is bound to `config.published`, `friend.*`, `player.*` and `clan.*`. Realtime **acknowledges and ignores** any type it has no
+The queue is bound to `config.published`, `friend.*`, `player.*`, `clan.*` and `game.*`. Realtime **acknowledges and ignores** any type it has no
 handler for (it logs them at debug level), so they never block the queue. The full messages are in
 [`event-messages.md`](event-messages.md). Each is handled by its own task:
 
@@ -399,6 +427,7 @@ handler for (it logs them at debug level), so they never block the queue. The fu
 | `clan.member_role_changed` | `clan`, `player`, `role`, `previous_role` (role ids of the game's `clan.roles`), `changed_by` | acknowledged with nothing to do: Realtime stores no roles. A member list frame could come later, if the SDK needs roles live (published by Social since TEAM-169) |
 | `player.blocked` | `blocker_id`, `blocked_id` | Realtime stores the block in its own `blocks` table (idempotent); nothing is sent to anybody (TEAM-150). Social publishes it after `POST /api/v1/players/{playerID}/block`, only for a new block (TEAM-154). |
 | `player.unblocked` | `blocker_id`, `blocked_id` | Realtime deletes the block (idempotent); nothing is sent (TEAM-150). Social publishes it after `DELETE /api/v1/players/{playerID}/block`, only when a block was removed (TEAM-154). |
+| `game.suspended`, `game.resumed` | `status` (`suspended` or `active`) | acknowledged with nothing to do: a game that is switched off is cut off by a later task, which will read the status of `GET /internal/v1/games/{gameID}/config` when it needs the truth. Platform publishes them since TEAM-206 (see section 5). |
 
 ## 7. What the player's browser receives
 
@@ -464,6 +493,7 @@ Who gets what:
 | `friend.removed` | both: `conversation.removed` |
 | `player.renamed` | nobody |
 | `config.published` | every connection of the game: `config.updated` |
+| `game.suspended`, `game.resumed` | nobody (not handled yet) |
 
 Chat messages are **not** events: they travel over the WebSocket only (`message.send` / `message.new`, see `openapi/realtime-ws.md`).
 
