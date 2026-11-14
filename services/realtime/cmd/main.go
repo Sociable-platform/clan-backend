@@ -166,6 +166,14 @@ func run() error {
 	if handledRetention <= 0 {
 		return fmt.Errorf("REALTIME_PROCESSED_EVENTS_RETENTION must be positive, got %s", handledRetention)
 	}
+	// How often the consumer counts realtime.events.dead and warns while it holds rejected events.
+	deadLetterCheck, err := config.Duration("REALTIME_DLQ_CHECK_INTERVAL", consumer.DefaultDeadLetterCheck)
+	if err != nil {
+		return err
+	}
+	if deadLetterCheck <= 0 {
+		return fmt.Errorf("REALTIME_DLQ_CHECK_INTERVAL must be positive, got %s", deadLetterCheck)
+	}
 	switch {
 	case brokerURL == "":
 		log.Warn("REALTIME_RABBITMQ_URL is not set: not reading events, friendships will not reach realtime")
@@ -175,7 +183,7 @@ func run() error {
 		log.Warn("not reading events: there is no database to store them in")
 		close(consumerDone)
 	default:
-		cons, err := consumer.New(consumer.Config{URL: brokerURL}, consumer.NewDispatcher(svc, connections, log).WithConfig(configCache, connections).WithGameStatus(configCache, connections), log)
+		cons, err := consumer.New(consumer.Config{URL: brokerURL, DeadLetterCheck: deadLetterCheck}, consumer.NewDispatcher(svc, connections, log).WithConfig(configCache, connections).WithGameStatus(configCache, connections), log)
 		if err != nil {
 			return fmt.Errorf("REALTIME_RABBITMQ_URL: %w", err)
 		}

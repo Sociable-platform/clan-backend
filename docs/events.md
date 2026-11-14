@@ -556,9 +556,20 @@ What happens to a message:
 | Success | `ack` | `event handled` (event_id, type, game_id, number of frames) |
 | **Copy** of an event handled before (its `event_id` is in `processed_events`) | `ack`, nothing stored or sent | (debug) `skipping an event handled before` |
 | Type not handled yet | `ack`, ignore | (debug) `ignoring event nobody handles yet` |
-| **Unusable** event: not JSON, bad `occurred_at`, missing or wrong-shaped `data`, an ID that is not a UUID, a blank name, the same player twice, `players` not exactly 2, `removed_by` not one of the two players, a missing `request_id` where it is required | rejected **without requeue** at once | `dropping unusable event` + the reason |
-| **Transient** failure (e.g. database down), first time | waits 1 s, then `nack` with requeue | `event failed, will try once more` |
-| Transient failure, second time (message is marked redelivered) | rejected without requeue | `event failed twice, dropping it` |
+| **Unusable** event: not JSON, bad `occurred_at`, missing or wrong-shaped `data`, an ID that is not a UUID, a blank name, the same player twice, `players` not exactly 2, `removed_by` not one of the two players, a missing `request_id` where it is required | rejected **without requeue** at once, to the DLQ | (warning) `event rejected to the dead-letter queue`, `reason` `unusable` |
+| **Transient** failure (e.g. database down), first time | waits 1 s, then `nack` with requeue | `event failed, will try once more` (event_id, type, error) |
+| Transient failure, second time (message is marked redelivered) | rejected without requeue, to the DLQ | (error) `event rejected to the dead-letter queue`, `reason` `failed_twice` |
+
+The rejection line is the only place our reason is kept, so it is written **once per rejected event** with: `event_id` (from
+the body; the AMQP `message_id` when the body cannot be read), `type`, `routing_key`, `reason` (`unusable` or
+`failed_twice`), `error` (the details) and `dead_letter_queue`. To find why a dead event was rejected, search the log for its
+`message_id`.
+
+**Watching the DLQ.** While the consumer is connected it counts `realtime.events.dead` (a passive declare on a channel of
+its own, so a missing queue never closes the consumer's channel) when it connects and every `REALTIME_DLQ_CHECK_INTERVAL`
+(5 min). An empty queue logs nothing; otherwise one warning: `dead-letter queue holds rejected events` with `count`, or
+`dead-letter queue not found, rejected events are deleted; run rabbitmq-setup`, or `could not count the dead-letter queue`.
+None of them stops the consumer.
 
 A rejected message is **not deleted**: the broker moves it to `realtime.events.dead` (section 3), with an `x-death` header
 that says where it came from (`queue`), why (`reason`: `rejected`), how often (`count`) and its original routing key
@@ -606,12 +617,12 @@ go run ./tools/devtoken -player p-bob    -name Bob    -game 11111111-1111-4111-8
 ```json
 {"event_id":"e-1","type":"friend.accepted","occurred_at":"2026-11-10T08:00:00Z","game_id":"11111111-1111-4111-8111-111111111111","data":{"request_id":"9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d","players":[{"id":"<ALICE playerId>","name":"Alice"},{"id":"<BOB playerId>","name":"Bob"}]}}
 ```
-Use straight quotes and an RFC 3339 `occurred_at`, or the log shows `dropping unusable event`. Any other message of
+Use straight quotes and an RFC 3339 `occurred_at`, or the log shows `event rejected to the dead-letter queue` (`reason` `unusable`). Any other message of
 [`event-messages.md`](event-messages.md) can be published the same way: the routing key is its `type`, the body is the whole
 message with `game_id` and the player IDs replaced by real ones. Watch **Queues → `realtime.events`**:
 Ready and Unacked go back to 0 within a second, and **Consumers** lists one consumer with prefetch 20.
 
-**Logs:** `docker compose logs -f realtime` (look for `event handled`, `dropping unusable event`) and
+**Logs:** `docker compose logs -f realtime` (look for `event handled`, `event rejected to the dead-letter queue`, `dead-letter queue holds rejected events`) and
 `docker compose logs -f social` / `platform` (`outbox relay could not send`).
 
 **Tests:** `go test ./...`. The consumer's ack rules are tested with a fake acknowledger, the field names with
