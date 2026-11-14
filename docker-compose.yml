@@ -51,8 +51,9 @@ services:
     restart: unless-stopped
 
   # One-shot job: declares the socialkit.events exchange, the durable realtime.events queue and its
-  # bindings from deploy/rabbitmq/definitions.json, so events published today wait in the queue even
-  # before Realtime exists. Safe to repeat: importing definitions only adds what is missing.
+  # bindings, and the dead-letter exchange, queue and policies, from deploy/rabbitmq/definitions.json,
+  # so events published today wait in the queue even before Realtime exists. Safe to repeat: importing
+  # definitions adds what is missing and updates the policies.
   rabbitmq-setup:
     image: curlimages/curl:8.11.1
     command:
