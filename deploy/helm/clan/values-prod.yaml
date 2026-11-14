@@ -24,4 +24,5 @@ realtime:
 studio:
   enabled: true
   # The short commit SHA of the clan-frontend build to run (Deploy -> Container registry -> studio).
-  tag: b3df2e0b
+  tag: f5750f39
+  #b3df2e0b
