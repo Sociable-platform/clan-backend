@@ -97,6 +97,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `REALTIME_BACKFILL` | `false` | `true` makes realtime read every friendship from social's `/internal/v1/friendships` once at startup, before it reads events, and store the DM conversation of each pair (see "Realtime backfill"). Needs `REALTIME_INTERNAL_TOKEN`; without it realtime stops at startup. Anything but a boolean is an error. |
 | `REALTIME_INTERNAL_TOKEN` | none | The secret realtime sends to social as `X-Internal-Token`; it must equal social's `SOCIAL_INTERNAL_TOKEN`. Docker Compose passes `SOCIAL_INTERNAL_TOKEN` here. Never logged. |
 | `REALTIME_PLATFORM_URL` | `http://localhost:8081` | Where realtime reaches the platform service to read a game's published config (`GET /api/v1/public/games/{gameID}/widget-config`). Docker Compose sets it to `http://platform:8081`. If platform is down, realtime still runs: `hello` says `configVersion` 0 and a `config.published` event is retried once. |
+| `REALTIME_PROCESSED_EVENTS_RETENTION` | `168h` | How long realtime keeps the ID of a handled event, so a copy that arrives within that time is skipped. Checked once an hour; must be positive. |
 | `REALTIME_RABBITMQ_URL` | none | RabbitMQ address (`amqp://user:password@host:5672/`) realtime reads events from, queue `realtime.events`. Empty means: do not read events (the service still runs). Use letters and digits only in the password. Docker Compose builds it from `RABBITMQ_USER` and `RABBITMQ_PASSWORD`. The password is never logged. |
 
 ### Get a player token from platform
@@ -321,8 +322,10 @@ So **Social and Realtime must keep these field names in step**; `TestDispatchRea
 - An event that fails (for example the database is down) is put back **once** after one second; if it fails again it is logged
   and dropped. An unusable event (not JSON, missing field, id that is not a UUID) is logged and dropped at once.
   There is no dead-letter queue yet, so a dropped event is lost.
-- Every database write is an upsert or a delete, so a redelivered event changes nothing. The WebSocket frames are sent again;
-  the SDK ignores a conversation it already has.
+- Delivery is at least once, so the same event can arrive twice. Realtime records the `event_id` of every friend, player
+  and clan event in `processed_events` (migration `000005`), in the same transaction as the event's writes, and acknowledges
+  a copy without storing or sending anything (debug log `skipping an event handled before`). A failed write rolls the record
+  back too, so the retry handles the event. The records are deleted after `REALTIME_PROCESSED_EVENTS_RETENTION`. Details: `docs/events.md` section 9.
 - If the broker is down or restarts, realtime keeps running and reconnects (1 s, 2 s, 4 s ... up to 30 s).
   Without a database it does not read events at all, because it would have nowhere to store them.
 
@@ -523,7 +526,7 @@ go test ./services/social/internal/repository/ -v
 
 The platform repository tests use `PLATFORM_TEST_DATABASE_URL` (`postgres://platform_user:<PLATFORM_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/platform/internal/repository/`.
 The realtime repository tests work the same way with `REALTIME_TEST_DATABASE_URL`
-(`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/` (the backfill test in `./services/realtime/internal/backfill/` uses the same variable).
+(`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/` (the backfill test in `./services/realtime/internal/backfill/` and the duplicate-event test in `./services/realtime/internal/consumer/` use the same variable).
 
 Each run uses new random game IDs and deletes its rows afterwards, so it does not disturb other data.
 

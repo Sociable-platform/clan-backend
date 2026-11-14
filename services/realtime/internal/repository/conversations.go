@@ -45,7 +45,7 @@ func (r *Repository) UpsertDM(ctx context.Context, gameID, dmKey string, a, b Me
 	if r.pool == nil {
 		return DM{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return DM{}, fmt.Errorf("begin upsert dm: %w", err)
 	}
@@ -96,7 +96,7 @@ func (r *Repository) RemoveDMMembers(ctx context.Context, gameID, dmKey string) 
 		return "", false, ErrNoDatabase
 	}
 	// One statement: the DELETE in the CTE runs even though only the SELECT is read.
-	err = r.pool.QueryRow(ctx, `
+	err = r.db(ctx).QueryRow(ctx, `
 		WITH c AS (
 			SELECT id FROM conversations WHERE game_id = $1 AND dm_key = $2
 		), removed AS (
@@ -120,7 +120,7 @@ func (r *Repository) FriendsOf(ctx context.Context, gameID, playerID string) ([]
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db(ctx).Query(ctx, `
 		SELECT other.player_id
 		FROM conversation_members me
 		JOIN conversations c ON c.id = me.conversation_id AND c.game_id = me.game_id AND c.kind = 'dm'
@@ -152,7 +152,7 @@ func (r *Repository) RenamePlayer(ctx context.Context, gameID, playerID, name st
 	if r.pool == nil {
 		return ErrNoDatabase
 	}
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db(ctx).Exec(ctx, `
 		UPDATE conversation_members SET display_name = $3
 		WHERE game_id = $1 AND player_id = $2 AND display_name <> $3`, gameID, playerID, name)
 	if err != nil {

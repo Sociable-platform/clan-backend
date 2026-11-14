@@ -100,7 +100,7 @@ A message body is JSON. AMQP properties set by the publisher: `delivery_mode` 2 
 
 | Field | Type | Meaning |
 |---|---|---|
-| `event_id` | string (UUID v4) | Unique per message. It identifies the message, **not** the thing it is about (that is `request_id`, `clan.id`, ... inside `data`). Can be used to notice the same event twice. Realtime logs it. |
+| `event_id` | string (UUID v4) | Unique per message. It identifies the message, **not** the thing it is about (that is `request_id`, `clan.id`, ... inside `data`). The same event delivered twice has the same `event_id`: Realtime records it in `processed_events` and skips a copy (section 9). Realtime logs it. |
 | `type` | string | The event name and the routing key, e.g. `friend.accepted`. |
 | `occurred_at` | string, RFC 3339 UTC | When the event was made, e.g. `2026-11-10T09:41:28.623Z`. Anything else makes Realtime drop the event. |
 | `game_id` | string (UUID) | The game the event belongs to. Realtime takes the tenant from here and every query filters by it. |
@@ -172,7 +172,7 @@ Rules for `data`:
 - **Realtime does:** nothing is stored. It sends one `notification` frame `friend_request` to the **receiver** (all their tabs) only.
 - `request_id` becomes `requestId` in the frame, so the SDK can accept that very request. An older event without it still works
   (`requestId: null`; the SDK can load `GET /api/v1/friends/requests`).
-- A duplicate delivery shows the notification twice (acceptable; the SDK matches by `requestId`).
+- A copy of the event (same `event_id`) is skipped (section 9), so the notification shows once.
 
 ### `friend.request_cancelled`
 
@@ -275,7 +275,8 @@ Cancel and decline are two event types because they have different recipients; a
   Then it sends to **each** player: `conversation.added` (their own `unread`), and a `notification` `friend_accepted`
   naming the **other** player and carrying `requestId` (`null` without `request_id`).
 - If the players were friends before and were removed, the **same conversation comes back with its history**.
-- Running it twice changes nothing in the database; the frames are sent again, and the SDK ignores a conversation id it knows.
+- A copy of the event (same `event_id`) is skipped (section 9). The same accept arriving as a new event changes nothing in the
+  database; its frames are sent again, and the SDK ignores a conversation id it knows.
 
 ### `friend.removed`
 
@@ -421,8 +422,9 @@ Cancel and decline are two event types because they have different recipients; a
     `new_owner` are not needed. The members who stay are not told.
   - `clan.disbanded`: deletes the room with its members and messages and sends `conversation.removed` and a `clan_disbanded`
     notification to everybody who was still in it. Social publishes only this event when the last member leaves, so that member is told here.
-- **A redelivered event** changes nothing in the database (upserts and deletes); the frames are sent again and the SDK ignores a
-  conversation ID it knows. A `clan.disbanded` that comes again finds no room and sends nothing.
+- **A copy of an event** (same `event_id`) is skipped (section 9): no rows and no frames. A new event about the same thing
+  changes nothing in the database (upserts and deletes); its frames are sent again and the SDK ignores a conversation ID it
+  knows. A `clan.disbanded` that comes again finds no room and sends nothing.
 - A missing or malformed `clan.id` or `player` (not a UUID, no name) makes Realtime drop the event.
 
 ## 6. Events that arrive but are not handled yet
@@ -531,6 +533,7 @@ What happens to a message:
 | Outcome of handling | What the consumer does | Log line |
 |---|---|---|
 | Success | `ack` | `event handled` (event_id, type, game_id, number of frames) |
+| **Copy** of an event handled before (its `event_id` is in `processed_events`) | `ack`, nothing stored or sent | (debug) `skipping an event handled before` |
 | Type not handled yet | `ack`, ignore | (debug) `ignoring event nobody handles yet` |
 | **Unusable** event: not JSON, bad `occurred_at`, missing or wrong-shaped `data`, an ID that is not a UUID, a blank name, the same player twice, `players` not exactly 2, `removed_by` not one of the two players, a missing `request_id` where it is required | rejected **without requeue** at once | `dropping unusable event` + the reason |
 | **Transient** failure (e.g. database down), first time | waits 1 s, then `nack` with requeue | `event failed, will try once more` |
@@ -544,7 +547,20 @@ There is **no dead-letter queue yet**, so a dropped event is gone (see section 1
 - **The queue must already exist.** Realtime does not declare it; if it is missing the log says to run `rabbitmq-setup`.
 - **Validation** (service layer): `game_id` and every player ID must be UUIDs (lower-cased), names are trimmed and must not
   be blank. The game comes only from the event's `game_id`, and every query filters by it.
-- **Idempotent by design:** all writes are upserts or deletes, so a redelivered event changes nothing.
+- **Delivery is at least once, and consumers must be idempotent.** RabbitMQ redelivers a message that was not acknowledged,
+  and a publisher's outbox relay (README "Event outbox") sends an event again if it stops after the broker confirmed it but
+  before it marked it sent. Every consumer must expect the same `event_id` more than once.
+- **How Realtime does it:** the friend, player and clan events run through `service.HandleOnce`. In one transaction it
+  inserts `(game_id, event_id)` into `processed_events` and does the event's writes (the repository methods take that
+  transaction from the context, and their own `Begin` becomes a savepoint). If the row was already there, nothing is
+  stored, the copy is acknowledged and no frame is sent. If a write fails, the record rolls back with it, so the retry
+  handles the event. Frames are sent only after the commit. A second copy that arrives while the first is still being
+  handled waits for it on the primary key, then is skipped.
+- `config.published`, `game.suspended` and `game.resumed` do not use it: they ask Platform (not inside a transaction),
+  and handling them again changes nothing. Types Realtime ignores are not recorded.
+- `event_id` must be a UUID; an event without one is unusable and dropped.
+- The records are kept for `REALTIME_PROCESSED_EVENTS_RETENTION` (7 days) and deleted once an hour; a copy that arrives
+  later would be handled again. All writes are still upserts or deletes, so even then the database does not change.
 
 ## 10. Trying it
 
@@ -602,8 +618,9 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 2. **Binding:** make sure `deploy/rabbitmq/definitions.json` binds the routing key to the consumer's queue
    (a new service gets its own queue).
 3. **Publisher:** call `events.New(type, gameID, data)` through the `Publisher` interface **after the commit**; test it with `events.Recorder`.
-4. **Consumer:** add the type constant, a `data` struct and a `case` in `dispatch.go`; the rules and DB work go in the
-   service and repository (every query takes the game ID; writes are upserts or deletes).
+4. **Consumer:** add the type constant, a `data` struct and a `case` in `dispatch.go` (in `handledOnce` and `store` when the
+   event stores or sends something, so a copy is skipped); the rules and DB work go in the service and repository (every
+   query takes the game ID and uses `r.db(ctx)`, so it joins the event's transaction; writes are upserts or deletes).
 5. **Tests:** add the type to `TestDispatchReadsEveryMessageInTheEventMessagesFile`, a dispatcher test with the producer's exact shape, service tests with a fake store, a repository test against a
    real database, and a case in `TestDispatchDropsUnusableEvents` for a malformed event.
 6. **Docs:** this file, `openapi/realtime-ws.md` if a new frame goes to the browser, and the README tables.

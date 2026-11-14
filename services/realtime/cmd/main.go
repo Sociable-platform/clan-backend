@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -157,6 +158,14 @@ func run() error {
 	// broker is down, the service still runs; it just learns nothing new until the broker is back.
 	consumerDone := make(chan struct{})
 	brokerURL := config.String("REALTIME_RABBITMQ_URL", "")
+	// The IDs of handled events are kept this long, so a copy of an event (delivery is at least once) is skipped.
+	handledRetention, err := config.Duration("REALTIME_PROCESSED_EVENTS_RETENTION", consumer.DefaultHandledRetention)
+	if err != nil {
+		return err
+	}
+	if handledRetention <= 0 {
+		return fmt.Errorf("REALTIME_PROCESSED_EVENTS_RETENTION must be positive, got %s", handledRetention)
+	}
 	switch {
 	case brokerURL == "":
 		log.Warn("REALTIME_RABBITMQ_URL is not set: not reading events, friendships will not reach realtime")
@@ -170,9 +179,13 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("REALTIME_RABBITMQ_URL: %w", err)
 		}
+		// Both return when ctx ends (SIGTERM). The cleanup deletes the IDs of events handled before the retention.
+		var wg sync.WaitGroup
+		wg.Go(func() { cons.Run(ctx) })
+		wg.Go(func() { consumer.RunCleanup(ctx, svc, handledRetention, log) })
 		go func() {
-			defer close(consumerDone)
-			cons.Run(ctx) // returns when ctx ends (SIGTERM)
+			wg.Wait()
+			close(consumerDone)
 		}()
 	}
 

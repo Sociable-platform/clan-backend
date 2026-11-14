@@ -200,6 +200,8 @@ services:
       REALTIME_INTERNAL_TOKEN: ${SOCIAL_INTERNAL_TOKEN:-}
       REALTIME_PLATFORM_URL: http://platform:8081
       REALTIME_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      # How long the ID of a handled event is kept, so a copy is skipped (README "RabbitMQ events")
+      REALTIME_PROCESSED_EVENTS_RETENTION: ${REALTIME_PROCESSED_EVENTS_RETENTION:-168h}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       # Platform's public key only (never the private key). Created by you (see README "JWT signing key").
