@@ -88,6 +88,10 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `SOCIAL_INTERNAL_TOKEN` | none | Shared secret of social's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops social at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `SOCIAL_PLATFORM_URL` | none (docker compose: `http://platform:8081`) | Where social reads each game's clan rules: `clan.maxMembers` from the game's published config (`GET /api/v1/public/games/{gameID}/widget-config`), and whether the game is suspended (the same call answers 403 `game_suspended`). Empty: every game gets 10 members and none is ever refused as suspended. |
 | `SOCIAL_CONFIG_CACHE_TTL` | `30s` | How long social keeps a game's clan rules **and its suspended or active status**. A new limit published in Studio, a suspension and a resume all apply within this time. If platform cannot be reached, the last known rules and status (or 10 members, not suspended) are used and a warning is logged; requests never fail because of it. |
+| `SOCIAL_OUTBOX_INTERVAL` | `1s` | How long social's outbox relay waits before looking again when it had nothing to send; also its first wait after a failed send (it then doubles, up to 30 s). See "Event outbox". |
+| `SOCIAL_OUTBOX_RETENTION` | `168h` | How long a sent event stays in social's `outbox` table before the relay deletes it (checked once an hour). |
+| `PLATFORM_OUTBOX_INTERVAL` | `1s` | The same as `SOCIAL_OUTBOX_INTERVAL`, for platform's outbox relay. |
+| `PLATFORM_OUTBOX_RETENTION` | `168h` | The same as `SOCIAL_OUTBOX_RETENTION`, for platform's `outbox` table. |
 | `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
 | `REALTIME_SOCIAL_URL` | `http://localhost:8082` | Where realtime reaches the social service to learn each connecting player's own ID. Docker Compose sets it to `http://social:8082`. |
 | `REALTIME_BACKFILL` | `false` | `true` makes realtime read every friendship from social's `/internal/v1/friendships` once at startup, before it reads events, and store the DM conversation of each pair (see "Realtime backfill"). Needs `REALTIME_INTERNAL_TOKEN`; without it realtime stops at startup. Anything but a boolean is an error. |
@@ -336,8 +340,31 @@ So **Social and Realtime must keep these field names in step**; `TestDispatchRea
 
 **Known gap: an event can be lost.** If RabbitMQ is down or does not confirm in time, the database change stays and
 the event is gone (only the log line remains). Realtime then misses a friendship until it is backfilled (see "Realtime backfill" in the Realtime section).
-*Future work:* a transactional outbox: write the event to an `outbox` table in the same transaction as the change,
-and let a background worker publish it and mark it sent, retrying until the broker accepts it.
+The event outbox below closes this gap once the services write their events through it; until then they still publish directly.
+
+### Event outbox
+
+`pkg/events` has a transactional outbox, and platform and social each have an `outbox` table (social migration `000008`,
+platform `000010`; the two files are identical, `TestOutboxMigrationsAreTheSameInEveryService` checks it).
+
+- **Writing.** `events.Enqueue(ctx, tx, e)` inserts the event into the `outbox` table inside the caller's open `pgx.Tx`,
+  so the event commits or rolls back together with the change it describes. It takes a transaction, never the pool.
+- **Sending.** Each service runs one relay goroutine (`events.Relay`, started in `cmd/relay.go`) when it has a database.
+  It claims up to 100 unsent rows, oldest first (`FOR UPDATE SKIP LOCKED`, so two copies of a service never send the same
+  row), publishes them one by one and marks a row sent only after the broker has confirmed it. It stops a batch at the
+  first failure, so a later event never overtakes an earlier one, and stores that row's `attempts` and `last_error`.
+- **Broker down.** Rows wait in the table; the relay tries again after `<SERVICE>_OUTBOX_INTERVAL`, doubling up to 30 s,
+  and sends them once RabbitMQ is back. Requests only insert a row, so they never wait for the broker.
+- **No broker URL.** The relay still runs with the no-op publisher: rows are marked sent and dropped, as events are today.
+- **Cleanup.** Sent rows older than `<SERVICE>_OUTBOX_RETENTION` (7 days) are deleted, checked once an hour.
+- **Shutdown.** The relay stops with the service and records the batch it was sending first (up to 5 s).
+- **Order.** Rows go out in `id` order, which is the order they were inserted. Two transactions that run at the same time
+  can commit in the other order, so only events written one after the other are guaranteed to stay in order; events
+  about the same thing are, when the service writes them inside the transaction that holds the row lock on it (a friend pair, a clan).
+- **At least once.** If the relay stops after the broker confirmed a row but before the row was marked sent, the row is
+  sent again with the same `event_id`. Consumers must handle a repeated event.
+- **A row that always fails** blocks the rows after it (that is what keeps the order). Its `last_error` says why; look for
+  `outbox relay could not send` in the log.
 
 ## Run with go run
 
@@ -499,6 +526,10 @@ The realtime repository tests work the same way with `REALTIME_TEST_DATABASE_URL
 (`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/` (the backfill test in `./services/realtime/internal/backfill/` uses the same variable).
 
 Each run uses new random game IDs and deletes its rows afterwards, so it does not disturb other data.
+
+The outbox tests in `./pkg/events/` also use `SOCIAL_TEST_DATABASE_URL`. Each one creates a table of its own with a
+random name (`outbox_test_...`) from the social outbox migration and drops it afterwards, so a running social service never
+sees their rows.
 
 The event publisher has one test that needs a real RabbitMQ (`docker compose up -d rabbitmq`), skipped unless
 `TEST_RABBITMQ_URL` is set. It uses its own temporary queue and the routing key `test.published`, so nothing lands in
