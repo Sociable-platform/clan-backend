@@ -94,7 +94,7 @@ func (r *Repository) ListDevelopers(ctx context.Context, f DeveloperFilter) ([]D
 	if f.After != nil {
 		afterTime, afterID = &f.After.CreatedAt, &f.After.ID
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select d.id::text, d.email, d.name, d.status, d.created_at,
 		        (select count(*) from games g where g.developer_id = d.id)
 		 from developers d
@@ -129,7 +129,7 @@ func (r *Repository) AdminDeveloperByID(ctx context.Context, id string) (AdminDe
 		return AdminDeveloper{}, ErrNoDatabase
 	}
 	var d AdminDeveloper
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select id::text, email, name, status, coalesce(status_reason, ''), status_changed_at, created_at
 		 from developers where id = $1`, id,
 	).Scan(&d.ID, &d.Email, &d.Name, &d.Status, &d.StatusReason, &d.StatusChangedAt, &d.CreatedAt)
@@ -148,7 +148,7 @@ func (r *Repository) AdminGamesByDeveloper(ctx context.Context, developerID stri
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select id::text, name, coalesce(description, ''), status, coalesce(status_reason, ''), status_changed_at, created_at
 		 from games where developer_id = $1
 		 order by created_at desc, id desc`, developerID)
@@ -185,7 +185,7 @@ func (r *Repository) AuditEntries(ctx context.Context, f AuditFilter) ([]AuditEn
 	if f.After != nil {
 		afterTime, afterID = &f.After.CreatedAt, &f.After.ID
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select id::text, actor, action, target_type, target_id::text, reason, coalesce(note, ''), created_at
 		 from admin_audit_log
 		 where ($1::uuid is null or target_id = $1::uuid)

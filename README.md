@@ -331,18 +331,19 @@ So **Social and Realtime must keep these field names in step**; `TestDispatchRea
 
 ### Publishing from a service
 
-- **Social** writes every event to its `outbox` table in the transaction of the change (see "Event outbox" below), and its
-  outbox relay publishes them. A request never talks to RabbitMQ, and an event is never lost because the broker was down.
+- **Social and platform** write every event to their own `outbox` table in the transaction of the change (see "Event
+  outbox" below), and each service's outbox relay publishes them. A request never talks to RabbitMQ, and an event is
+  never lost because the broker was down: it waits in the outbox and goes out once the broker is back.
+- In the service layer a change and its events go through `change`: the store call and `AddEvents` run inside `InTx`.
   Service tests read the events a fake store committed; repository tests check that an event rolls back with its change.
-- **Platform** still publishes directly after the commit, through `events.Safe`: a failed publish is logged as
-  `publish event failed` with its `event_id` and `type`, and the request still succeeds.
-- Without `<SERVICE>_RABBITMQ_URL` a service starts anyway, logs `..._RABBITMQ_URL is not set`, and drops its events.
+- **Delivery is at least once.** An event can arrive twice (the relay stopped after the broker confirmed it but before it
+  marked it sent, or RabbitMQ redelivered it). Consumers must be idempotent; Realtime skips a copy by its `event_id`.
+- Without `<SERVICE>_RABBITMQ_URL` a service starts anyway, logs `..._RABBITMQ_URL is not set`, and its relay drops the events.
 - The publisher (`events.NewRabbitMQ`) connects on the first event, not at startup, and reconnects by itself. After a
   failed connection it waits 5 s before trying again. Every publish waits for the broker to confirm it (up to 5 s).
 
-**Known gap: a platform event can be lost.** If RabbitMQ is down or does not confirm in time when platform publishes,
-the database change stays and the event is gone (only the log line remains). Social's events do not have this gap any
-more: they wait in its outbox until the broker is back. Platform moves to the outbox next.
+**Remaining gap: the consumer side.** An event Realtime drops (unusable, or failed twice) is gone: there is no
+dead-letter queue yet (see `docs/events.md` section 11).
 
 ### Event outbox
 

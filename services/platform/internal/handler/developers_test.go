@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/services/platform/internal/repository"
@@ -231,6 +232,14 @@ type memStore struct {
 }
 
 func (m *memStore) Ping(context.Context) error { return nil }
+
+// InTx runs fn; the handler tests do not check rollbacks (the service tests do).
+func (m *memStore) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	return fn(ctx)
+}
+
+// AddEvents keeps nothing; the service tests check the events.
+func (m *memStore) AddEvents(context.Context, ...events.Event) error { return nil }
 
 func (m *memStore) ListDevelopers(context.Context, repository.DeveloperFilter) ([]repository.DeveloperSummary, error) {
 	return nil, nil

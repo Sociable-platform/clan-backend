@@ -31,7 +31,7 @@ func (r *Repository) CreateGame(ctx context.Context, developerID, name, descript
 		return Game{}, ErrNoDatabase
 	}
 	g := Game{DeveloperID: developerID, Name: name, Description: description}
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`insert into games (id, developer_id, name, description)
 		 values (gen_random_uuid(), $1, $2, nullif($3, ''))
 		 returning id::text, allowed_origins, created_at`,
@@ -53,7 +53,7 @@ func (r *Repository) GamesByDeveloper(ctx context.Context, developerID string) (
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select id::text, developer_id::text, name, coalesce(description, ''), allowed_origins, created_at
 		 from games where developer_id = $1
 		 order by created_at desc, id`, developerID)
@@ -83,7 +83,7 @@ func (r *Repository) GameOfDeveloper(ctx context.Context, gameID, developerID st
 		return Game{}, ErrNoDatabase
 	}
 	var g Game
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select id::text, developer_id::text, name, coalesce(description, ''), allowed_origins, created_at
 		 from games where id = $1 and developer_id = $2`, gameID, developerID,
 	).Scan(&g.ID, &g.DeveloperID, &g.Name, &g.Description, &g.AllowedOrigins, &g.CreatedAt)
@@ -103,7 +103,7 @@ func (r *Repository) GameByID(ctx context.Context, gameID string) (Game, error) 
 		return Game{}, ErrNoDatabase
 	}
 	var g Game
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select id::text, developer_id::text, name, coalesce(description, ''), allowed_origins, created_at
 		 from games where id = $1`, gameID,
 	).Scan(&g.ID, &g.DeveloperID, &g.Name, &g.Description, &g.AllowedOrigins, &g.CreatedAt)
@@ -126,7 +126,7 @@ func (r *Repository) SetAllowedOrigins(ctx context.Context, gameID, developerID 
 		origins = []string{} // a null would break the not null column
 	}
 	var g Game
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`update games set allowed_origins = $3
 		 where id = $1 and developer_id = $2
 		 returning id::text, developer_id::text, name, coalesce(description, ''), allowed_origins, created_at`,

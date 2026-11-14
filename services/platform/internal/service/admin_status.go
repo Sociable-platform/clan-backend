@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"gitlab.com/clan-platform/clan-backend/pkg/events"
@@ -24,17 +23,12 @@ const (
 // maxStatusNoteLen limits the internal note of a status change.
 const maxStatusNoteLen = 1000
 
-// Events published after a game stops or starts being served. data is { "status" }: "suspended" or
-// "active", the same word the internal game config uses.
+// Events written when a game stops or starts being served, in the transaction of the change. data is
+// { "status" }: "suspended" or "active", the same word the internal game config uses.
 const (
 	EventGameSuspended = "game.suspended"
 	EventGameResumed   = "game.resumed"
 )
-
-// publishStatusTimeout bounds all the events of one status change together. A developer with many
-// games is announced one game at a time, and a broker that does not answer must not keep the
-// admin waiting for each of them.
-const publishStatusTimeout = 10 * time.Second
 
 // SetStatusInput is a request to suspend or resume a developer or a game.
 type SetStatusInput struct {
@@ -49,9 +43,10 @@ type SetStatusInput struct {
 // served only when it and its developer are both active, so one switch turns off every game of the
 // developer without changing any game row. actor says who did it: an admin's ID today, "system:billing" for a billing webhook later. The change and its audit
 // row are written in one transaction. Asking for the status the developer already has changes
-// nothing, writes no audit row, publishes no event and is not an error. After a change is saved,
-// each game that this switch turns off or on is announced (game.suspended or game.resumed); a game
-// that was suspended on its own is not, because it is served or not served the same as before.
+// nothing, writes no audit row, writes no event and is not an error. In the same transaction, each
+// game that this switch turns off or on is announced (game.suspended or game.resumed, through the
+// outbox); a game that was suspended on its own is not, because it is served or not served the
+// same as before.
 // It returns the developer as it is afterwards.
 func (s *Service) SetDeveloperStatus(ctx context.Context, actor, developerID string, in SetStatusInput) (AdminDeveloper, error) {
 	if !uuidPattern.MatchString(developerID) {
@@ -61,26 +56,39 @@ func (s *Service) SetDeveloperStatus(ctx context.Context, actor, developerID str
 	if err != nil {
 		return AdminDeveloper{}, err
 	}
-	d, changed, err := s.store.SetDeveloperStatus(ctx, developerID, change)
+	var (
+		d     repository.AdminDeveloper
+		games []repository.AdminGame
+	)
+	err = s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		var (
+			changed bool
+			err     error
+		)
+		d, changed, err = s.store.SetDeveloperStatus(ctx, developerID, change)
+		if err != nil {
+			return nil, err
+		}
+		if games, err = s.store.AdminGamesByDeveloper(ctx, developerID); err != nil {
+			return nil, fmt.Errorf("list games: %w", err)
+		}
+		if !changed {
+			return nil, nil
+		}
+		return developerGameEvents(d.Status, games), nil
+	})
 	if errors.Is(err, repository.ErrNotFound) {
 		return AdminDeveloper{}, errDeveloperNotFound()
 	}
 	if err != nil {
 		return AdminDeveloper{}, fmt.Errorf("set status of developer %s: %w", developerID, err)
 	}
-	games, err := s.store.AdminGamesByDeveloper(ctx, developerID)
-	if err != nil {
-		return AdminDeveloper{}, fmt.Errorf("list games of developer %s: %w", developerID, err)
-	}
-	if changed {
-		s.publishDeveloperGames(ctx, d.Status, games)
-	}
 	return toAdminDeveloper(d, games), nil
 }
 
 // SetGameStatus suspends or resumes one game, with the same rules as SetDeveloperStatus. The game's
-// own change is announced unless its developer is suspended: then the game is not served either
-// way, so nothing changed for the other services.
+// own change is announced, in the same transaction, unless its developer is suspended: then the
+// game is not served either way, so nothing changed for the other services.
 func (s *Service) SetGameStatus(ctx context.Context, actor, gameID string, in SetStatusInput) (AdminGame, error) {
 	if !uuidPattern.MatchString(gameID) {
 		return AdminGame{}, errGameNotFound()
@@ -89,64 +97,62 @@ func (s *Service) SetGameStatus(ctx context.Context, actor, gameID string, in Se
 	if err != nil {
 		return AdminGame{}, err
 	}
-	g, changed, err := s.store.SetGameStatus(ctx, gameID, change)
+	var g repository.AdminGame
+	err = s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		var (
+			changed bool
+			err     error
+		)
+		g, changed, err = s.store.SetGameStatus(ctx, gameID, change)
+		if err != nil || !changed {
+			return nil, err
+		}
+		return s.gameChangeEvents(ctx, g)
+	})
 	if errors.Is(err, repository.ErrNotFound) {
 		return AdminGame{}, errGameNotFound()
 	}
 	if err != nil {
 		return AdminGame{}, fmt.Errorf("set status of game %s: %w", gameID, err)
 	}
-	if changed {
-		s.publishGameChange(ctx, g)
-	}
 	return toAdminGame(g), nil
 }
 
-// publishGameChange announces the change of a game's own status, if it changes whether the game is
-// served. The change is saved already, so a failure here is never returned to the admin.
-func (s *Service) publishGameChange(ctx context.Context, g repository.AdminGame) {
-	ctx, cancel := publishContext(ctx) // the check below also must not die with the admin's request
-	defer cancel()
+// gameChangeEvents announces the change of a game's own status, if it changes whether the game is
+// served: not while its developer is suspended, because the game was not served before and is
+// not now. It runs inside the change's transaction, so it reads the developer's status as the
+// change commits it; when it cannot be read, the change fails with it and the admin can try again.
+func (s *Service) gameChangeEvents(ctx context.Context, g repository.AdminGame) ([]events.Event, error) {
 	a, err := s.store.GameAccessOf(ctx, g.ID)
-	switch {
-	case err == nil && a.DeveloperStatus != StatusActive:
-		return // the developer's switch is off: the game was not served before and is not now
-	case err != nil && g.Status != StatusSuspended:
-		// Cannot tell whether a resumed game is served again. Staying silent is the safe side: an
-		// announcement that a game is back, when it is not, would let it through. A suspension is
-		// always safe to announce, so it still goes out.
-		return
+	if err != nil {
+		return nil, fmt.Errorf("check access: %w", err)
 	}
-	s.publishGameStatus(ctx, g.ID, g.Status)
+	if a.DeveloperStatus != StatusActive {
+		return nil, nil
+	}
+	return []events.Event{gameStatusEvent(g.ID, g.Status)}, nil
 }
 
-// publishDeveloperGames announces, for each game of a developer whose own switch is on, that the
+// developerGameEvents announces, for each game of a developer whose own switch is on, that the
 // developer's new status turns it off or on. Games suspended on their own are skipped: they stay
 // off after the developer is resumed, so a game.resumed for them would be wrong.
-func (s *Service) publishDeveloperGames(ctx context.Context, developerStatus string, games []repository.AdminGame) {
-	ctx, cancel := publishContext(ctx)
-	defer cancel()
+func developerGameEvents(developerStatus string, games []repository.AdminGame) []events.Event {
+	var evs []events.Event
 	for _, g := range games {
 		if g.Status == StatusActive {
-			s.publishGameStatus(ctx, g.ID, developerStatus)
+			evs = append(evs, gameStatusEvent(g.ID, developerStatus))
 		}
 	}
+	return evs
 }
 
-// publishContext is the context for the events of a change that is already saved: it ignores the
-// admin hanging up, which must not lose the announcement, and ends after publishStatusTimeout.
-func publishContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), publishStatusTimeout)
-}
-
-// publishGameStatus sends game.suspended or game.resumed for gameID. The publisher is wrapped in
-// events.Safe, so a broker problem never fails the admin's request.
-func (s *Service) publishGameStatus(ctx context.Context, gameID, status string) {
+// gameStatusEvent is game.suspended or game.resumed for gameID.
+func gameStatusEvent(gameID, status string) events.Event {
 	eventType := EventGameResumed
 	if status == StatusSuspended {
 		eventType = EventGameSuspended
 	}
-	_ = s.events.Publish(ctx, events.New(eventType, gameID, map[string]any{"status": status}))
+	return events.New(eventType, gameID, map[string]any{"status": status})
 }
 
 // newStatusChange validates in and builds the change for target ("developer" or "game").

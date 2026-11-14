@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/services/platform/internal/repository"
@@ -51,6 +52,42 @@ type fakeStore struct {
 	drafts   map[string]repository.WidgetDraft     // by game ID
 	versions map[string][]repository.WidgetVersion // by game ID, oldest first
 	err      error                                 // returned by every call when set
+
+	// The outbox. InTx behaves like a transaction: the events added inside it are kept only when
+	// fn succeeds, and a failing inner InTx drops only its own (a savepoint).
+	committed events.Recorder // events of transactions that committed, in order
+	pending   []events.Event  // events of the open transaction
+	depth     int             // InTx calls in progress
+	addErr    error           // what AddEvents returns, when set
+}
+
+func (f *fakeStore) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	start := len(f.pending)
+	f.depth++
+	err := fn(ctx)
+	f.depth--
+	if err != nil {
+		f.pending = f.pending[:start]
+		return err
+	}
+	if f.depth == 0 {
+		for _, e := range f.pending {
+			_ = f.committed.Publish(ctx, e)
+		}
+		f.pending = nil
+	}
+	return nil
+}
+
+func (f *fakeStore) AddEvents(_ context.Context, evs ...events.Event) error {
+	if f.depth == 0 {
+		return errors.New("AddEvents outside InTx")
+	}
+	if f.addErr != nil {
+		return f.addErr
+	}
+	f.pending = append(f.pending, evs...)
+	return nil
 }
 
 func newFakeStore() *fakeStore {

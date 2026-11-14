@@ -40,7 +40,7 @@ func (r *Repository) CreateDeveloper(ctx context.Context, email, passwordHash, n
 		return Developer{}, ErrNoDatabase
 	}
 	d := Developer{Email: email, PasswordHash: passwordHash, Name: name}
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`insert into developers (id, email, password_hash, name)
 		 values (gen_random_uuid(), $1, $2, $3)
 		 returning id::text, created_at, status`,
@@ -61,7 +61,7 @@ func (r *Repository) DeveloperByEmail(ctx context.Context, email string) (Develo
 	if r.pool == nil {
 		return Developer{}, ErrNoDatabase
 	}
-	row := r.pool.QueryRow(ctx,
+	row := r.db(ctx).QueryRow(ctx,
 		`select id::text, email, password_hash, name, created_at, status, coalesce(status_reason, '')
 		 from developers where email = $1`, email)
 	return scanDeveloper(row)
@@ -72,7 +72,7 @@ func (r *Repository) DeveloperByID(ctx context.Context, id string) (Developer, e
 	if r.pool == nil {
 		return Developer{}, ErrNoDatabase
 	}
-	row := r.pool.QueryRow(ctx,
+	row := r.db(ctx).QueryRow(ctx,
 		`select id::text, email, password_hash, name, created_at, status, coalesce(status_reason, '')
 		 from developers where id = $1`, id)
 	return scanDeveloper(row)
@@ -97,7 +97,7 @@ func (r *Repository) DeveloperStatusOf(ctx context.Context, id string) (string, 
 		return "", ErrNoDatabase
 	}
 	var status string
-	err := r.pool.QueryRow(ctx, `select status from developers where id = $1`, id).Scan(&status)
+	err := r.db(ctx).QueryRow(ctx, `select status from developers where id = $1`, id).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}

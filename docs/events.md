@@ -344,8 +344,9 @@ Cancel and decline are two event types because they have different recipients; a
 
 ### `config.published`
 
-- **Published by Platform** after the developer presses Publish (or rolls back) and the new config version is saved
-  (`services/platform/internal/service/widget.go`). A rollback saves a new version, so `version` is that new number.
+- **Published by Platform** when the developer presses Publish (or rolls back): written to Platform's outbox in the
+  transaction that saves the new config version (`services/platform/internal/service/widget.go`), and sent by its relay
+  after the commit. A rollback saves a new version, so `version` is that new number.
 - **`data`:** `version` = the new version number, a whole number from 1. The config itself is **not** in the event.
 
 ```json
@@ -373,8 +374,9 @@ Cancel and decline are two event types because they have different recipients; a
 
 ### `game.suspended` and `game.resumed`
 
-- **Published by Platform** after an admin suspends or resumes a game, or a whole developer, and the change is saved
-  (`services/platform/internal/service/admin_status.go`). The full messages are in [`event-messages.md`](event-messages.md).
+- **Published by Platform** when an admin suspends or resumes a game, or a whole developer: written to Platform's outbox in
+  the transaction of the change and its audit row (`services/platform/internal/service/admin_status.go`), and sent by its
+  relay after the commit. The full messages are in [`event-messages.md`](event-messages.md).
 - **`data`:** `status`, `suspended` or `active`: the game's **effective** status after the change, the same word as `status` in
   `GET /internal/v1/games/{gameID}/config`. Never the reason or the admin's note.
 - **When it is published:** only when a change was saved, so a repeated request publishes nothing. A game is served when the game
@@ -382,8 +384,10 @@ Cancel and decline are two event types because they have different recipients; a
   - a game-level change publishes one event for that game, unless its developer is suspended (the game was off before and stays off);
   - a developer-level change publishes one event for each game of theirs whose own switch is on. A game that was suspended on its own
     is skipped: it is off before and after, and a `game.resumed` for it would let it through.
-- **If the broker is down** the admin's request still succeeds and the event is lost (logged). The internal config says the same
-  thing as the event, so a consumer that wants the truth reads `GET /internal/v1/games/{gameID}/config`.
+- **If the broker is down** the admin's request still succeeds; the event waits in Platform's outbox and reaches Realtime once
+  the broker is back. If the event cannot be written, or the developer's status cannot be read to decide on it, the whole change
+  fails and the admin can try again. The internal config says the same thing as the event, so a consumer that wants the truth
+  reads `GET /internal/v1/games/{gameID}/config`.
 - **Realtime does:**
   - `game.suspended`: records the game as suspended at once, then closes **every open connection of that game, and of no other**,
     with close code `4403` and reason `game_suspended` (the same hub reach as `config.updated`). A new connection is refused the same
@@ -511,16 +515,16 @@ Who gets what:
 
 Chat messages are **not** events: they travel over the WebSocket only (`message.send` / `message.new`, see `openapi/realtime-ws.md`).
 
-## 8. The publisher (Social side)
+## 8. The publishers (Social and Platform)
 
-- **Transactional outbox.** Every Social event is written to Social's `outbox` table **in the transaction of the change it
-  describes** (`service.change`: the store call and `AddEvents` run inside `InTx`). A rolled-back change leaves no event,
-  and a committed change always has its event. Nothing talks to RabbitMQ during a request.
-- **The outbox relay** (`events.Relay`, started in `services/social/cmd/relay.go`) publishes the unsent rows oldest first,
+- **Transactional outbox.** Every Social and Platform event is written to that service's own `outbox` table **in the
+  transaction of the change it describes** (`service.change`: the store call and `AddEvents` run inside `InTx`). A
+  rolled-back change leaves no event, and a committed change always has its event. Nothing talks to RabbitMQ during a request.
+- **The outbox relay** (`events.Relay`, started in each service's `cmd/relay.go`) publishes the unsent rows oldest first,
   waits for the broker's confirm and only then marks a row sent. With RabbitMQ down the rows wait, the relay retries
   (1 s doubling up to 30 s) and sends them once the broker is back. Details: README "Event outbox".
-- Built in `services/social/cmd/main.go` from `SOCIAL_RABBITMQ_URL`. Without it the relay uses `events.Noop{}`: rows are
-  marked sent and dropped, and the log says `SOCIAL_RABBITMQ_URL is not set`. docker compose sets it.
+- Built in each service's `cmd/main.go` from `SOCIAL_RABBITMQ_URL` / `PLATFORM_RABBITMQ_URL`. Without it the relay uses
+  `events.Noop{}`: rows are marked sent and dropped, and the log says the URL is not set. docker compose sets both.
 - Delivery is **at least once**: a row can be sent twice (section 9 says how Realtime skips the copy).
 - Order: rows go out in the order they were written. Events about the same pair or clan are written under that pair's or
   clan's lock, so they keep their order.
@@ -595,7 +599,7 @@ message with `game_id` and the player IDs replaced by real ones. Watch **Queues 
 Ready and Unacked go back to 0 within a second, and **Consumers** lists one consumer with prefetch 20.
 
 **Logs:** `docker compose logs -f realtime` (look for `event handled`, `dropping unusable event`) and
-`docker compose logs -f social` (`outbox relay could not send`).
+`docker compose logs -f social` / `platform` (`outbox relay could not send`).
 
 **Tests:** `go test ./...`. The consumer's ack rules are tested with a fake acknowledger, the field names with
 `TestDispatchReadsEventsAsSocialPublishesThem` and `TestDispatchReadsEveryMessageInTheEventMessagesFile`, and the SQL in `services/realtime/internal/repository` runs against a real
@@ -605,7 +609,7 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 
 | Gap | Effect | Plan |
 |---|---|---|
-| An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until it is backfilled | Done for friendships: start Realtime once with `REALTIME_BACKFILL=true` (README "Realtime backfill"). It only adds, so a lost `friend.removed` is not repaired. Social now writes its events through the transactional outbox (README "Event outbox"), so a broker that is down no longer loses them. Still open: a dead-letter queue on the consumer side. |
+| An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until it is backfilled | Done for friendships: start Realtime once with `REALTIME_BACKFILL=true` (README "Realtime backfill"). It only adds, so a lost `friend.removed` is not repaired. Social and Platform now write their events through the transactional outbox (README "Event outbox"), so a broker that is down no longer loses them. Still open: a dead-letter queue on the consumer side. |
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | Clan rooms are not backfilled | A clan made before Realtime ran, or whose `clan.created` / `clan.member_joined` was lost, has no room (or misses that member) until the next join; a lost `clan.member_left` leaves the player in the room | A backfill like the friendships one: needs an internal Social endpoint that lists clan members (Social has none yet), then a clan pass in `REALTIME_BACKFILL`. |
@@ -625,7 +629,7 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
    with Social IDs. Put the tenant in the envelope's `game_id`, never in `data`.
 2. **Binding:** make sure `deploy/rabbitmq/definitions.json` binds the routing key to the consumer's queue
    (a new service gets its own queue).
-3. **Publisher:** in Social, return `events.New(type, gameID, data)` from the function given to `service.change`, so it is written to the outbox in the change's transaction; test it with `recorderOf(store)` in the service tests.
+3. **Publisher:** return `events.New(type, gameID, data)` from the function given to `service.change` (Social and Platform), so it is written to the outbox in the change's transaction; test it with the events the fake store committed (`recorderOf(store)` in Social, `store.committed` in Platform).
 4. **Consumer:** add the type constant, a `data` struct and a `case` in `dispatch.go` (in `handledOnce` and `store` when the
    event stores or sends something, so a copy is skipped); the rules and DB work go in the service and repository (every
    query takes the game ID and uses `r.db(ctx)`, so it joins the event's transaction; writes are upserts or deletes).

@@ -91,8 +91,8 @@ func run() error {
 
 	// The service writes every event to the outbox table in the transaction of its change; the
 	// outbox relay publishes them, in the order they were written, and retries until the broker
-	// confirms them (README "Event outbox"). It is the only user of the publisher, and gets it
-	// bare, not in events.Safe, so it sees a failed send and keeps the row.
+	// confirms them (README "Event outbox"). It is the only user of the publisher, and must see a
+	// failed send, so it keeps the row.
 	relayDone, err := startRelay(ctx, pool, publisher, "SOCIAL", log)
 	if err != nil {
 		return err

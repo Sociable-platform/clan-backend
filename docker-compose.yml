@@ -144,7 +144,7 @@ services:
       platform-migrate:
         condition: service_completed_successfully
       # Start after the queues and bindings exist, so the first config.published reaches realtime.events.
-      # Once running, platform keeps working if RabbitMQ goes down (the event is then lost, see README).
+      # Once running, platform keeps working if RabbitMQ goes down; its events wait in the outbox (README "Event outbox").
       rabbitmq-setup:
         condition: service_completed_successfully
     restart: unless-stopped

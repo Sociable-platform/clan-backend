@@ -1,11 +1,9 @@
 package events
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"regexp"
 	"strings"
 	"testing"
@@ -58,37 +56,6 @@ func TestEventJSONLeavesOutEmptyData(t *testing.T) {
 	b, _ := json.Marshal(Event{ID: "x"})
 	if strings.Contains(string(b), `"data"`) {
 		t.Errorf("JSON %s has data, want it left out", b)
-	}
-}
-
-func TestSafeLogsAndSwallowsTheError(t *testing.T) {
-	var logs bytes.Buffer
-	log := slog.New(slog.NewJSONHandler(&logs, nil))
-	p := Safe(&Recorder{Err: errors.New("broker down")}, log)
-
-	e := New("friend.accepted", "g", nil)
-	if err := p.Publish(context.Background(), e); err != nil {
-		t.Fatalf("Publish = %v, want nil", err)
-	}
-	for _, want := range []string{"publish event failed", e.ID, "friend.accepted", "broker down"} {
-		if !strings.Contains(logs.String(), want) {
-			t.Errorf("log %q does not contain %q", logs.String(), want)
-		}
-	}
-}
-
-func TestSafePassesTheEventOn(t *testing.T) {
-	var logs bytes.Buffer
-	rec := &Recorder{}
-	e := New("clan.member_joined", "g", nil)
-	if err := Safe(rec, slog.New(slog.NewJSONHandler(&logs, nil))).Publish(context.Background(), e); err != nil {
-		t.Fatal(err)
-	}
-	if got := rec.Events(); len(got) != 1 || got[0].ID != e.ID {
-		t.Errorf("recorded %+v, want the one event", got)
-	}
-	if logs.Len() != 0 {
-		t.Errorf("logged %q on success, want nothing", logs.String())
 	}
 }
 
