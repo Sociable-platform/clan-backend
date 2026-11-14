@@ -44,7 +44,7 @@ func (r *Repository) ListFriendshipsAfter(ctx context.Context, after FriendshipK
 	if after == (FriendshipKey{}) {
 		after = FriendshipKey{GameID: zeroUUID, PlayerA: zeroUUID, PlayerB: zeroUUID}
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select f.game_id::text, f.player_a_id::text, pa.display_name, f.player_b_id::text, pb.display_name, f.created_at
 		 from friendships f
 		 join players pa on pa.id = f.player_a_id and pa.game_id = f.game_id

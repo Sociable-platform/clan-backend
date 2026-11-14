@@ -76,9 +76,9 @@ func run() error {
 		log.Warn("SOCIAL_DATABASE_URL is not set: starting without a database, /ready will report not ready")
 	}
 
-	// Events for the other services (see README "RabbitMQ events"). Without a broker URL they are
-	// dropped. The publisher connects on its first event, so a broker that is down never stops
-	// social from starting, and events.Safe makes sure it never fails a request either.
+	// Events for the other services (see README "RabbitMQ events"), sent by the outbox relay below.
+	// Without a broker URL they are dropped. The publisher connects on its first event, so a broker
+	// that is down never stops social from starting, and requests never wait for it.
 	var publisher events.Publisher = events.Noop{}
 	if url := config.String("SOCIAL_RABBITMQ_URL", ""); url != "" {
 		rabbit := events.NewRabbitMQ(url, log)
@@ -89,9 +89,10 @@ func run() error {
 		log.Warn("SOCIAL_RABBITMQ_URL is not set: events for other services are dropped")
 	}
 
-	// The outbox relay publishes the events written to the outbox table, in the order they were
-	// written, and retries until the broker confirms them (README "Event outbox"). It gets the bare
-	// publisher, not events.Safe, so it sees a failed send and keeps the row.
+	// The service writes every event to the outbox table in the transaction of its change; the
+	// outbox relay publishes them, in the order they were written, and retries until the broker
+	// confirms them (README "Event outbox"). It is the only user of the publisher, and gets it
+	// bare, not in events.Safe, so it sees a failed send and keeps the row.
 	relayDone, err := startRelay(ctx, pool, publisher, "SOCIAL", log)
 	if err != nil {
 		return err
@@ -119,7 +120,7 @@ func run() error {
 
 	// Wiring: repository (database) -> service (rules) -> handler (HTTP).
 	repo := repository.New(pool)
-	svc := service.New(repo).WithPublisher(events.Safe(publisher, log)).WithRules(rules)
+	svc := service.New(repo).WithRules(rules)
 
 	// The /internal routes (for realtime's backfill) need a shared secret. Without one they answer 404.
 	internalToken := config.String("SOCIAL_INTERNAL_TOKEN", "")

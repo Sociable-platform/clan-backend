@@ -331,19 +331,18 @@ So **Social and Realtime must keep these field names in step**; `TestDispatchRea
 
 ### Publishing from a service
 
-- Social publishes when `SOCIAL_RABBITMQ_URL` is set (docker compose sets it). Without it social starts anyway, logs
-  `SOCIAL_RABBITMQ_URL is not set`, and drops its events.
+- **Social** writes every event to its `outbox` table in the transaction of the change (see "Event outbox" below), and its
+  outbox relay publishes them. A request never talks to RabbitMQ, and an event is never lost because the broker was down.
+  Service tests read the events a fake store committed; repository tests check that an event rolls back with its change.
+- **Platform** still publishes directly after the commit, through `events.Safe`: a failed publish is logged as
+  `publish event failed` with its `event_id` and `type`, and the request still succeeds.
+- Without `<SERVICE>_RABBITMQ_URL` a service starts anyway, logs `..._RABBITMQ_URL is not set`, and drops its events.
 - The publisher (`events.NewRabbitMQ`) connects on the first event, not at startup, and reconnects by itself. After a
-  failed connection it waits 5 s before trying again, so requests never queue up behind a dead broker.
-- Every publish waits for the broker to confirm it (up to 5 s).
-- Services get the publisher wrapped in `events.Safe`: a failed publish is logged as `publish event failed` with its
-  `event_id` and `type`, and the user's request still succeeds.
-- Publish only after the database change has committed, so an event never announces something that was rolled back.
-- Service tests use `events.Recorder` to check which events were published.
+  failed connection it waits 5 s before trying again. Every publish waits for the broker to confirm it (up to 5 s).
 
-**Known gap: an event can be lost.** If RabbitMQ is down or does not confirm in time, the database change stays and
-the event is gone (only the log line remains). Realtime then misses a friendship until it is backfilled (see "Realtime backfill" in the Realtime section).
-The event outbox below closes this gap once the services write their events through it; until then they still publish directly.
+**Known gap: a platform event can be lost.** If RabbitMQ is down or does not confirm in time when platform publishes,
+the database change stays and the event is gone (only the log line remains). Social's events do not have this gap any
+more: they wait in its outbox until the broker is back. Platform moves to the outbox next.
 
 ### Event outbox
 
