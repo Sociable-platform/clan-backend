@@ -28,7 +28,7 @@ func (r *Repository) JoinClanRoom(ctx context.Context, gameID, clanID string, m 
 	if r.pool == nil {
 		return ClanRoom{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return ClanRoom{}, fmt.Errorf("begin join clan room: %w", err)
 	}
@@ -79,7 +79,7 @@ func (r *Repository) LeaveClanRoom(ctx context.Context, gameID, clanID, playerID
 	if r.pool == nil {
 		return "", false, ErrNoDatabase
 	}
-	err = r.pool.QueryRow(ctx, `
+	err = r.db(ctx).QueryRow(ctx, `
 		WITH room AS (
 		    SELECT id FROM conversations
 		    WHERE game_id = $1 AND kind = 'clan' AND clan_id = $2),
@@ -104,7 +104,7 @@ func (r *Repository) DeleteClanRoom(ctx context.Context, gameID, clanID string) 
 	if r.pool == nil {
 		return "", nil, false, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return "", nil, false, fmt.Errorf("begin delete clan room: %w", err)
 	}
