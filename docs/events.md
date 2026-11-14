@@ -574,8 +574,25 @@ None of them stops the consumer.
 A rejected message is **not deleted**: the broker moves it to `realtime.events.dead` (section 3), with an `x-death` header
 that says where it came from (`queue`), why (`reason`: `rejected`), how often (`count`) and its original routing key
 (`routing-keys`); the body, `message_id` and `type` are unchanged. Our own reason for rejecting it is in the log line above,
-found by `event_id`. Look at dead events in the management UI: **Queues > realtime.events.dead > Get messages** (with
-*Ack mode: Nack message requeue true*, so they stay). They are kept 14 days.
+found by `event_id`. They are kept 14 days.
+
+**Listing and replaying dead events** (`tools/dlq`, broker address from `-url` or `REALTIME_RABBITMQ_URL`):
+
+```bash
+go run ./tools/dlq list                         # event_id, type, game, from queue, original routing key, reason, times, since
+go run ./tools/dlq replay -id <event_id>,...     # send these back to the queue they came from
+go run ./tools/dlq replay                       # send all of them back
+```
+
+- `list` leaves every event in the DLQ. Fix the cause first (bring the database back, fix the publisher), then replay.
+- `replay` sends each event **back to the queue it was dead-lettered from** (`x-death`), through the default exchange, so
+  only the consumer that rejected it sees it again; the body, `message_id` and `type` are unchanged. An event leaves the DLQ
+  only after the broker confirmed its copy, and the target queue is checked first (the broker would confirm, and drop, a
+  copy no queue takes), so a failure halfway loses nothing: the failed event and the ones after it stay.
+- Replaying is safe: an event Realtime already handled is skipped by its `event_id` (no rows, no frames), and an event that
+  is still unusable is rejected again and goes back to the DLQ.
+- The management UI shows them too: **Queues > realtime.events.dead > Get messages**, with *Ack mode: Nack message requeue
+  true* so they stay.
 
 - **Reconnect:** if the broker is down or restarts, Realtime keeps serving WebSockets and reconnects with a growing wait
   (1 s, 2 s, 4 s … up to 30 s; reset after a successful connection). Log: `event consumer stopped, will reconnect`, then
@@ -633,13 +650,13 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 
 | Gap | Effect | Plan |
 |---|---|---|
-| An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until it is backfilled | Done for friendships: start Realtime once with `REALTIME_BACKFILL=true` (README "Realtime backfill"). It only adds, so a lost `friend.removed` is not repaired. Social and Platform now write their events through the transactional outbox (README "Event outbox"), so a broker that is down no longer loses them. An event Realtime rejects at consume time now waits in the dead-letter queue `realtime.events.dead` (section 3) for 14 days instead of being deleted. Still open: a tool to replay it (TEAM-241). |
+| An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until it is backfilled | Done for friendships: start Realtime once with `REALTIME_BACKFILL=true` (README "Realtime backfill"). It only adds, so a lost `friend.removed` is not repaired. Social and Platform now write their events through the transactional outbox (README "Event outbox"), so a broker that is down no longer loses them. An event Realtime rejects at consume time now waits in the dead-letter queue `realtime.events.dead` (section 3) for 14 days instead of being deleted, and `go run ./tools/dlq replay` sends it back once the cause is fixed (section 9). |
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | Clan rooms are not backfilled | A clan made before Realtime ran, or whose `clan.created` / `clan.member_joined` was lost, has no room (or misses that member) until the next join; a lost `clan.member_left` leaves the player in the room | A backfill like the friendships one: needs an internal Social endpoint that lists clan members (Social has none yet), then a clan pass in `REALTIME_BACKFILL`. |
 | The members who stay in a clan are not told when someone leaves | Open tabs list the old members until they reload the conversations | A frame for it, if the SDK needs it live (the contract has none). |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
-| A lost `player.blocked` (only at consume time now: Social writes it through the outbox) | The blocked player can still message the blocker Replaying it from the dead-letter queue, and a backfill of the blocks: Social stores them now (TEAM-154) but has no internal endpoint that lists them, like `/internal/v1/friendships` (the friendships backfill of TEAM-151 does not cover blocks). |
+| A lost `player.blocked` (only at consume time now: Social writes it through the outbox) | The blocked player can still message the blocker | Replay it from the dead-letter queue (`go run ./tools/dlq replay`), and a backfill of the blocks: Social stores them now (TEAM-154) but has no internal endpoint that lists them, like `/internal/v1/friendships` (the friendships backfill of TEAM-151 does not cover blocks). |
 | Slow mode and the rate limit are in the memory of the one Realtime process | A restart gives everybody a fresh start | Fine while Realtime is one process. |
 | The profanity list is built in and the same for every game | A game can only switch the filter on or off; no spelling tricks are caught | A per-game word list in the config, if developers ask. |
 | Presence ignores the game's "hide online status" | The config v1 schema has no such field, so every game shows online status | Add the field to the schema (Platform and the dashboard), then Realtime reads it from its config cache (TEAM-149 did not build it). |
