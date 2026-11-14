@@ -58,7 +58,7 @@ func (r *Repository) ListClans(ctx context.Context, gameID, query string, opts L
 	if opts.ByMembers {
 		order = orderClansByMembers
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select id::text, name, description, badge, tag, member_count
 		 from clans
 		 where game_id = $1
@@ -119,7 +119,7 @@ func (r *Repository) CreateClan(ctx context.Context, gameID, ownerID string, in 
 	if r.pool == nil {
 		return Clan{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return Clan{}, fmt.Errorf("create clan: %w", err)
 	}
@@ -199,7 +199,7 @@ func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID stri
 	if r.pool == nil {
 		return Clan{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return Clan{}, fmt.Errorf("join clan: %w", err)
 	}
@@ -288,7 +288,7 @@ func (r *Repository) MyClan(ctx context.Context, gameID, externalID string) (Pla
 		return PlayerClan{}, ErrNoDatabase
 	}
 	var pc PlayerClan
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select c.id::text, c.name, c.description, c.badge, c.tag, c.member_count, m.role
 		 from players p
 		 join clan_members m on m.player_id = p.id and m.game_id = p.game_id
@@ -322,7 +322,7 @@ func (r *Repository) ListMembers(ctx context.Context, gameID, clanID string) ([]
 		return nil, ErrNoDatabase
 	}
 	var exists bool
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select exists (select 1 from clans where id = $1 and game_id = $2)`,
 		clanID, gameID).Scan(&exists)
 	if err != nil {
@@ -332,7 +332,7 @@ func (r *Repository) ListMembers(ctx context.Context, gameID, clanID string) ([]
 		return nil, ErrClanNotFound
 	}
 
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select p.id::text, p.display_name, m.role, m.joined_at
 		 from clan_members m
 		 join players p on p.id = m.player_id and p.game_id = m.game_id
@@ -397,7 +397,7 @@ func (r *Repository) LeaveClan(ctx context.Context, gameID, clanID, externalID s
 	if r.pool == nil {
 		return LeaveResult{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return LeaveResult{}, fmt.Errorf("leave clan: %w", err)
 	}
@@ -594,7 +594,7 @@ func (r *Repository) KickMember(ctx context.Context, gameID, clanID, actorExtern
 	if r.pool == nil {
 		return LeaveResult{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return LeaveResult{}, fmt.Errorf("kick member: %w", err)
 	}
@@ -648,7 +648,7 @@ func (r *Repository) ChangeRole(ctx context.Context, gameID, clanID, actorExtern
 	if r.pool == nil {
 		return RoleChange{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return RoleChange{}, fmt.Errorf("change role: %w", err)
 	}
@@ -722,7 +722,7 @@ func (r *Repository) RenameClan(ctx context.Context, gameID, clanID, ownerExtern
 	if r.pool == nil {
 		return RenameResult{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return RenameResult{}, fmt.Errorf("rename clan: %w", err)
 	}

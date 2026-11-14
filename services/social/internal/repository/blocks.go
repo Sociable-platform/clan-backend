@@ -38,7 +38,7 @@ func (r *Repository) Block(ctx context.Context, gameID, blockerID, blockedID str
 	if r.pool == nil {
 		return BlockResult{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return BlockResult{}, fmt.Errorf("block: %w", err)
 	}
@@ -120,7 +120,7 @@ func (r *Repository) Unblock(ctx context.Context, gameID, blockerID, blockedID s
 	if r.pool == nil {
 		return UnblockResult{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return UnblockResult{}, fmt.Errorf("unblock: %w", err)
 	}
@@ -183,7 +183,7 @@ func (r *Repository) ListBlocks(ctx context.Context, gameID, playerID string) ([
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select p.id::text, p.display_name, b.created_at
 		 from blocks b
 		 join players p on p.id = b.blocked_id and p.game_id = b.game_id

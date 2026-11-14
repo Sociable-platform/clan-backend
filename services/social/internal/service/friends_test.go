@@ -111,10 +111,9 @@ const (
 
 var when = time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
 
-// friendService returns a service on store that records its events.
+// friendService returns a service on store, and the events its transactions committed to the outbox.
 func friendService(store Store) (*Service, *events.Recorder) {
-	rec := &events.Recorder{}
-	return New(store).WithPublisher(rec), rec
+	return New(store), recorderOf(store)
 }
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -248,13 +247,18 @@ func TestSendFriendRequestDatabaseFailure(t *testing.T) {
 	}
 }
 
-// A broker that is down must not fail the request: main wraps the publisher in events.Safe.
-func TestSendFriendRequestSucceedsWhenPublishingFails(t *testing.T) {
+// The event is part of the change: when it cannot be written to the outbox, the request fails and
+// the change rolls back with it (the broker is never asked during a request).
+func TestSendFriendRequestFailsWhenTheEventCannotBeWritten(t *testing.T) {
 	store := newFriendStore()
 	store.send = repository.SendFriendRequestResult{Request: &repository.FriendRequest{ID: "req-1"}}
-	svc := New(store).WithPublisher(events.Safe(&events.Recorder{Err: errors.New("broker down")}, quietLog()))
-	if _, err := svc.SendFriendRequest(context.Background(), gameA, "u_1", "Ali", otherID); err != nil {
-		t.Fatalf("err = %v, want nil", err)
+	store.addErr = errors.New("outbox insert failed")
+	svc, rec := friendService(store)
+	if _, err := svc.SendFriendRequest(context.Background(), gameA, "u_1", "Ali", otherID); !errors.Is(err, store.addErr) {
+		t.Fatalf("err = %v, want the outbox error", err)
+	}
+	if evs := rec.Events(); len(evs) != 0 {
+		t.Errorf("committed %+v, want nothing", evs)
 	}
 }
 
