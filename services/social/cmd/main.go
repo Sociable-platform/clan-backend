@@ -89,6 +89,14 @@ func run() error {
 		log.Warn("SOCIAL_RABBITMQ_URL is not set: events for other services are dropped")
 	}
 
+	// The outbox relay publishes the events written to the outbox table, in the order they were
+	// written, and retries until the broker confirms them (README "Event outbox"). It gets the bare
+	// publisher, not events.Safe, so it sees a failed send and keeps the row.
+	relayDone, err := startRelay(ctx, pool, publisher, "SOCIAL", log)
+	if err != nil {
+		return err
+	}
+
 	// The clan rules each game set in Studio (clan.maxMembers), read from platform's published
 	// config and kept for SOCIAL_CONFIG_CACHE_TTL. Without a platform URL every game gets the
 	// default (10 members). Platform being down never fails a request: the last known rules,
@@ -144,5 +152,13 @@ func run() error {
 	log.Info("cors", "allowed_origins", origins)
 
 	h := httpx.Chain(mux, httpx.Recover(log), httpx.RequestLog(log), cors)
-	return httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
+	err = httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
+	// The relay stops with ctx too, after recording the batch it was sending; wait for it before
+	// the pool and the broker connection are closed.
+	select {
+	case <-relayDone:
+	case <-time.After(relayStopWait):
+		log.Warn("outbox relay did not stop in time")
+	}
+	return err
 }
