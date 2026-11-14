@@ -20,9 +20,3 @@ social:
   corsOrigins: https://game.130-61-158-79.sslip.io,http://localhost:5174
 realtime:
   corsOrigins: https://game.130-61-158-79.sslip.io,http://localhost:5174
-
-studio:
-  enabled: true
-  # The short commit SHA of the clan-frontend build to run (Deploy -> Container registry -> studio).
-  tag: f47e9502
-  #b3df2e0b
