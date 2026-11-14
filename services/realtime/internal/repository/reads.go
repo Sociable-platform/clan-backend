@@ -31,7 +31,7 @@ func (r *Repository) ListConversations(ctx context.Context, gameID, playerID str
 	}
 	// One query for the conversations with their last message and the player's own unread count, and
 	// one for the members of those conversations. Both filter by game_id.
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db(ctx).Query(ctx, `
 		SELECT c.id, c.kind, c.clan_id,
 		       lm.id, lm.sender_id, lm.sender_name, lm.body, lm.created_at,
 		       (SELECT count(*) FROM (
@@ -81,7 +81,7 @@ func (r *Repository) ListConversations(ctx context.Context, gameID, playerID str
 		return out, nil
 	}
 
-	members, err := r.pool.Query(ctx, `
+	members, err := r.db(ctx).Query(ctx, `
 		SELECT conversation_id, player_id, display_name
 		FROM conversation_members
 		WHERE game_id = $1 AND conversation_id = ANY($2::uuid[])
@@ -184,7 +184,7 @@ func (r *Repository) MarkRead(ctx context.Context, gameID, playerID, conversatio
 	var member, found bool
 	// The UPDATE in the CTE runs even though only the two EXISTS are read. Under concurrent calls
 	// the row lock makes the second UPDATE re-check "older than the new message" on the newest value.
-	err := r.pool.QueryRow(ctx, `
+	err := r.db(ctx).QueryRow(ctx, `
 		WITH me AS (
 			SELECT 1 FROM conversation_members
 			WHERE game_id = $1 AND conversation_id = $2 AND player_id = $3

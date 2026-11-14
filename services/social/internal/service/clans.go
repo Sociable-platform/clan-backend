@@ -160,11 +160,22 @@ func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayNam
 		return Clan{}, fmt.Errorf("create clan: %w", err)
 	}
 
-	row, err := s.store.CreateClan(ctx, gameID, owner.ID, repository.NewClan{
-		Name:        clean,
-		Description: description,
-		Badge:       badge,
-		Tag:         tag,
+	var row repository.Clan
+	err = s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		var err error
+		row, err = s.store.CreateClan(ctx, gameID, owner.ID, repository.NewClan{
+			Name:        clean,
+			Description: description,
+			Badge:       badge,
+			Tag:         tag,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return []events.Event{events.New(EventClanCreated, gameID, map[string]any{
+			"clan":   ref(row.ID, row.Name),
+			"player": ref(owner.ID, owner.DisplayName),
+		})}, nil
 	})
 	switch {
 	case errors.Is(err, repository.ErrClanNameTaken):
@@ -174,15 +185,11 @@ func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayNam
 	case err != nil:
 		return Clan{}, fmt.Errorf("create clan: %w", err)
 	}
-	_ = s.events.Publish(ctx, events.New(EventClanCreated, gameID, map[string]any{
-		"clan":   ref(row.ID, row.Name),
-		"player": ref(owner.ID, owner.DisplayName),
-	}))
 	return toClan(row, s.maxMembers(ctx, gameID)), nil
 }
 
-// Clan events for the other services (docs/event-messages.md). Each is published after the
-// change is committed; a clan and a player are always {id, name}.
+// Clan events for the other services (docs/event-messages.md). Each is written to the outbox in
+// the transaction of its change and published after the commit; a clan and a player are always {id, name}.
 const (
 	EventClanCreated      = "clan.created"       // {clan, player}: player is the owner
 	EventClanMemberJoined = "clan.member_joined" // {clan, player}
@@ -313,7 +320,17 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 
 	rules, ladder := s.clanRules(ctx, gameID)
 	limit := rules.MaxMembers
-	row, err := s.store.JoinClan(ctx, gameID, strings.ToLower(clanID), player.ID, limit, ladder.NewMemberRole())
+	var row repository.Clan
+	err = s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		var err error
+		if row, err = s.store.JoinClan(ctx, gameID, strings.ToLower(clanID), player.ID, limit, ladder.NewMemberRole()); err != nil {
+			return nil, err
+		}
+		return []events.Event{events.New(EventClanMemberJoined, gameID, map[string]any{
+			"clan":   ref(row.ID, row.Name),
+			"player": ref(player.ID, player.DisplayName),
+		})}, nil
+	})
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return Clan{}, errClanNotFound()
@@ -324,10 +341,6 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 	case err != nil:
 		return Clan{}, fmt.Errorf("join clan: %w", err)
 	}
-	_ = s.events.Publish(ctx, events.New(EventClanMemberJoined, gameID, map[string]any{
-		"clan":   ref(row.ID, row.Name),
-		"player": ref(player.ID, player.DisplayName),
-	}))
 	return toClan(row, limit), nil
 }
 
@@ -344,7 +357,13 @@ func (s *Service) LeaveClan(ctx context.Context, gameID, externalID, clanID stri
 	if !uuidPattern.MatchString(clanID) {
 		return errClanNotFound()
 	}
-	res, err := s.store.LeaveClan(ctx, gameID, strings.ToLower(clanID), externalID)
+	err := s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		res, err := s.store.LeaveClan(ctx, gameID, strings.ToLower(clanID), externalID)
+		if err != nil {
+			return nil, err
+		}
+		return []events.Event{leaveEvent(gameID, res)}, nil
+	})
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return errClanNotFound()
@@ -353,7 +372,6 @@ func (s *Service) LeaveClan(ctx context.Context, gameID, externalID, clanID stri
 	case err != nil:
 		return fmt.Errorf("leave clan: %w", err)
 	}
-	s.publishLeave(ctx, gameID, res)
 	return nil
 }
 
@@ -375,10 +393,16 @@ func (s *Service) KickMember(ctx context.Context, gameID, externalID, clanID, pl
 		return errMemberNotFound()
 	}
 	_, ladder := s.clanRules(ctx, gameID)
-	res, err := s.store.KickMember(ctx, gameID, strings.ToLower(clanID), externalID, strings.ToLower(playerID),
-		func(actor, target repository.MemberRole) bool {
-			return ladder.CanKick(toRoleMember(actor), toRoleMember(target))
-		})
+	err := s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		res, err := s.store.KickMember(ctx, gameID, strings.ToLower(clanID), externalID, strings.ToLower(playerID),
+			func(actor, target repository.MemberRole) bool {
+				return ladder.CanKick(toRoleMember(actor), toRoleMember(target))
+			})
+		if err != nil {
+			return nil, err
+		}
+		return []events.Event{leaveEvent(gameID, res)}, nil
+	})
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return errClanNotFound()
@@ -391,13 +415,12 @@ func (s *Service) KickMember(ctx context.Context, gameID, externalID, clanID, pl
 	case err != nil:
 		return fmt.Errorf("kick member: %w", err)
 	}
-	s.publishLeave(ctx, gameID, res)
 	return nil
 }
 
 // RenameClan gives clan clanID of the caller's game a new name and returns the clan. Only the
 // clan's owner may do it. The name is cleaned and checked like on create. Sending the name
-// the clan already has changes nothing and publishes nothing; a change of upper/lower case
+// the clan already has changes nothing and writes no event; a change of upper/lower case
 // only is a rename.
 //
 // Errors the client can act on:
@@ -413,7 +436,18 @@ func (s *Service) RenameClan(ctx context.Context, gameID, externalID, clanID, na
 	if !uuidPattern.MatchString(clanID) {
 		return Clan{}, errClanNotFound()
 	}
-	res, err := s.store.RenameClan(ctx, gameID, strings.ToLower(clanID), externalID, clean)
+	var res repository.RenameResult
+	err = s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		var err error
+		res, err = s.store.RenameClan(ctx, gameID, strings.ToLower(clanID), externalID, clean)
+		if err != nil || !res.Changed {
+			return nil, err
+		}
+		return []events.Event{events.New(EventClanRenamed, gameID, map[string]any{
+			"clan":          ref(res.Clan.ID, res.Clan.Name),
+			"previous_name": res.PreviousName,
+		})}, nil
+	})
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return Clan{}, errClanNotFound()
@@ -424,28 +458,20 @@ func (s *Service) RenameClan(ctx context.Context, gameID, externalID, clanID, na
 	case err != nil:
 		return Clan{}, fmt.Errorf("rename clan: %w", err)
 	}
-	c := res.Clan
-	if res.Changed {
-		_ = s.events.Publish(ctx, events.New(EventClanRenamed, gameID, map[string]any{
-			"clan":          ref(c.ID, c.Name),
-			"previous_name": res.PreviousName,
-		}))
-	}
-	return toClan(c, s.maxMembers(ctx, gameID)), nil
+	return toClan(res.Clan, s.maxMembers(ctx, gameID)), nil
 }
 
 func errMemberNotFound() error {
 	return httpx.NewError(http.StatusNotFound, "member_not_found", "This player is not a member of the clan")
 }
 
-// publishLeave tells what a leave or a kick did: clan.disbanded when the last member left (the
+// leaveEvent tells what a leave or a kick did: clan.disbanded when the last member left (the
 // clan is gone, so there is no member_left), otherwise clan.member_left with reason "left" or
 // "kicked".
-func (s *Service) publishLeave(ctx context.Context, gameID string, res repository.LeaveResult) {
+func leaveEvent(gameID string, res repository.LeaveResult) events.Event {
 	clan := ref(res.ClanID, res.ClanName)
 	if res.Disbanded {
-		_ = s.events.Publish(ctx, events.New(EventClanDisbanded, gameID, map[string]any{"clan": clan}))
-		return
+		return events.New(EventClanDisbanded, gameID, map[string]any{"clan": clan})
 	}
 	var newOwner any // JSON null when the owner did not change
 	if res.NewOwner != nil {
@@ -455,13 +481,13 @@ func (s *Service) publishLeave(ctx context.Context, gameID string, res repositor
 	if res.KickedBy != nil {
 		reason, kickedBy = "kicked", ref(res.KickedBy.ID, res.KickedBy.DisplayName)
 	}
-	_ = s.events.Publish(ctx, events.New(EventClanMemberLeft, gameID, map[string]any{
+	return events.New(EventClanMemberLeft, gameID, map[string]any{
 		"clan":      clan,
 		"player":    ref(res.Player.ID, res.Player.DisplayName),
 		"reason":    reason,
 		"kicked_by": kickedBy,
 		"new_owner": newOwner,
-	}))
+	})
 }
 
 func errClanNotFound() error {

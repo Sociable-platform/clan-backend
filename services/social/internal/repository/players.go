@@ -46,7 +46,7 @@ func (r *Repository) UpsertPlayer(ctx context.Context, gameID, externalID, displ
 
 	p = Player{GameID: gameID, ExternalID: externalID}
 	var inserted bool
-	err = r.pool.QueryRow(ctx,
+	err = r.db(ctx).QueryRow(ctx,
 		`insert into players (game_id, external_id, display_name)
 		 values ($1, $2, $3)
 		 on conflict (game_id, external_id)
@@ -73,7 +73,7 @@ func (r *Repository) UpsertPlayer(ctx context.Context, gameID, externalID, displ
 // playerByExternalID reads the player (gameID, externalID); pgx.ErrNoRows if there is none.
 func (r *Repository) playerByExternalID(ctx context.Context, gameID, externalID string) (Player, error) {
 	p := Player{GameID: gameID, ExternalID: externalID}
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select id::text, display_name, created_at from players where game_id = $1 and external_id = $2`,
 		gameID, externalID,
 	).Scan(&p.ID, &p.DisplayName, &p.CreatedAt)
@@ -109,7 +109,7 @@ func (r *Repository) SearchPlayers(ctx context.Context, gameID, playerID, query 
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select p.id::text, p.display_name,
 		        case when mine.blocker_id is not null then 'blocked'
 		             when f.game_id is not null then 'friend'

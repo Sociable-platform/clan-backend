@@ -32,6 +32,7 @@ func testRepo(t *testing.T) (*Repository, func(gameIDs ...string)) {
 			_, _ = pool.Exec(context.Background(), "delete from friendships where game_id = $1", g)
 			_, _ = pool.Exec(context.Background(), "delete from clans where game_id = $1", g)
 			_, _ = pool.Exec(context.Background(), "delete from players where game_id = $1", g)
+			_, _ = pool.Exec(context.Background(), "delete from outbox where payload->>'game_id' = $1", g)
 		}
 		pool.Close()
 	}

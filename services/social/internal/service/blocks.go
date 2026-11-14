@@ -30,13 +30,13 @@ type BlockedPlayer struct {
 // one-way: the other player can still block, or not block, the caller.
 //
 // A block also ends what it does not allow, in the same transaction: the two players'
-// friendship and their pending friend request, in either direction. After the commit it
-// publishes player.blocked, plus one event for what the block ended:
+// friendship and their pending friend request, in either direction. In that transaction it
+// also writes player.blocked to the outbox, plus one event for what the block ended:
 //   - friend.removed, with removed_by the caller, when they were friends;
 //   - friend.request_cancelled, when the caller had sent the request;
 //   - friend.request_declined, when the other player had sent it.
 //
-// Blocking a player who is already blocked changes nothing and publishes nothing.
+// Blocking a player who is already blocked changes nothing and writes no event.
 //
 // Errors the client can act on:
 //   - 400 invalid_player_id: playerID is empty
@@ -52,33 +52,42 @@ func (s *Service) BlockPlayer(ctx context.Context, gameID, externalID, displayNa
 	if err != nil {
 		return fmt.Errorf("block player: %w", err)
 	}
-	res, err := s.store.Block(ctx, gameID, me.ID, playerID)
+	err = s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		res, err := s.store.Block(ctx, gameID, me.ID, playerID)
+		if err != nil {
+			return nil, err
+		}
+		return blockEvents(gameID, res), nil
+	})
 	if err != nil {
 		return blockErr("block player", err)
 	}
+	return nil
+}
 
+// blockEvents are the events of a block: player.blocked for a new block, and one event for
+// whatever the block ended.
+func blockEvents(gameID string, res repository.BlockResult) []events.Event {
+	var evs []events.Event
 	if res.Created {
-		_ = s.events.Publish(ctx, events.New(EventPlayerBlocked, gameID, blockData(res.Blocker, res.Blocked)))
+		evs = append(evs, events.New(EventPlayerBlocked, gameID, blockData(res.Blocker, res.Blocked)))
 	}
 	if f := res.RemovedFriendship; f != nil {
-		_ = s.events.Publish(ctx, events.New(EventFriendRemoved, gameID, map[string]any{
-			"players":    []map[string]any{playerData(f.PlayerA), playerData(f.PlayerB)},
-			"removed_by": res.Blocker.ID,
-		}))
+		evs = append(evs, friendRemoved(gameID, *f, res.Blocker.ID))
 	}
 	if req := res.RemovedRequest; req != nil {
 		typ := EventFriendRequestDeclined // the blocked player had asked the caller
 		if req.Sender.ID == res.Blocker.ID {
 			typ = EventFriendRequestCancelled // the caller had asked the blocked player
 		}
-		_ = s.events.Publish(ctx, events.New(typ, gameID, requestData(*req)))
+		evs = append(evs, events.New(typ, gameID, requestData(*req)))
 	}
-	return nil
+	return evs
 }
 
-// UnblockPlayer removes the calling player's block of playerID and publishes player.unblocked.
-// It does not bring back a friendship or request the block ended. Unblocking a player who is
-// not blocked changes nothing and publishes nothing.
+// UnblockPlayer removes the calling player's block of playerID and writes player.unblocked to
+// the outbox in the same transaction. It does not bring back a friendship or request the block
+// ended. Unblocking a player who is not blocked changes nothing and writes no event.
 //
 // Errors: the same as BlockPlayer (400 invalid_player_id, 400 cannot_block_self,
 // 404 player_not_found).
@@ -91,12 +100,15 @@ func (s *Service) UnblockPlayer(ctx context.Context, gameID, externalID, display
 	if err != nil {
 		return fmt.Errorf("unblock player: %w", err)
 	}
-	res, err := s.store.Unblock(ctx, gameID, me.ID, playerID)
+	err = s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		res, err := s.store.Unblock(ctx, gameID, me.ID, playerID)
+		if err != nil || !res.Removed {
+			return nil, err
+		}
+		return []events.Event{events.New(EventPlayerUnblocked, gameID, blockData(res.Blocker, res.Blocked))}, nil
+	})
 	if err != nil {
 		return blockErr("unblock player", err)
-	}
-	if res.Removed {
-		_ = s.events.Publish(ctx, events.New(EventPlayerUnblocked, gameID, blockData(res.Blocker, res.Blocked)))
 	}
 	return nil
 }

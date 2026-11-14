@@ -95,7 +95,7 @@ type playerRef struct {
 }
 
 // FriendRequestSent handles friend.request_sent: the receiver gets a friend_request notification.
-// Nothing is stored; a request that arrives twice shows twice (the SDK matches it by requestId).
+// Nothing is stored but the event's ID (HandleOnce), so a copy of the event shows nothing again.
 // requestID may be empty (an older event had none); the notification then has requestId null.
 func (s *Service) FriendRequestSent(_ context.Context, gameID, requestID string, sender Player, receiverID string) ([]Push, error) {
 	return requestNotice(gameID, kindFriendRequest, requestID, false, sender, receiverID)

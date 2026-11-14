@@ -58,6 +58,9 @@ type Events interface {
 	ClanMemberJoined(ctx context.Context, gameID, clanID string, p service.Player) ([]service.Push, error)
 	ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool) ([]service.Push, error)
 	ClanDisbanded(ctx context.Context, gameID, clanID string) ([]service.Push, error)
+	// HandleOnce runs fn unless the event was handled before (handled is false), recording it in the
+	// same transaction as what fn stores. fn's error is returned as it is.
+	HandleOnce(ctx context.Context, gameID, eventID string, fn func(ctx context.Context) error) (handled bool, err error)
 }
 
 // Sender writes an encoded frame to the open WebSockets of some players of a game.
@@ -203,90 +206,47 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 		return fmt.Errorf("%w: the body is not an event", ErrDrop)
 	}
 
-	var pushes []service.Push
-	var err error
-	switch env.Type {
-	case typeFriendRequestSent, typeFriendRequestCancelled, typeFriendRequestDeclined:
-		var data friendRequestData
-		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.friendRequest(ctx, env.Type, env.GameID, data)
-		}
-	case typeFriendAccepted:
-		var data friendAcceptedData
-		if err = decode(env.Data, &data); err == nil && len(data.Players) != 2 {
-			err = fmt.Errorf("%w: friend.accepted needs exactly two players, got %d", ErrDrop, len(data.Players))
-		}
-		if err == nil {
-			pushes, err = d.events.FriendAccepted(ctx, env.GameID, data.RequestID, player(data.Players[0]), player(data.Players[1]))
-		}
-	case typeFriendRemoved:
-		var data friendRemovedData
-		if err = decode(env.Data, &data); err == nil && len(data.Players) != 2 {
-			err = fmt.Errorf("%w: friend.removed needs exactly two players, got %d", ErrDrop, len(data.Players))
-		}
-		if err == nil {
-			pushes, err = d.events.FriendRemoved(ctx, env.GameID, data.Players[0].ID, data.Players[1].ID, data.RemovedBy)
-		}
-	case typePlayerRenamed:
-		var data playerRenamedData
-		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.PlayerRenamed(ctx, env.GameID, player(data.Player))
-		}
-	case typePlayerBlocked, typePlayerUnblocked:
-		var data blockData
-		if err = decode(env.Data, &data); err == nil {
-			if env.Type == typePlayerBlocked {
-				pushes, err = d.events.PlayerBlocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
-			} else {
-				pushes, err = d.events.PlayerUnblocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
-			}
-		}
-	case typeClanCreated, typeClanMemberJoined:
-		var data clanMemberData
-		if err = decode(env.Data, &data); err == nil {
-			if env.Type == typeClanCreated {
-				pushes, err = d.events.ClanCreated(ctx, env.GameID, data.Clan.ID, player(data.Player))
-			} else {
-				pushes, err = d.events.ClanMemberJoined(ctx, env.GameID, data.Clan.ID, player(data.Player))
-			}
-		}
-	case typeClanMemberLeft:
-		var data clanMemberLeftData
-		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.ClanMemberLeft(ctx, env.GameID, data.Clan.ID, data.Player.ID, data.Reason == reasonKicked)
-		}
-	case typeClanDisbanded:
-		var data clanDisbandedData
-		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.ClanDisbanded(ctx, env.GameID, data.Clan.ID)
-		}
-	case typeClanRenamed, typeClanMemberRoleChanged:
+	switch {
+	case env.Type == typeClanRenamed || env.Type == typeClanMemberRoleChanged:
 		d.log.Debug("event needs nothing from realtime", "event_id", env.ID, "type", env.Type)
 		return nil
-	case typeConfigPublished:
+	case env.Type == typeConfigPublished:
 		if d.config == nil {
 			d.log.Debug("ignoring config.published: no config cache", "event_id", env.ID)
 			return nil
 		}
 		return d.configPublished(ctx, env)
-	case typeGameSuspended, typeGameResumed:
+	case env.Type == typeGameSuspended || env.Type == typeGameResumed:
 		if d.gameStatus == nil {
 			d.log.Debug("ignoring game status event: no game status", "event_id", env.ID, "type", env.Type)
 			return nil
 		}
 		return d.gameStatusChanged(ctx, env)
-	default:
+	case !handledOnce(env.Type):
 		d.log.Debug("ignoring event nobody handles yet", "event_id", env.ID, "type", env.Type)
 		return nil
 	}
+
+	// A copy of an event that was handled before is skipped: delivery is at least once. The event's ID
+	// is recorded in the transaction of everything the event stores, so a failure keeps neither.
+	var pushes []service.Push
+	handled, err := d.events.HandleOnce(ctx, env.GameID, env.ID, func(ctx context.Context) error {
+		var err error
+		pushes, err = d.store(ctx, env)
+		return err
+	})
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidEvent) {
 			err = fmt.Errorf("%w: %w", ErrDrop, err)
 		}
 		return fmt.Errorf("event %s (%s): %w", env.ID, env.Type, err)
 	}
+	if !handled {
+		d.log.Debug("skipping an event handled before", "event_id", env.ID, "type", env.Type, "game_id", env.GameID)
+		return nil
+	}
 
-	// The data is stored; now tell whoever is connected. Sending cannot fail: a player who is not
+	// The data is committed; now tell whoever is connected. Sending cannot fail: a player who is not
 	// connected is skipped and one with a full queue is disconnected by the hub.
 	for _, p := range pushes {
 		// The frame has the envelope of an event too; it happened when the event did.
@@ -299,6 +259,88 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 	}
 	d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "frames", len(pushes))
 	return nil
+}
+
+// handledOnce reports whether events of this type go through HandleOnce: the friend, player and clan
+// events, whose copies would store or send something again. config.published and the game status
+// events are not: repeating them changes nothing, and they ask Platform, which must not happen inside
+// a database transaction.
+func handledOnce(typ string) bool {
+	switch typ {
+	case typeFriendRequestSent, typeFriendRequestCancelled, typeFriendRequestDeclined, typeFriendAccepted,
+		typeFriendRemoved, typePlayerRenamed, typePlayerBlocked, typePlayerUnblocked,
+		typeClanCreated, typeClanMemberJoined, typeClanMemberLeft, typeClanDisbanded:
+		return true
+	}
+	return false
+}
+
+// store decodes the data of an event that handledOnce accepts and calls the service with it. It
+// returns the frames to send once the event's writes have committed.
+func (d *Dispatcher) store(ctx context.Context, env events.Event) ([]service.Push, error) {
+	switch env.Type {
+	case typeFriendRequestSent, typeFriendRequestCancelled, typeFriendRequestDeclined:
+		var data friendRequestData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.friendRequest(ctx, env.Type, env.GameID, data)
+	case typeFriendAccepted:
+		var data friendAcceptedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		if len(data.Players) != 2 {
+			return nil, fmt.Errorf("%w: friend.accepted needs exactly two players, got %d", ErrDrop, len(data.Players))
+		}
+		return d.events.FriendAccepted(ctx, env.GameID, data.RequestID, player(data.Players[0]), player(data.Players[1]))
+	case typeFriendRemoved:
+		var data friendRemovedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		if len(data.Players) != 2 {
+			return nil, fmt.Errorf("%w: friend.removed needs exactly two players, got %d", ErrDrop, len(data.Players))
+		}
+		return d.events.FriendRemoved(ctx, env.GameID, data.Players[0].ID, data.Players[1].ID, data.RemovedBy)
+	case typePlayerRenamed:
+		var data playerRenamedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.events.PlayerRenamed(ctx, env.GameID, player(data.Player))
+	case typePlayerBlocked, typePlayerUnblocked:
+		var data blockData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		if env.Type == typePlayerBlocked {
+			return d.events.PlayerBlocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
+		}
+		return d.events.PlayerUnblocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
+	case typeClanCreated, typeClanMemberJoined:
+		var data clanMemberData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		if env.Type == typeClanCreated {
+			return d.events.ClanCreated(ctx, env.GameID, data.Clan.ID, player(data.Player))
+		}
+		return d.events.ClanMemberJoined(ctx, env.GameID, data.Clan.ID, player(data.Player))
+	case typeClanMemberLeft:
+		var data clanMemberLeftData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.events.ClanMemberLeft(ctx, env.GameID, data.Clan.ID, data.Player.ID, data.Reason == reasonKicked)
+	case typeClanDisbanded:
+		var data clanDisbandedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.events.ClanDisbanded(ctx, env.GameID, data.Clan.ID)
+	}
+	return nil, fmt.Errorf("%w: realtime does not store %s events", ErrDrop, env.Type) // handledOnce and this switch disagree
 }
 
 // configPublished handles config.published: the game has a new config version. The cache fetches it

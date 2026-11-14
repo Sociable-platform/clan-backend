@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 )
@@ -19,7 +20,50 @@ type memStore struct {
 	rows   map[string]repository.Player // key: gameID + "/" + externalID
 	err    error
 	called int
+
+	// The outbox. InTx behaves like a transaction: the events added inside it are kept only when
+	// fn succeeds, and a failing inner InTx drops only its own (a savepoint).
+	committed events.Recorder // events of transactions that committed, in order
+	pending   []events.Event  // events of the open transaction
+	depth     int             // InTx calls in progress
+	addErr    error           // what AddEvents returns, when set
 }
+
+func (m *memStore) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	start := len(m.pending)
+	m.depth++
+	err := fn(ctx)
+	m.depth--
+	if err != nil {
+		m.pending = m.pending[:start]
+		return err
+	}
+	if m.depth == 0 {
+		for _, e := range m.pending {
+			_ = m.committed.Publish(ctx, e)
+		}
+		m.pending = nil
+	}
+	return nil
+}
+
+func (m *memStore) AddEvents(_ context.Context, evs ...events.Event) error {
+	if m.depth == 0 {
+		return errors.New("AddEvents outside InTx")
+	}
+	if m.addErr != nil {
+		return m.addErr
+	}
+	m.pending = append(m.pending, evs...)
+	return nil
+}
+
+// recorderOf returns the events a fake store (memStore, or one that embeds it) committed.
+func recorderOf(s Store) *events.Recorder {
+	return s.(interface{ outbox() *events.Recorder }).outbox()
+}
+
+func (m *memStore) outbox() *events.Recorder { return &m.committed }
 
 func newMemStore() *memStore { return &memStore{rows: map[string]repository.Player{}} }
 

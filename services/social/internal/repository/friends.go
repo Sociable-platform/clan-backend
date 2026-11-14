@@ -95,7 +95,7 @@ func (r *Repository) SendFriendRequest(ctx context.Context, gameID, senderID, re
 	if senderID == receiverID {
 		return SendFriendRequestResult{}, ErrFriendRequestToSelf
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return SendFriendRequestResult{}, fmt.Errorf("send friend request: %w", err)
 	}
@@ -245,7 +245,7 @@ func (r *Repository) AcceptFriendRequest(ctx context.Context, gameID, requestID,
 	if r.pool == nil {
 		return Friendship{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return Friendship{}, fmt.Errorf("accept friend request: %w", err)
 	}
@@ -315,7 +315,7 @@ func (r *Repository) ListFriendRequests(ctx context.Context, gameID, playerID st
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select fr.id::text, fr.created_at,
 		        s.id::text, s.display_name, rc.id::text, rc.display_name
 		 from friend_requests fr
@@ -350,7 +350,7 @@ func (r *Repository) ListFriends(ctx context.Context, gameID, playerID string) (
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select p.id::text, p.display_name, f.created_at
 		 from friendships f
 		 join players p on p.id = case when f.player_a_id = $2 then f.player_b_id else f.player_a_id end
@@ -401,7 +401,7 @@ func (r *Repository) deleteFriendRequest(ctx context.Context, gameID, requestID,
 	if r.pool == nil {
 		return FriendRequest{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return FriendRequest{}, fmt.Errorf("delete friend request: %w", err)
 	}
@@ -462,7 +462,7 @@ func (r *Repository) RemoveFriend(ctx context.Context, gameID, playerID, friendI
 	if r.pool == nil {
 		return Friendship{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return Friendship{}, fmt.Errorf("remove friend: %w", err)
 	}

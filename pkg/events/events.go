@@ -4,6 +4,9 @@
 // Every event goes to one topic exchange, Exchange, with the event type as routing key
 // (for example "friend.accepted"). Which queues receive it is decided by the bindings in
 // deploy/rabbitmq/definitions.json, not by the publisher.
+//
+// A service that must not lose an event writes it with Enqueue into its outbox table, in the
+// transaction of the change, and a Relay publishes it from there (see outbox.go).
 package events
 
 import (

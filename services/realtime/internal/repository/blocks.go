@@ -23,7 +23,7 @@ func (r *Repository) ConversationOf(ctx context.Context, gameID, conversationID,
 		return ConversationInfo{}, ErrNoDatabase
 	}
 	var info ConversationInfo
-	err := r.pool.QueryRow(ctx, `
+	err := r.db(ctx).QueryRow(ctx, `
 		SELECT c.kind, array_agg(cm.player_id::text ORDER BY cm.player_id)
 		FROM conversations c
 		JOIN conversation_members cm ON cm.conversation_id = c.id
@@ -46,7 +46,7 @@ func (r *Repository) AddBlock(ctx context.Context, gameID, blockerID, blockedID 
 	if r.pool == nil {
 		return ErrNoDatabase
 	}
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db(ctx).Exec(ctx, `
 		INSERT INTO blocks (game_id, blocker_id, blocked_id) VALUES ($1, $2, $3)
 		ON CONFLICT DO NOTHING`, gameID, blockerID, blockedID)
 	if err != nil {
@@ -61,7 +61,7 @@ func (r *Repository) RemoveBlock(ctx context.Context, gameID, blockerID, blocked
 	if r.pool == nil {
 		return ErrNoDatabase
 	}
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db(ctx).Exec(ctx, `
 		DELETE FROM blocks WHERE game_id = $1 AND blocker_id = $2 AND blocked_id = $3`, gameID, blockerID, blockedID)
 	if err != nil {
 		return fmt.Errorf("remove block: %w", err)
@@ -75,7 +75,7 @@ func (r *Repository) IsBlocked(ctx context.Context, gameID, a, b string) (bool, 
 		return false, ErrNoDatabase
 	}
 	var blocked bool
-	err := r.pool.QueryRow(ctx, `
+	err := r.db(ctx).QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM blocks
 			WHERE game_id = $1
