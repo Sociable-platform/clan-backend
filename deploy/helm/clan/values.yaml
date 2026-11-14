@@ -31,7 +31,7 @@ rabbitmq:
       memory: 256Mi
     limits:
       memory: 768Mi
-  # Declares the exchange, queue and bindings of files/definitions.json after every install and
+  # Declares the exchanges, queues, bindings and policies of files/definitions.json after every install and
   # upgrade, the same way rabbitmq-setup does in docker-compose.
   setupImage: curlimages/curl:8.11.1
 

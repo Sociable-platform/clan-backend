@@ -9,7 +9,11 @@
 //   - the message is acknowledged only after the handler succeeded;
 //   - an event the handler cannot make sense of (ErrDrop) is rejected without requeue at once;
 //   - any other failure puts the message back once, after RetryDelay; if it fails again it is
-//     rejected without requeue and logged. Nothing is parked anywhere: a dead-letter queue is future work.
+//     rejected without requeue and logged.
+//
+// A rejected message is not deleted: a broker policy (deploy/rabbitmq/definitions.json) dead-letters
+// it to realtime.events.dead, where it is kept for 14 days with RabbitMQ's x-death header (queue,
+// reason, count, original routing key). This package does nothing for that; it only rejects.
 package consumer
 
 import (

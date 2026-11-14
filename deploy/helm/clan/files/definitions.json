@@ -9,11 +9,27 @@
       "auto_delete": false,
       "internal": false,
       "arguments": {}
+    },
+    {
+      "name": "socialkit.dead",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
     }
   ],
   "queues": [
     {
       "name": "realtime.events",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "realtime.events.dead",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
@@ -25,6 +41,30 @@
     { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "friend.*", "arguments": {} },
     { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "player.*", "arguments": {} },
     { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "clan.*", "arguments": {} },
-    { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "game.*", "arguments": {} }
+    { "source": "socialkit.events", "vhost": "/", "destination": "realtime.events", "destination_type": "queue", "routing_key": "game.*", "arguments": {} },
+    { "source": "socialkit.dead", "vhost": "/", "destination": "realtime.events.dead", "destination_type": "queue", "routing_key": "realtime.events", "arguments": {} }
+  ],
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "realtime-events-dead-letter",
+      "pattern": "^realtime\\.events$",
+      "apply-to": "queues",
+      "priority": 0,
+      "definition": {
+        "dead-letter-exchange": "socialkit.dead",
+        "dead-letter-routing-key": "realtime.events"
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "realtime-events-dead-ttl",
+      "pattern": "^realtime\\.events\\.dead$",
+      "apply-to": "queues",
+      "priority": 0,
+      "definition": {
+        "message-ttl": 1209600000
+      }
+    }
   ]
 }

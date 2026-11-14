@@ -16,7 +16,7 @@ clan-backend/
 ├── docker-compose.yml         # postgres + rabbitmq + platform + social + realtime + traefik
 ├── deploy/postgres/init/      # creates the schemas and database users on first start
 ├── deploy/traefik/            # gateway: static config and the /realtime route
-├── deploy/rabbitmq/           # definitions.json: exchange, queues and bindings, applied by rabbitmq-setup
+├── deploy/rabbitmq/           # definitions.json: exchanges, queues, bindings and dead-letter policies, applied by rabbitmq-setup
 ├── deploy/migrate/            # Dockerfile of the migration images (migrate/migrate + a service's migrations)
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
 ├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
@@ -180,7 +180,7 @@ This starts these containers:
 |---|---|
 | postgres | `localhost:5432` (change with `POSTGRES_HOST_PORT`) |
 | rabbitmq | `localhost:5672` (AMQP), management UI http://localhost:15672 (log in with `RABBITMQ_USER` / `RABBITMQ_PASSWORD`) |
-| rabbitmq-setup | none: declares the RabbitMQ exchange, queue and bindings, then exits (see "RabbitMQ events") |
+| rabbitmq-setup | none: declares the RabbitMQ exchanges, queues, bindings and policies, then exits (see "RabbitMQ events") |
 | platform-migrate | none: applies pending platform SQL migrations, then exits (see "Database migrations") |
 | social-migrate, realtime-migrate | none: the same for the social and realtime schemas |
 | platform | http://localhost:8081/health, http://localhost:8081/ready |
@@ -239,13 +239,23 @@ runs the one-shot `rabbitmq-setup` job, which imports `deploy/rabbitmq/definitio
 | Queue (durable) | Bound to routing keys |
 |---|---|
 | `realtime.events` | `config.published`, `friend.*`, `player.*`, `clan.*`, `game.*` |
+| `realtime.events.dead` | `realtime.events`, on the dead-letter exchange `socialkit.dead` (direct) |
+
+**Dead-letter queue.** An event Realtime rejects (unusable, or failed twice) is not deleted: the policy
+`realtime-events-dead-letter` on `realtime.events` makes RabbitMQ move it to `socialkit.dead`, which routes it to
+`realtime.events.dead`. There it keeps its body, `message_id` and `type`, plus an `x-death` header with the original routing
+key, the reason and how often. The policy `realtime-events-dead-ttl` drops dead events after 14 days. Look at them in the
+management UI under **Queues > realtime.events.dead > Get messages**. The settings are policies, not queue arguments, so an
+existing `realtime.events` gets them by running `rabbitmq-setup` again, with its messages kept.
 
 The queue exists before the Realtime service does, so events published today wait in it instead of being lost.
 Open http://localhost:15672, go to **Queues**, and watch `realtime.events` count them.
 
-- The job is safe to repeat: importing definitions only adds what is missing and never deletes messages.
+- The job is safe to repeat: importing definitions adds what is missing, updates the policies and never deletes messages.
   To re-apply it after editing `definitions.json`: `docker compose run --rm rabbitmq-setup`.
 - A new queue or binding goes into `definitions.json` in the same commit as the code that needs it.
+  Copy the file to `deploy/helm/clan/files/definitions.json` too (`TestTheHelmChartHasTheSameDefinitions` fails otherwise),
+  and put queue settings in a policy, not in queue arguments, so existing environments can take them.
 - Without `docker compose` (for example `go run` against your own broker), import the same file in the management UI
   (**Overview > Import definitions**).
 - Check by hand: in the management UI open **Exchanges > socialkit.events > Publish message**, use routing key
@@ -320,8 +330,8 @@ So **Social and Realtime must keep these field names in step**; `TestDispatchRea
 
 - One consumer, one event at a time, in order. Prefetch is 20, acknowledgement is manual and comes after the database write.
 - An event that fails (for example the database is down) is put back **once** after one second; if it fails again it is logged
-  and dropped. An unusable event (not JSON, missing field, id that is not a UUID) is logged and dropped at once.
-  There is no dead-letter queue yet, so a dropped event is lost.
+  and rejected. An unusable event (not JSON, missing field, id that is not a UUID) is logged and rejected at once.
+  A rejected event is not lost: the broker moves it to the dead-letter queue `realtime.events.dead`, where it is kept 14 days.
 - Delivery is at least once, so the same event can arrive twice. Realtime records the `event_id` of every friend, player
   and clan event in `processed_events` (migration `000005`), in the same transaction as the event's writes, and acknowledges
   a copy without storing or sending anything (debug log `skipping an event handled before`). A failed write rolls the record
@@ -342,8 +352,8 @@ So **Social and Realtime must keep these field names in step**; `TestDispatchRea
 - The publisher (`events.NewRabbitMQ`) connects on the first event, not at startup, and reconnects by itself. After a
   failed connection it waits 5 s before trying again. Every publish waits for the broker to confirm it (up to 5 s).
 
-**Remaining gap: the consumer side.** An event Realtime drops (unusable, or failed twice) is gone: there is no
-dead-letter queue yet (see `docs/events.md` section 11).
+**The consumer side.** An event Realtime rejects (unusable, or failed twice) waits in the dead-letter queue
+`realtime.events.dead` for 14 days instead of being deleted (see "RabbitMQ events"). A tool to replay it is not built yet.
 
 ### Event outbox
 

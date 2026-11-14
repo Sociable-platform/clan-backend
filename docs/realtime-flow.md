@@ -164,8 +164,8 @@ sequenceDiagram
 
 Social and Platform write each event to their outbox table in the transaction of the change; the outbox relay publishes
 it after the commit and retries until the broker confirms, so a request never waits for RabbitMQ and a broker that is down
-loses nothing. Delivery is at least once; Realtime skips a copy by its `event_id`. There is no dead-letter queue yet, so an event
-the consumer drops is lost.
+loses nothing. Delivery is at least once; Realtime skips a copy by its `event_id`. An event the consumer rejects is moved by the broker to
+the dead-letter queue `realtime.events.dead` and kept there 14 days.
 
 ## 4 Sending a message
 
@@ -559,7 +559,7 @@ with a restart.
 
 | What is down | What happens |
 |---|---|
-| RabbitMQ | Social and Platform still answer and lose nothing: their events (friends, blocks, clans, `config.published`, `game.suspended` / `game.resumed`) wait in each service's outbox table and the relay sends them when the broker is back (it retries after 1 s, doubling up to 30 s); Realtime then acts on them. Delivery is at least once, and Realtime skips a copy by its `event_id`. Realtime keeps serving WebSockets and REST and reconnects to the broker with 1, 2, 4 ... up to 30 s |
+| RabbitMQ | Social and Platform still answer and lose nothing: their events (friends, blocks, clans, `config.published`, `game.suspended` / `game.resumed`) wait in each service's outbox table and the relay sends them when the broker is back (it retries after 1 s, doubling up to 30 s); Realtime then acts on them. Delivery is at least once, and Realtime skips a copy by its `event_id`. Realtime keeps serving WebSockets and REST and reconnects to the broker with 1, 2, 4 ... up to 30 s. Events Realtime rejected before are safe in `realtime.events.dead` (the broker keeps them on disk) |
 | Realtime database | REST answers 500 `internal_error`, `message.send` answers an `error` frame `internal`, the consumer retries an event once and then drops it; `hello.onlineFriends` is `[]`, and when a player's 10 s end and the friends cannot be looked up, nobody is told and the player stops counting as online |
 | Platform | message rules of a game whose config is not cached are the permissive defaults (chat on, 1000 characters, no slow mode, no filter); `hello` says `configVersion` 0 after a second (and for a few seconds after, without asking again); a `config.published` event is retried once and then dropped, so a missed `config.updated` is caught by `configVersion` in the next `hello`. Chat and friends are not affected |
 | Social | new WebSocket connections and REST calls to Realtime get 503 `social_unavailable`. Open sockets keep working |
