@@ -20,7 +20,7 @@ clan-backend/
 ├── deploy/migrate/            # Dockerfile of the migration images (migrate/migrate + a service's migrations)
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
 ├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
-├── tools/                     # devtoken: test tokens; createadmin: creates an admin account; e2e: end-to-end check of the realtime flow
+├── tools/                     # devtoken: test tokens; createadmin: creates an admin account; e2e: end-to-end check of the realtime flow; dlq: list and replay dead events
 ├── .gitlab-ci.yml             # CI: build, vet and test with the race detector, then build and push the images
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
@@ -250,7 +250,20 @@ management UI under **Queues > realtime.events.dead > Get messages**. Every reje
 `event rejected to the dead-letter queue`, with `event_id`, `type`, `routing_key`, `reason` (`unusable` or `failed_twice`)
 and `error`: search the log for a dead event's `message_id` to find why it was rejected. While the consumer is connected it
 counts the DLQ at connect and every `REALTIME_DLQ_CHECK_INTERVAL` (5 min), and logs `dead-letter queue holds rejected
-events` with the count while it is not empty. The settings are policies, not queue arguments, so an
+events` with the count while it is not empty.
+
+**Replaying dead events.** Once the cause is fixed, send them back with `tools/dlq` (the broker address comes from `-url`, or
+`REALTIME_RABBITMQ_URL`; the password is never printed):
+
+```bash
+go run ./tools/dlq list                       # what is in realtime.events.dead; nothing is removed
+go run ./tools/dlq replay -id <event_id>,...   # send these back to realtime.events
+go run ./tools/dlq replay                     # send all of them back
+```
+
+Each event goes back to the queue it was dead-lettered from and leaves the DLQ only after the broker confirmed the copy, so a
+failure halfway loses nothing. Replaying is safe: Realtime skips an event it already handled, and an event that is still
+unusable goes back to the DLQ. Details: `docs/events.md` section 9. The settings are policies, not queue arguments, so an
 existing `realtime.events` gets them by running `rabbitmq-setup` again, with its messages kept.
 
 The queue exists before the Realtime service does, so events published today wait in it instead of being lost.
@@ -358,7 +371,8 @@ So **Social and Realtime must keep these field names in step**; `TestDispatchRea
   failed connection it waits 5 s before trying again. Every publish waits for the broker to confirm it (up to 5 s).
 
 **The consumer side.** An event Realtime rejects (unusable, or failed twice) waits in the dead-letter queue
-`realtime.events.dead` for 14 days instead of being deleted (see "RabbitMQ events"). A tool to replay it is not built yet.
+`realtime.events.dead` for 14 days instead of being deleted (see "RabbitMQ events"); `go run ./tools/dlq replay` sends it
+back once the cause is fixed.
 
 ### Event outbox
 
@@ -562,6 +576,8 @@ go test -run TestPublishToRealBroker -v ./pkg/events/
 The Realtime consumer has two tests on the same variable (`./services/realtime/internal/consumer/`): a rejected event
 reaches a dead-letter queue and the DLQ check warns with its count, and a missing dead-letter queue does not stop the
 consumer. They make their own temporary queues (`test.dlq.<uuid>`), so `realtime.events` and its DLQ are not touched.
+`./tools/dlq/` has one more on the same variable: it makes dead events in such temporary queues, lists them and replays
+one and then all of them.
 
 ## Endpoints so far
 
