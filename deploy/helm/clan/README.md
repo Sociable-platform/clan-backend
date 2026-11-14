@@ -8,7 +8,13 @@ Installs the clan platform on Kubernetes (k3s on the Oracle server). It is built
 | 2 | platform, social and realtime, each with its migrations | TEAM-175 |
 | 3 | public URLs (Traefik IngressRoutes), HTTPS with Let's Encrypt | TEAM-176 |
 | 4 | deploys from CI (`deploy/deploy.sh`, job `deploy` on main) | TEAM-177 |
-| 5 | Studio and the demo game | later |
+| 5 | the demo game | later |
+
+Studio and the SDK bundle are **not** part of this chart. Each is its own Helm release in the same namespace,
+deployed by its own repository's pipeline: `clan-studio` from clan-frontend (`https://studio.<domain>`, TEAM-248) and
+`clan-sdk` from clan-sdk (`https://sdk.<domain>`, TEAM-242). They reuse this release's registry pull secret
+(`gitlab-registry`) and certificate issuer (`clan-letsencrypt`), so this chart is installed first. A new Studio or SDK
+version needs no change here.
 
 Everything is installed into the namespace `clan`, as the release `clan`.
 
