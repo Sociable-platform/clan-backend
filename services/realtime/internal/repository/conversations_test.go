@@ -28,6 +28,7 @@ func testRepo(t *testing.T) (*Repository, func(gameIDs ...string)) {
 		for _, g := range gameIDs {
 			// Members and messages go with their conversation.
 			_, _ = pool.Exec(context.Background(), "delete from conversations where game_id = $1", g)
+			_, _ = pool.Exec(context.Background(), "delete from processed_events where game_id = $1", g)
 		}
 		pool.Close()
 	}

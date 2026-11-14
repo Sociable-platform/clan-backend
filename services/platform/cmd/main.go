@@ -96,6 +96,14 @@ func run() error {
 		log.Warn("PLATFORM_RABBITMQ_URL is not set: events for other services are dropped")
 	}
 
+	// The outbox relay publishes the events written to the outbox table, in the order they were
+	// written, and retries until the broker confirms them (README "Event outbox"). It gets the bare
+	// publisher, not events.Safe, so it sees a failed send and keeps the row.
+	relayDone, err := startRelay(ctx, pool, publisher, "PLATFORM", log)
+	if err != nil {
+		return err
+	}
+
 	// Wiring: repository (database) -> service (rules) -> handler (HTTP).
 	repo := repository.New(pool)
 	svc, err := service.New(repo, signingKey, tokenTTL)
@@ -127,5 +135,13 @@ func run() error {
 	log.Info("cors", "allowed_origins", origins)
 
 	h := httpx.Chain(mux, httpx.Recover(log), httpx.RequestLog(log), cors)
-	return httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
+	err = httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
+	// The relay stops with ctx too, after recording the batch it was sending; wait for it before
+	// the pool and the broker connection are closed.
+	select {
+	case <-relayDone:
+	case <-time.After(relayStopWait):
+		log.Warn("outbox relay did not stop in time")
+	}
+	return err
 }

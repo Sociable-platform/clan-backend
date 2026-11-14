@@ -86,13 +86,18 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | `PLATFORM_INTERNAL_TOKEN` | none | Shared secret of platform's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops platform at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
 | `SOCIAL_INTERNAL_TOKEN` | none | Shared secret of social's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops social at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
-| `SOCIAL_PLATFORM_URL` | none (docker compose: `http://platform:8081`) | Where social reads each game's clan rules: `clan.maxMembers` from the game's published config (`GET /api/v1/public/games/{gameID}/widget-config`). Empty: every game gets 10 members. |
-| `SOCIAL_CONFIG_CACHE_TTL` | `30s` | How long social keeps a game's clan rules. A new limit published in Studio applies within this time. If platform cannot be reached, the last known rules (or 10) are used and a warning is logged; requests never fail because of it. |
+| `SOCIAL_PLATFORM_URL` | none (docker compose: `http://platform:8081`) | Where social reads each game's clan rules: `clan.maxMembers` from the game's published config (`GET /api/v1/public/games/{gameID}/widget-config`), and whether the game is suspended (the same call answers 403 `game_suspended`). Empty: every game gets 10 members and none is ever refused as suspended. |
+| `SOCIAL_CONFIG_CACHE_TTL` | `30s` | How long social keeps a game's clan rules **and its suspended or active status**. A new limit published in Studio, a suspension and a resume all apply within this time. If platform cannot be reached, the last known rules and status (or 10 members, not suspended) are used and a warning is logged; requests never fail because of it. |
+| `SOCIAL_OUTBOX_INTERVAL` | `1s` | How long social's outbox relay waits before looking again when it had nothing to send; also its first wait after a failed send (it then doubles, up to 30 s). See "Event outbox". |
+| `SOCIAL_OUTBOX_RETENTION` | `168h` | How long a sent event stays in social's `outbox` table before the relay deletes it (checked once an hour). |
+| `PLATFORM_OUTBOX_INTERVAL` | `1s` | The same as `SOCIAL_OUTBOX_INTERVAL`, for platform's outbox relay. |
+| `PLATFORM_OUTBOX_RETENTION` | `168h` | The same as `SOCIAL_OUTBOX_RETENTION`, for platform's `outbox` table. |
 | `REALTIME_JWT_PUBLIC_KEY_FILE` | none (required) | The same public key, for realtime. Only the public key is mounted into the realtime container. |
 | `REALTIME_SOCIAL_URL` | `http://localhost:8082` | Where realtime reaches the social service to learn each connecting player's own ID. Docker Compose sets it to `http://social:8082`. |
 | `REALTIME_BACKFILL` | `false` | `true` makes realtime read every friendship from social's `/internal/v1/friendships` once at startup, before it reads events, and store the DM conversation of each pair (see "Realtime backfill"). Needs `REALTIME_INTERNAL_TOKEN`; without it realtime stops at startup. Anything but a boolean is an error. |
 | `REALTIME_INTERNAL_TOKEN` | none | The secret realtime sends to social as `X-Internal-Token`; it must equal social's `SOCIAL_INTERNAL_TOKEN`. Docker Compose passes `SOCIAL_INTERNAL_TOKEN` here. Never logged. |
 | `REALTIME_PLATFORM_URL` | `http://localhost:8081` | Where realtime reaches the platform service to read a game's published config (`GET /api/v1/public/games/{gameID}/widget-config`). Docker Compose sets it to `http://platform:8081`. If platform is down, realtime still runs: `hello` says `configVersion` 0 and a `config.published` event is retried once. |
+| `REALTIME_PROCESSED_EVENTS_RETENTION` | `168h` | How long realtime keeps the ID of a handled event, so a copy that arrives within that time is skipped. Checked once an hour; must be positive. |
 | `REALTIME_RABBITMQ_URL` | none | RabbitMQ address (`amqp://user:password@host:5672/`) realtime reads events from, queue `realtime.events`. Empty means: do not read events (the service still runs). Use letters and digits only in the password. Docker Compose builds it from `RABBITMQ_USER` and `RABBITMQ_PASSWORD`. The password is never logged. |
 
 ### Get a player token from platform
@@ -233,7 +238,7 @@ runs the one-shot `rabbitmq-setup` job, which imports `deploy/rabbitmq/definitio
 
 | Queue (durable) | Bound to routing keys |
 |---|---|
-| `realtime.events` | `config.published`, `friend.*`, `player.*`, `clan.*` |
+| `realtime.events` | `config.published`, `friend.*`, `player.*`, `clan.*`, `game.*` |
 
 The queue exists before the Realtime service does, so events published today wait in it instead of being lost.
 Open http://localhost:15672, go to **Queues**, and watch `realtime.events` count them.
@@ -286,6 +291,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `clan.renamed` | social, `PATCH /api/v1/clans/{clanID}` (200) when the name changed | `{ "clan": { "id", "name" }, "previous_name" }`; `clan.name` is the new name. Sending the same name publishes nothing |
 | `player.blocked`, `player.unblocked` | social, `POST` / `DELETE /api/v1/players/{playerID}/block` (204), only when a block was really added or removed | `{ "blocker_id", "blocked_id" }`. A block also publishes `friend.removed` (`removed_by` = the blocker) when the two were friends, and `friend.request_cancelled` or `friend.request_declined` when one had a pending request to the other |
 | `config.published` | platform, `POST /api/v1/games/{gameID}/widget/publish` and `.../widget/versions/{version}/rollback` (200); realtime then sends `config.updated` to the game's connections | `{ "version" }`, the new version number (a rollback saves a new version, so it is that number) |
+| `game.suspended`, `game.resumed` | platform, `PUT /api/v1/admin/games/{gameID}/status` and `PUT /api/v1/admin/developers/{developerID}/status` (200), after the change is saved and only when it changed whether the game is served. A developer-level change publishes one event for each game of theirs that is on by its own switch; a game suspended on its own is skipped, because it stays off when the developer is resumed. A game-level change while its developer is suspended publishes nothing. Realtime closes every connection of the game with `4403` `game_suspended` on `game.suspended` and accepts the game again after `game.resumed` (TEAM-208) | `{ "status" }`: `suspended` or `active`, the same word as `status` in `GET /internal/v1/games/{gameID}/config`. Never the reason or the admin's note |
 
 `id` is always the social service's player ID (a UUID, as in `conversation_members.player_id` in Realtime), and
 `name` the display name at the time of the event.
@@ -316,27 +322,51 @@ So **Social and Realtime must keep these field names in step**; `TestDispatchRea
 - An event that fails (for example the database is down) is put back **once** after one second; if it fails again it is logged
   and dropped. An unusable event (not JSON, missing field, id that is not a UUID) is logged and dropped at once.
   There is no dead-letter queue yet, so a dropped event is lost.
-- Every database write is an upsert or a delete, so a redelivered event changes nothing. The WebSocket frames are sent again;
-  the SDK ignores a conversation it already has.
+- Delivery is at least once, so the same event can arrive twice. Realtime records the `event_id` of every friend, player
+  and clan event in `processed_events` (migration `000005`), in the same transaction as the event's writes, and acknowledges
+  a copy without storing or sending anything (debug log `skipping an event handled before`). A failed write rolls the record
+  back too, so the retry handles the event. The records are deleted after `REALTIME_PROCESSED_EVENTS_RETENTION`. Details: `docs/events.md` section 9.
 - If the broker is down or restarts, realtime keeps running and reconnects (1 s, 2 s, 4 s ... up to 30 s).
   Without a database it does not read events at all, because it would have nowhere to store them.
 
 ### Publishing from a service
 
-- Social publishes when `SOCIAL_RABBITMQ_URL` is set (docker compose sets it). Without it social starts anyway, logs
-  `SOCIAL_RABBITMQ_URL is not set`, and drops its events.
+- **Social** writes every event to its `outbox` table in the transaction of the change (see "Event outbox" below), and its
+  outbox relay publishes them. A request never talks to RabbitMQ, and an event is never lost because the broker was down.
+  Service tests read the events a fake store committed; repository tests check that an event rolls back with its change.
+- **Platform** still publishes directly after the commit, through `events.Safe`: a failed publish is logged as
+  `publish event failed` with its `event_id` and `type`, and the request still succeeds.
+- Without `<SERVICE>_RABBITMQ_URL` a service starts anyway, logs `..._RABBITMQ_URL is not set`, and drops its events.
 - The publisher (`events.NewRabbitMQ`) connects on the first event, not at startup, and reconnects by itself. After a
-  failed connection it waits 5 s before trying again, so requests never queue up behind a dead broker.
-- Every publish waits for the broker to confirm it (up to 5 s).
-- Services get the publisher wrapped in `events.Safe`: a failed publish is logged as `publish event failed` with its
-  `event_id` and `type`, and the user's request still succeeds.
-- Publish only after the database change has committed, so an event never announces something that was rolled back.
-- Service tests use `events.Recorder` to check which events were published.
+  failed connection it waits 5 s before trying again. Every publish waits for the broker to confirm it (up to 5 s).
 
-**Known gap: an event can be lost.** If RabbitMQ is down or does not confirm in time, the database change stays and
-the event is gone (only the log line remains). Realtime then misses a friendship until it is backfilled (see "Realtime backfill" in the Realtime section).
-*Future work:* a transactional outbox: write the event to an `outbox` table in the same transaction as the change,
-and let a background worker publish it and mark it sent, retrying until the broker accepts it.
+**Known gap: a platform event can be lost.** If RabbitMQ is down or does not confirm in time when platform publishes,
+the database change stays and the event is gone (only the log line remains). Social's events do not have this gap any
+more: they wait in its outbox until the broker is back. Platform moves to the outbox next.
+
+### Event outbox
+
+`pkg/events` has a transactional outbox, and platform and social each have an `outbox` table (social migration `000008`,
+platform `000010`; the two files are identical, `TestOutboxMigrationsAreTheSameInEveryService` checks it).
+
+- **Writing.** `events.Enqueue(ctx, tx, e)` inserts the event into the `outbox` table inside the caller's open `pgx.Tx`,
+  so the event commits or rolls back together with the change it describes. It takes a transaction, never the pool.
+- **Sending.** Each service runs one relay goroutine (`events.Relay`, started in `cmd/relay.go`) when it has a database.
+  It claims up to 100 unsent rows, oldest first (`FOR UPDATE SKIP LOCKED`, so two copies of a service never send the same
+  row), publishes them one by one and marks a row sent only after the broker has confirmed it. It stops a batch at the
+  first failure, so a later event never overtakes an earlier one, and stores that row's `attempts` and `last_error`.
+- **Broker down.** Rows wait in the table; the relay tries again after `<SERVICE>_OUTBOX_INTERVAL`, doubling up to 30 s,
+  and sends them once RabbitMQ is back. Requests only insert a row, so they never wait for the broker.
+- **No broker URL.** The relay still runs with the no-op publisher: rows are marked sent and dropped, as events are today.
+- **Cleanup.** Sent rows older than `<SERVICE>_OUTBOX_RETENTION` (7 days) are deleted, checked once an hour.
+- **Shutdown.** The relay stops with the service and records the batch it was sending first (up to 5 s).
+- **Order.** Rows go out in `id` order, which is the order they were inserted. Two transactions that run at the same time
+  can commit in the other order, so only events written one after the other are guaranteed to stay in order; events
+  about the same thing are, when the service writes them inside the transaction that holds the row lock on it (a friend pair, a clan).
+- **At least once.** If the relay stops after the broker confirmed a row but before the row was marked sent, the row is
+  sent again with the same `event_id`. Consumers must handle a repeated event.
+- **A row that always fails** blocks the rows after it (that is what keeps the order). Its `last_error` says why; look for
+  `outbox relay could not send` in the log.
 
 ## Run with go run
 
@@ -495,9 +525,13 @@ go test ./services/social/internal/repository/ -v
 
 The platform repository tests use `PLATFORM_TEST_DATABASE_URL` (`postgres://platform_user:<PLATFORM_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/platform/internal/repository/`.
 The realtime repository tests work the same way with `REALTIME_TEST_DATABASE_URL`
-(`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/` (the backfill test in `./services/realtime/internal/backfill/` uses the same variable).
+(`postgres://realtime_user:<REALTIME_DB_PASSWORD>@localhost:5432/clan?sslmode=disable`) and `./services/realtime/internal/repository/` (the backfill test in `./services/realtime/internal/backfill/` and the duplicate-event test in `./services/realtime/internal/consumer/` use the same variable).
 
 Each run uses new random game IDs and deletes its rows afterwards, so it does not disturb other data.
+
+The outbox tests in `./pkg/events/` also use `SOCIAL_TEST_DATABASE_URL`. Each one creates a table of its own with a
+random name (`outbox_test_...`) from the social outbox migration and drops it afterwards, so a running social service never
+sees their rows.
 
 The event publisher has one test that needs a real RabbitMQ (`docker compose up -d rabbitmq`), skipped unless
 `TEST_RABBITMQ_URL` is set. It uses its own temporary queue and the routing key `test.published`, so nothing lands in
@@ -544,7 +578,7 @@ Only the developer's own switch counts here: a game suspended on its own does no
 | GET | `/api/v1/games/{gameID}/widget/versions/{version}` | 200 with that version and its `config`. 404 `widget_version_not_found` (also for a number that is not a positive whole number) |
 | POST | `/api/v1/games/{gameID}/widget/versions/{version}/rollback` | 201 with a **new** version that has the old version's config; nothing is deleted and the draft is untouched. 404 `widget_version_not_found` |
 | GET | `/api/v1/public/games/{gameID}/widget-config` | **No login, open to every website.** 200 `{ version, config }`: the latest **published** version (never a draft), with a strong `ETag` (`"v3"`) and `Cache-Control: public, max-age=60`. Send `If-None-Match` to get 304. 404 `widget_not_published` (also for an unknown game ID). **403 `game_suspended`** (with `Cache-Control: no-store`) when the game or its developer is suspended, whichever it is, so players never see a billing message; the SDK then removes the panel. Not rate-limited in the service: put a CDN or proxy limit in front of `/api/v1/public/` |
-| GET | `/internal/v1/games/{gameID}/config` | **For other services, not browsers.** Needs `X-Internal-Token: <PLATFORM_INTERNAL_TOKEN>` (401 `invalid_internal_token`; 404 `not_found` while the secret is not set). 200 `{ gameId, version, config, allowedOrigins }`: the newest **published** config and the game's allowed origins, never cached. A game never published has `version: 0` and `config: null` but still its origins. 404 `game_not_found` for an unknown game |
+| GET | `/internal/v1/games/{gameID}/config` | **For other services, not browsers.** Needs `X-Internal-Token: <PLATFORM_INTERNAL_TOKEN>` (401 `invalid_internal_token`; 404 `not_found` while the secret is not set). 200 `{ gameId, version, status, config, allowedOrigins }`: the newest **published** config, the game's allowed origins and its **effective** `status` (`suspended` when the game or its developer is, else `active`; a suspended game still gets its config), never cached. A game never published has `version: 0` and `config: null` but still its origins. 404 `game_not_found` for an unknown game |
 | any | anything else | 404 `not_found` in the standard error format |
 | any | from a website not in the allowed origins | 403 `origin_not_allowed` |
 
@@ -552,6 +586,13 @@ Only the developer's own switch counts here: a game suspended on its own does no
 
 Every `/api/v1/` route needs `Authorization: Bearer <player token>`. The game and the player
 always come from the token, never from the URL or the body.
+
+**Suspended games are refused.** While an admin has the game, or its developer, switched off, every `/api/v1/` route answers
+`403 game_suspended` (checked after the token, so an invalid token still gets 401; `/health` and `/ready` are not affected).
+Social learns it from the call it already makes for the clan rules: the platform's public widget config answers 403
+`game_suspended` for a suspended game. The answer is kept for `SOCIAL_CONFIG_CACHE_TTL`, so a suspension and a resume both
+take effect within that time. Nothing is changed or deleted: friends, clans, blocks and players stay as they were. If
+the platform cannot be reached, Social keeps the last status it saw, and a game it has never seen is served (fail open).
 
 | Method | Path | Answer |
 |---|---|---|
@@ -636,7 +677,7 @@ while social is down.
 |---|---|---|
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
-| GET | `/api/v1/ws?token=<player token>` | WebSocket upgrade (101). Checked **before** the upgrade: 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type` for the token, 403 `origin_not_allowed` when the page's `Origin` is not in `REALTIME_CORS_ORIGINS` (requests without `Origin`, like Postman's, are allowed), 503 `social_unavailable` when the social service cannot be reached (realtime asks social for the player's own ID with `GET /api/v1/players/me` and the player's token, so **social must be running**), 503 `shutting_down`. After the upgrade the server first sends a `hello` frame with the player's social ID; a `ping` frame is answered with `pong`; a frame over 8 KB closes the connection (1009); a bad frame gets an `error` frame with `bad_frame` and the connection stays; the connection is closed with 4001 when the token expires and with 1001 when the service stops; a client that does not answer the server's pings (every 25 s) for 60 s is dropped; a client that does not read its frames (64 waiting) is closed with 4002 without holding anyone else up. Public URL through Traefik: `/realtime/v1/ws` |
+| GET | `/api/v1/ws?token=<player token>` | WebSocket upgrade (101). Checked **before** the upgrade: 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type` for the token, 403 `origin_not_allowed` when the page's `Origin` is not in `REALTIME_CORS_ORIGINS` (requests without `Origin`, like Postman's, are allowed), 503 `social_unavailable` when the social service cannot be reached (realtime asks social for the player's own ID with `GET /api/v1/players/me` and the player's token, so **social must be running**), 503 `shutting_down`. After the upgrade the server first sends a `hello` frame with the player's social ID; a `ping` frame is answered with `pong`; a frame over 8 KB closes the connection (1009); a bad frame gets an `error` frame with `bad_frame` and the connection stays; the connection is closed with 4001 when the token expires and with 1001 when the service stops; a client that does not answer the server's pings (every 25 s) for 60 s is dropped; a client that does not read its frames (64 waiting) is closed with 4002 without holding anyone else up; a **suspended game** (an admin switched off the game or its developer) gets 4403 `game_suspended` instead of `hello`, and every open connection of that game is closed with it when the `game.suspended` event arrives, within seconds (other games are not touched; if platform cannot be reached the last status seen is kept, and a game never seen is served). Public URL through Traefik: `/realtime/v1/ws` |
 | GET | `/api/v1/conversations` | 200 `{ "conversations": [...] }`: every conversation of the caller in the token's game, most recently active first, each with `members` (`online` = has an open WebSocket, or closed the last one less than 10 s ago), `lastMessage` (or `null`) and `unread` (messages of other players after the caller's read position, at most 99). 401 `missing_token` / `invalid_token` / `token_expired` / `wrong_token_type`; 403 `origin_not_allowed`; 503 `social_unavailable` |
 | GET | `/api/v1/conversations/{conversationId}/messages?before=<messageId>&limit=50` | 200 `{ "messages": [...], "hasMore": true }`: **newest first**; `before` returns only older messages, `limit` is 1 to 100 (default 50). 400 `invalid_limit` / `invalid_before`; 403 `not_member` (not in it, or an unknown id or another game's: one answer for all); plus the errors above |
 | any | anything else | 404 `not_found` in the standard error format |

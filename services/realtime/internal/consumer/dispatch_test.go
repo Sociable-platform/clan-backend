@@ -24,6 +24,31 @@ type fakeEvents struct {
 	pushes  []service.Push
 	err     error
 	gotGame string
+
+	handled  map[string]bool // "game|event" of the events HandleOnce recorded
+	onceErr  error           // what HandleOnce returns before running fn
+	onceRuns int             // how many times HandleOnce ran fn
+}
+
+// HandleOnce behaves like the service: fn runs unless the event was recorded, and a failing fn
+// records nothing.
+func (f *fakeEvents) HandleOnce(ctx context.Context, gameID, eventID string, fn func(ctx context.Context) error) (bool, error) {
+	if f.onceErr != nil {
+		return false, f.onceErr
+	}
+	key := gameID + "|" + eventID
+	if f.handled[key] {
+		return false, nil
+	}
+	f.onceRuns++
+	if err := fn(ctx); err != nil {
+		return false, err
+	}
+	if f.handled == nil {
+		f.handled = map[string]bool{}
+	}
+	f.handled[key] = true
+	return true, nil
 }
 
 func (f *fakeEvents) record(gameID, call string) ([]service.Push, error) {
@@ -391,6 +416,7 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 		"clan.renamed":             "", // realtime stores no clan names
 		"clan.member_role_changed": "", // realtime stores no roles
 		"player.blocked":           "blocked " + alice + " -> " + bob, "player.unblocked": "unblocked " + alice + " -> " + bob, "config.published": "",
+		"game.suspended": "", "game.resumed": "", // not handled yet: acknowledged and ignored
 	}
 
 	blocks := regexp.MustCompile("(?s)```json\n(.*?)\n```").FindAllSubmatch(doc, -1)

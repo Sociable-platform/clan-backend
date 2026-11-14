@@ -37,10 +37,14 @@ type fakeStore struct {
 	statusCalls  int
 	statusTarget string
 	statusChange repository.StatusChange
+	// statusUnchanged makes the status changes report that the target already had the wanted status.
+	statusUnchanged bool
 
 	// IDs of suspended games and developers, for GameAccessOf.
 	suspendedGames map[string]bool
 	suspendedDevs  map[string]bool
+	// accessErr, when set, is returned by GameAccessOf alone, so a status change itself still works.
+	accessErr error
 
 	games    []repository.Game
 	keys     []storedKey

@@ -11,6 +11,7 @@ import (
 
 	"gitlab.com/clan-platform/clan-backend/pkg/events"
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 )
 
 // maxDisplayNameLen keeps names short enough for clan and member lists; longer names are cut.
@@ -32,17 +33,23 @@ const EventPlayerRenamed = "player.renamed"
 // EnsurePlayer returns the calling player's record. The first call for a (gameID, externalID)
 // pair creates it; later calls return the same record with the display name updated.
 // gameID and externalID come from the verified player token, never from the request.
-// When the name in the token differs from the saved one, it publishes player.renamed once
-// (the repository makes sure only one of several requests at the same moment reports it).
+// When the name in the token differs from the saved one, it writes player.renamed to the outbox
+// in the same transaction, once (the repository makes sure only one of several requests at the
+// same moment reports it).
 func (s *Service) EnsurePlayer(ctx context.Context, gameID, externalID, displayName string) (Player, error) {
-	row, err := s.store.UpsertPlayer(ctx, gameID, externalID, cleanDisplayName(displayName, externalID))
+	var row repository.Player
+	err := s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		var err error
+		row, err = s.store.UpsertPlayer(ctx, gameID, externalID, cleanDisplayName(displayName, externalID))
+		if err != nil || !row.Renamed {
+			return nil, err
+		}
+		return []events.Event{events.New(EventPlayerRenamed, gameID, map[string]any{
+			"player": ref(row.ID, row.DisplayName),
+		})}, nil
+	})
 	if err != nil {
 		return Player{}, fmt.Errorf("ensure player: %w", err)
-	}
-	if row.Renamed {
-		_ = s.events.Publish(ctx, events.New(EventPlayerRenamed, gameID, map[string]any{
-			"player": ref(row.ID, row.DisplayName),
-		}))
 	}
 	return Player{
 		ID:          row.ID,

@@ -61,7 +61,7 @@ func (s *Service) DemoteMember(ctx context.Context, gameID, externalID, clanID, 
 // changeMemberRole is promote and demote: the game's role ladder decides inside the clan lock
 // (package roles: the caller needs canPromote, the player must be lower, and a promote stays
 // below the caller's own role), the repository saves it, and clan.member_role_changed is
-// published after the commit.
+// written to the outbox in the same transaction.
 //
 // Errors the client can act on:
 //   - 404 clan_not_found: no such clan in the caller's game
@@ -79,13 +79,27 @@ func (s *Service) changeMemberRole(ctx context.Context, gameID, externalID, clan
 	}
 	_, ladder := s.clanRules(ctx, gameID)
 	var previous string // the role the player really had, as the ladder reads it
-	change, err := s.store.ChangeRole(ctx, gameID, strings.ToLower(clanID), externalID, strings.ToLower(playerID),
-		func(actor, target repository.MemberRole) (string, error) {
-			t := toRoleMember(target)
-			previous = ladder.Of(t).ID
-			next, err := step(ladder, toRoleMember(actor), t)
-			return next.ID, err
-		})
+	var change repository.RoleChange
+	err := s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		var err error
+		change, err = s.store.ChangeRole(ctx, gameID, strings.ToLower(clanID), externalID, strings.ToLower(playerID),
+			func(actor, target repository.MemberRole) (string, error) {
+				t := toRoleMember(target)
+				previous = ladder.Of(t).ID
+				next, err := step(ladder, toRoleMember(actor), t)
+				return next.ID, err
+			})
+		if err != nil {
+			return nil, err
+		}
+		return []events.Event{events.New(EventClanMemberRoleChanged, gameID, map[string]any{
+			"clan":          ref(change.Clan.ID, change.Clan.Name),
+			"player":        ref(change.Player.ID, change.Player.DisplayName),
+			"role":          change.NewRoleID,
+			"previous_role": previous,
+			"changed_by":    ref(change.ChangedBy.ID, change.ChangedBy.DisplayName),
+		})}, nil
+	})
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return MemberRole{}, errClanNotFound()
@@ -99,12 +113,5 @@ func (s *Service) changeMemberRole(ctx context.Context, gameID, externalID, clan
 		return MemberRole{}, fmt.Errorf("change role: %w", err)
 	}
 
-	_ = s.events.Publish(ctx, events.New(EventClanMemberRoleChanged, gameID, map[string]any{
-		"clan":          ref(change.Clan.ID, change.Clan.Name),
-		"player":        ref(change.Player.ID, change.Player.DisplayName),
-		"role":          change.NewRoleID,
-		"previous_role": previous,
-		"changed_by":    ref(change.ChangedBy.ID, change.ChangedBy.DisplayName),
-	}))
 	return MemberRole{PlayerID: change.Player.ID, DisplayName: change.Player.DisplayName, Role: change.NewRoleID}, nil
 }

@@ -47,6 +47,11 @@ type Store interface {
 	// InsertMessage stores a message if the sender is a member and returns all members.
 	// It returns repository.ErrNotMember otherwise.
 	InsertMessage(ctx context.Context, gameID, conversationID, senderID string, m repository.NewMessage) ([]string, error)
+	// RunOnce runs fn and records the event as handled, in one transaction, unless it was recorded
+	// before (ran is false). fn's error is returned as it is, and then nothing is recorded.
+	RunOnce(ctx context.Context, gameID, eventID string, fn func(ctx context.Context) error) (ran bool, err error)
+	// DeleteProcessedEvents deletes the records of the events handled before the given time.
+	DeleteProcessedEvents(ctx context.Context, before time.Time) (int64, error)
 }
 
 // Service is the realtime service's logic.

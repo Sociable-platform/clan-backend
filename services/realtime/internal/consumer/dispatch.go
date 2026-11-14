@@ -25,6 +25,8 @@ const (
 	typePlayerBlocked          = "player.blocked"
 	typePlayerUnblocked        = "player.unblocked"
 	typeConfigPublished        = "config.published"
+	typeGameSuspended          = "game.suspended"
+	typeGameResumed            = "game.resumed"
 	typeClanCreated            = "clan.created"
 	typeClanMemberJoined       = "clan.member_joined"
 	typeClanMemberLeft         = "clan.member_left"
@@ -56,6 +58,9 @@ type Events interface {
 	ClanMemberJoined(ctx context.Context, gameID, clanID string, p service.Player) ([]service.Push, error)
 	ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool) ([]service.Push, error)
 	ClanDisbanded(ctx context.Context, gameID, clanID string) ([]service.Push, error)
+	// HandleOnce runs fn unless the event was handled before (handled is false), recording it in the
+	// same transaction as what fn stores. fn's error is returned as it is.
+	HandleOnce(ctx context.Context, gameID, eventID string, fn func(ctx context.Context) error) (handled bool, err error)
 }
 
 // Sender writes an encoded frame to the open WebSockets of some players of a game.
@@ -69,6 +74,21 @@ type ConfigCache interface {
 	// Published fetches the config again and swaps it in. It returns the version to tell the players
 	// about and whether to tell them at all. An error means try the event again.
 	Published(ctx context.Context, gameID string, version int) (current int, send bool, err error)
+}
+
+// GameStatus is what the dispatcher needs to answer game.suspended and game.resumed.
+// gameconfig.Cache implements it.
+type GameStatus interface {
+	// SetSuspended records at once what the event said, so the next connection sees it.
+	SetSuspended(gameID string, suspended bool)
+	// Resumed asks Platform, which has the final say, and keeps the answer. An error means try the event again.
+	Resumed(ctx context.Context, gameID string) error
+}
+
+// GameCloser closes every open WebSocket of a game with the suspended close code (4403). The hub does
+// this; it never blocks. It returns how many connections it closed.
+type GameCloser interface {
+	CloseGameSuspended(gameID string) int
 }
 
 // Broadcaster writes an encoded frame to every open WebSocket of a game. The hub does this; it never blocks.
@@ -85,6 +105,9 @@ type Dispatcher struct {
 
 	config    ConfigCache // nil: config.published is acknowledged and ignored
 	broadcast Broadcaster
+
+	gameStatus GameStatus // nil: game.suspended and game.resumed are acknowledged and ignored
+	closer     GameCloser
 }
 
 // NewDispatcher returns a Dispatcher.
@@ -95,6 +118,13 @@ func NewDispatcher(events Events, send Sender, log *slog.Logger) *Dispatcher {
 // WithConfig makes the dispatcher handle config.published: refresh cache, then tell every connection of the game.
 func (d *Dispatcher) WithConfig(cache ConfigCache, to Broadcaster) *Dispatcher {
 	d.config, d.broadcast = cache, to
+	return d
+}
+
+// WithGameStatus makes the dispatcher handle game.suspended (close every connection of the game) and
+// game.resumed (refresh its status).
+func (d *Dispatcher) WithGameStatus(status GameStatus, closer GameCloser) *Dispatcher {
+	d.gameStatus, d.closer = status, closer
 	return d
 }
 
@@ -176,84 +206,47 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 		return fmt.Errorf("%w: the body is not an event", ErrDrop)
 	}
 
-	var pushes []service.Push
-	var err error
-	switch env.Type {
-	case typeFriendRequestSent, typeFriendRequestCancelled, typeFriendRequestDeclined:
-		var data friendRequestData
-		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.friendRequest(ctx, env.Type, env.GameID, data)
-		}
-	case typeFriendAccepted:
-		var data friendAcceptedData
-		if err = decode(env.Data, &data); err == nil && len(data.Players) != 2 {
-			err = fmt.Errorf("%w: friend.accepted needs exactly two players, got %d", ErrDrop, len(data.Players))
-		}
-		if err == nil {
-			pushes, err = d.events.FriendAccepted(ctx, env.GameID, data.RequestID, player(data.Players[0]), player(data.Players[1]))
-		}
-	case typeFriendRemoved:
-		var data friendRemovedData
-		if err = decode(env.Data, &data); err == nil && len(data.Players) != 2 {
-			err = fmt.Errorf("%w: friend.removed needs exactly two players, got %d", ErrDrop, len(data.Players))
-		}
-		if err == nil {
-			pushes, err = d.events.FriendRemoved(ctx, env.GameID, data.Players[0].ID, data.Players[1].ID, data.RemovedBy)
-		}
-	case typePlayerRenamed:
-		var data playerRenamedData
-		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.PlayerRenamed(ctx, env.GameID, player(data.Player))
-		}
-	case typePlayerBlocked, typePlayerUnblocked:
-		var data blockData
-		if err = decode(env.Data, &data); err == nil {
-			if env.Type == typePlayerBlocked {
-				pushes, err = d.events.PlayerBlocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
-			} else {
-				pushes, err = d.events.PlayerUnblocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
-			}
-		}
-	case typeClanCreated, typeClanMemberJoined:
-		var data clanMemberData
-		if err = decode(env.Data, &data); err == nil {
-			if env.Type == typeClanCreated {
-				pushes, err = d.events.ClanCreated(ctx, env.GameID, data.Clan.ID, player(data.Player))
-			} else {
-				pushes, err = d.events.ClanMemberJoined(ctx, env.GameID, data.Clan.ID, player(data.Player))
-			}
-		}
-	case typeClanMemberLeft:
-		var data clanMemberLeftData
-		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.ClanMemberLeft(ctx, env.GameID, data.Clan.ID, data.Player.ID, data.Reason == reasonKicked)
-		}
-	case typeClanDisbanded:
-		var data clanDisbandedData
-		if err = decode(env.Data, &data); err == nil {
-			pushes, err = d.events.ClanDisbanded(ctx, env.GameID, data.Clan.ID)
-		}
-	case typeClanRenamed, typeClanMemberRoleChanged:
+	switch {
+	case env.Type == typeClanRenamed || env.Type == typeClanMemberRoleChanged:
 		d.log.Debug("event needs nothing from realtime", "event_id", env.ID, "type", env.Type)
 		return nil
-	case typeConfigPublished:
+	case env.Type == typeConfigPublished:
 		if d.config == nil {
 			d.log.Debug("ignoring config.published: no config cache", "event_id", env.ID)
 			return nil
 		}
 		return d.configPublished(ctx, env)
-	default:
+	case env.Type == typeGameSuspended || env.Type == typeGameResumed:
+		if d.gameStatus == nil {
+			d.log.Debug("ignoring game status event: no game status", "event_id", env.ID, "type", env.Type)
+			return nil
+		}
+		return d.gameStatusChanged(ctx, env)
+	case !handledOnce(env.Type):
 		d.log.Debug("ignoring event nobody handles yet", "event_id", env.ID, "type", env.Type)
 		return nil
 	}
+
+	// A copy of an event that was handled before is skipped: delivery is at least once. The event's ID
+	// is recorded in the transaction of everything the event stores, so a failure keeps neither.
+	var pushes []service.Push
+	handled, err := d.events.HandleOnce(ctx, env.GameID, env.ID, func(ctx context.Context) error {
+		var err error
+		pushes, err = d.store(ctx, env)
+		return err
+	})
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidEvent) {
 			err = fmt.Errorf("%w: %w", ErrDrop, err)
 		}
 		return fmt.Errorf("event %s (%s): %w", env.ID, env.Type, err)
 	}
+	if !handled {
+		d.log.Debug("skipping an event handled before", "event_id", env.ID, "type", env.Type, "game_id", env.GameID)
+		return nil
+	}
 
-	// The data is stored; now tell whoever is connected. Sending cannot fail: a player who is not
+	// The data is committed; now tell whoever is connected. Sending cannot fail: a player who is not
 	// connected is skipped and one with a full queue is disconnected by the hub.
 	for _, p := range pushes {
 		// The frame has the envelope of an event too; it happened when the event did.
@@ -268,6 +261,88 @@ func (d *Dispatcher) Handle(ctx context.Context, body []byte) error {
 	return nil
 }
 
+// handledOnce reports whether events of this type go through HandleOnce: the friend, player and clan
+// events, whose copies would store or send something again. config.published and the game status
+// events are not: repeating them changes nothing, and they ask Platform, which must not happen inside
+// a database transaction.
+func handledOnce(typ string) bool {
+	switch typ {
+	case typeFriendRequestSent, typeFriendRequestCancelled, typeFriendRequestDeclined, typeFriendAccepted,
+		typeFriendRemoved, typePlayerRenamed, typePlayerBlocked, typePlayerUnblocked,
+		typeClanCreated, typeClanMemberJoined, typeClanMemberLeft, typeClanDisbanded:
+		return true
+	}
+	return false
+}
+
+// store decodes the data of an event that handledOnce accepts and calls the service with it. It
+// returns the frames to send once the event's writes have committed.
+func (d *Dispatcher) store(ctx context.Context, env events.Event) ([]service.Push, error) {
+	switch env.Type {
+	case typeFriendRequestSent, typeFriendRequestCancelled, typeFriendRequestDeclined:
+		var data friendRequestData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.friendRequest(ctx, env.Type, env.GameID, data)
+	case typeFriendAccepted:
+		var data friendAcceptedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		if len(data.Players) != 2 {
+			return nil, fmt.Errorf("%w: friend.accepted needs exactly two players, got %d", ErrDrop, len(data.Players))
+		}
+		return d.events.FriendAccepted(ctx, env.GameID, data.RequestID, player(data.Players[0]), player(data.Players[1]))
+	case typeFriendRemoved:
+		var data friendRemovedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		if len(data.Players) != 2 {
+			return nil, fmt.Errorf("%w: friend.removed needs exactly two players, got %d", ErrDrop, len(data.Players))
+		}
+		return d.events.FriendRemoved(ctx, env.GameID, data.Players[0].ID, data.Players[1].ID, data.RemovedBy)
+	case typePlayerRenamed:
+		var data playerRenamedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.events.PlayerRenamed(ctx, env.GameID, player(data.Player))
+	case typePlayerBlocked, typePlayerUnblocked:
+		var data blockData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		if env.Type == typePlayerBlocked {
+			return d.events.PlayerBlocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
+		}
+		return d.events.PlayerUnblocked(ctx, env.GameID, data.BlockerID, data.BlockedID)
+	case typeClanCreated, typeClanMemberJoined:
+		var data clanMemberData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		if env.Type == typeClanCreated {
+			return d.events.ClanCreated(ctx, env.GameID, data.Clan.ID, player(data.Player))
+		}
+		return d.events.ClanMemberJoined(ctx, env.GameID, data.Clan.ID, player(data.Player))
+	case typeClanMemberLeft:
+		var data clanMemberLeftData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.events.ClanMemberLeft(ctx, env.GameID, data.Clan.ID, data.Player.ID, data.Reason == reasonKicked)
+	case typeClanDisbanded:
+		var data clanDisbandedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.events.ClanDisbanded(ctx, env.GameID, data.Clan.ID)
+	}
+	return nil, fmt.Errorf("%w: realtime does not store %s events", ErrDrop, env.Type) // handledOnce and this switch disagree
+}
+
 // configPublished handles config.published: the game has a new config version. The cache fetches it
 // from Platform; when that fails the old config stays and the error makes the consumer try the event
 // once more. Then every connection of that game (and no other) gets config.updated { version }.
@@ -280,6 +355,12 @@ func (d *Dispatcher) configPublished(ctx context.Context, env events.Event) erro
 		return fmt.Errorf("event %s (%s): %w: version must be 1 or more", env.ID, env.Type, ErrDrop)
 	}
 	current, send, err := d.config.Published(ctx, env.GameID, data.Version)
+	if errors.Is(err, gameconfig.ErrSuspended) {
+		// Platform gives no config of a suspended game, and its connections are closed anyway. The
+		// version is picked up when the game is resumed (see GameStatus.Resumed), so there is nothing to retry.
+		d.log.Info("event handled, the game is suspended", "event_id", env.ID, "type", env.Type, "game_id", env.GameID)
+		return nil
+	}
 	if err != nil {
 		if errors.Is(err, gameconfig.ErrInvalidGame) {
 			err = fmt.Errorf("%w: %w", ErrDrop, err)
@@ -296,6 +377,34 @@ func (d *Dispatcher) configPublished(ctx context.Context, env events.Event) erro
 	}
 	d.broadcast.SendToGame(env.GameID, encoded)
 	d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "version", current)
+	return nil
+}
+
+// gameStatusChanged handles game.suspended and game.resumed. The event's type is the whole message:
+// its data (status) only repeats it.
+//
+// game.suspended is trusted at once: the status is recorded first, so a connection that is just being
+// opened sees it, and then every open connection of that game, and no other, is closed with 4403.
+// game.resumed is not: the cache asks Platform, so an old event that is delivered again after a newer
+// suspension cannot open the game by mistake. When Platform cannot be asked the error makes the
+// consumer try once more, and the status expires by itself after a while.
+func (d *Dispatcher) gameStatusChanged(ctx context.Context, env events.Event) error {
+	if env.GameID == "" {
+		return fmt.Errorf("event %s (%s): %w: no game_id", env.ID, env.Type, ErrDrop)
+	}
+	if env.Type == typeGameSuspended {
+		d.gameStatus.SetSuspended(env.GameID, true)
+		closed := d.closer.CloseGameSuspended(env.GameID)
+		d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID, "closed", closed)
+		return nil
+	}
+	if err := d.gameStatus.Resumed(ctx, env.GameID); err != nil {
+		if errors.Is(err, gameconfig.ErrInvalidGame) {
+			err = fmt.Errorf("%w: %w", ErrDrop, err)
+		}
+		return fmt.Errorf("event %s (%s): %w", env.ID, env.Type, err)
+	}
+	d.log.Info("event handled", "event_id", env.ID, "type", env.Type, "game_id", env.GameID)
 	return nil
 }
 

@@ -76,9 +76,9 @@ func run() error {
 		log.Warn("SOCIAL_DATABASE_URL is not set: starting without a database, /ready will report not ready")
 	}
 
-	// Events for the other services (see README "RabbitMQ events"). Without a broker URL they are
-	// dropped. The publisher connects on its first event, so a broker that is down never stops
-	// social from starting, and events.Safe makes sure it never fails a request either.
+	// Events for the other services (see README "RabbitMQ events"), sent by the outbox relay below.
+	// Without a broker URL they are dropped. The publisher connects on its first event, so a broker
+	// that is down never stops social from starting, and requests never wait for it.
 	var publisher events.Publisher = events.Noop{}
 	if url := config.String("SOCIAL_RABBITMQ_URL", ""); url != "" {
 		rabbit := events.NewRabbitMQ(url, log)
@@ -87,6 +87,15 @@ func run() error {
 		log.Info("publishing events to rabbitmq", "exchange", events.Exchange) // never log the URL: it holds the password
 	} else {
 		log.Warn("SOCIAL_RABBITMQ_URL is not set: events for other services are dropped")
+	}
+
+	// The service writes every event to the outbox table in the transaction of its change; the
+	// outbox relay publishes them, in the order they were written, and retries until the broker
+	// confirms them (README "Event outbox"). It is the only user of the publisher, and gets it
+	// bare, not in events.Safe, so it sees a failed send and keeps the row.
+	relayDone, err := startRelay(ctx, pool, publisher, "SOCIAL", log)
+	if err != nil {
+		return err
 	}
 
 	// The clan rules each game set in Studio (clan.maxMembers), read from platform's published
@@ -111,7 +120,7 @@ func run() error {
 
 	// Wiring: repository (database) -> service (rules) -> handler (HTTP).
 	repo := repository.New(pool)
-	svc := service.New(repo).WithPublisher(events.Safe(publisher, log)).WithRules(rules)
+	svc := service.New(repo).WithRules(rules)
 
 	// The /internal routes (for realtime's backfill) need a shared secret. Without one they answer 404.
 	internalToken := config.String("SOCIAL_INTERNAL_TOKEN", "")
@@ -126,7 +135,12 @@ func run() error {
 
 	mux := http.NewServeMux()
 	// Every /api/v1 route requires a player token signed by platform (checked with verifyKey).
+	// After the token check, a game that an admin suspended is refused with 403 game_suspended.
+	// The answer comes from the same platform call and cache as the clan rules, so it applies
+	// (and lifts) within SOCIAL_CONFIG_CACHE_TTL. Without SOCIAL_PLATFORM_URL nothing is suspended.
+	isSuspended := func(ctx context.Context, gameID string) bool { return rules.Rules(ctx, gameID).Suspended }
 	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now), log).
+		WithGameGate(auth.RequireServedGame(isSuspended)).
 		WithInternal(httpx.RequireInternal(internalToken)).
 		Register(mux)
 
@@ -139,5 +153,13 @@ func run() error {
 	log.Info("cors", "allowed_origins", origins)
 
 	h := httpx.Chain(mux, httpx.Recover(log), httpx.RequestLog(log), cors)
-	return httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
+	err = httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
+	// The relay stops with ctx too, after recording the batch it was sending; wait for it before
+	// the pool and the broker connection are closed.
+	select {
+	case <-relayDone:
+	case <-time.After(relayStopWait):
+		log.Warn("outbox relay did not stop in time")
+	}
+	return err
 }

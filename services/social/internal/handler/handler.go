@@ -46,6 +46,9 @@ type Handler struct {
 	name          string
 	svc           Service
 	requirePlayer httpx.Middleware
+	// requireServed runs after requirePlayer and refuses the requests of a suspended game (see
+	// WithGameGate); nil lets every game through.
+	requireServed httpx.Middleware
 	// requireInternal guards the /internal routes (see WithInternal); nil switches them off.
 	requireInternal httpx.Middleware
 	log             *slog.Logger
@@ -66,6 +69,14 @@ func New(name string, svc Service, requirePlayer httpx.Middleware, log *slog.Log
 // follow New. Without it those routes answer the same JSON 404 as an unknown route.
 func (h *Handler) WithInternal(requireInternal httpx.Middleware) *Handler {
 	h.requireInternal = requireInternal
+	return h
+}
+
+// WithGameGate sets the guard that runs after the player token check on every /api/v1 route and
+// refuses the requests of a suspended game (see auth.RequireServedGame). It returns h, so it can
+// follow New. /health, /ready and the /internal routes are never gated: they have no game.
+func (h *Handler) WithGameGate(requireServed httpx.Middleware) *Handler {
+	h.requireServed = requireServed
 	return h
 }
 
@@ -126,6 +137,9 @@ func (h *Handler) register(mux *http.ServeMux, routes []Route) {
 		var handle http.Handler = r.Handle
 		switch {
 		case isPlayerRoute(r.Path):
+			if h.requireServed != nil {
+				handle = h.requireServed(handle) // inside requirePlayer: the token is proven first
+			}
 			handle = h.requirePlayer(handle)
 		case isInternalRoute(r.Path):
 			handle = h.internalGuard()(handle)

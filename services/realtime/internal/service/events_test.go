@@ -56,6 +56,36 @@ type memStore struct {
 	roomMembers []string // what DeleteClanRoom returns
 	clanCalls   []string // "join game|clan|player|name", "leave game|clan|player", "delete game|clan"
 	clanErr     error
+
+	// the handled events (once_test.go)
+	handled       map[string]bool // "game|event" of the events RunOnce recorded
+	onceErr       error           // what RunOnce returns before running fn
+	deletedBefore []time.Time     // cutoffs passed to DeleteProcessedEvents
+}
+
+// RunOnce behaves like the repository: fn runs unless the event was recorded, and a failing fn
+// records nothing.
+func (m *memStore) RunOnce(ctx context.Context, gameID, eventID string, fn func(ctx context.Context) error) (bool, error) {
+	if m.onceErr != nil {
+		return false, m.onceErr
+	}
+	key := gameID + "|" + eventID
+	if m.handled[key] {
+		return false, nil
+	}
+	if err := fn(ctx); err != nil {
+		return false, err
+	}
+	if m.handled == nil {
+		m.handled = map[string]bool{}
+	}
+	m.handled[key] = true
+	return true, nil
+}
+
+func (m *memStore) DeleteProcessedEvents(_ context.Context, before time.Time) (int64, error) {
+	m.deletedBefore = append(m.deletedBefore, before)
+	return 0, nil
 }
 
 type upsertCall struct {

@@ -62,7 +62,7 @@ flowchart LR
     RT_HTTP -->|"GET /players/me with the player's token"| Social
     Social -->|"publish after commit"| MQ
     Platform -->|"config.published"| MQ
-    MQ -->|"friend.*, player.*, clan.*, config.published"| RT_Consumer
+    MQ -->|"friend.*, player.*, clan.*, config.published, game.*"| RT_Consumer
     RT_Consumer --> RT_Service
     RT_HTTP --> RT_Service
     RT_Service --> RT_Repo
@@ -130,8 +130,8 @@ sequenceDiagram
     participant Hub
 
     A->>Social: POST /api/v1/friends/requests, playerId of Bob
-    Social->>Social: save the request, COMMIT
-    Social-)MQ: friend.request_sent (request_id, sender, receiver)
+    Social->>Social: save the request and friend.request_sent in the outbox, COMMIT
+    Social-)MQ: outbox relay: friend.request_sent (request_id, sender, receiver)
     Social-->>A: 201 request
     MQ->>Cons: deliver (prefetch 20)
     Cons->>Svc: FriendRequestSent
@@ -141,8 +141,8 @@ sequenceDiagram
     Cons->>MQ: ack
 
     B->>Social: POST /api/v1/friends/requests/{id}/accept
-    Social->>Social: friendship saved, COMMIT
-    Social-)MQ: friend.accepted (request_id, players)
+    Social->>Social: friendship and friend.accepted saved in one transaction, COMMIT
+    Social-)MQ: outbox relay: friend.accepted (request_id, players)
     Social-->>B: 200 friend
     MQ->>Cons: deliver
     Cons->>Svc: FriendAccepted
@@ -162,7 +162,10 @@ sequenceDiagram
     end
 ```
 
-Publishing happens after the commit and a failed publish never fails the request. There is no dead-letter queue yet, so a dropped event is lost.
+Social writes each event to its outbox table in the transaction of the change; the outbox relay publishes it after the
+commit and retries until the broker confirms, so a request never waits for RabbitMQ and a broker that is down loses
+nothing. Delivery is at least once; Realtime skips a copy by its `event_id`. There is no dead-letter queue yet, so an event
+the consumer drops is lost.
 
 ## 4 Sending a message
 
@@ -556,7 +559,7 @@ with a restart.
 
 | What is down | What happens |
 |---|---|
-| RabbitMQ | Social still answers (a failed publish is only logged), but the events published while the broker is down are lost: there is no outbox yet. Realtime keeps serving WebSockets and REST and reconnects to the broker with 1, 2, 4 ... up to 30 s |
+| RabbitMQ | Social still answers and loses nothing: its events wait in its outbox table and the relay sends them when the broker is back (it retries after 1 s, doubling up to 30 s); Realtime then acts on them. Platform's `config.published` and game status events published meanwhile are still lost (platform moves to the outbox next). Realtime keeps serving WebSockets and REST and reconnects to the broker with 1, 2, 4 ... up to 30 s |
 | Realtime database | REST answers 500 `internal_error`, `message.send` answers an `error` frame `internal`, the consumer retries an event once and then drops it; `hello.onlineFriends` is `[]`, and when a player's 10 s end and the friends cannot be looked up, nobody is told and the player stops counting as online |
 | Platform | message rules of a game whose config is not cached are the permissive defaults (chat on, 1000 characters, no slow mode, no filter); `hello` says `configVersion` 0 after a second (and for a few seconds after, without asking again); a `config.published` event is retried once and then dropped, so a missed `config.updated` is caught by `configVersion` in the next `hello`. Chat and friends are not affected |
 | Social | new WebSocket connections and REST calls to Realtime get 503 `social_unavailable`. Open sockets keep working |

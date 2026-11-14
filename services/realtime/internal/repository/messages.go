@@ -31,7 +31,7 @@ func (r *Repository) InsertMessage(ctx context.Context, gameID, conversationID, 
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin insert message: %w", err)
 	}

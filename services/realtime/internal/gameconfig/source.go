@@ -29,7 +29,14 @@ var (
 	ErrUnavailable = errors.New("platform service unavailable")
 	// ErrInvalidGame means the game ID is not a UUID. Nothing is sent to Platform for it.
 	ErrInvalidGame = errors.New("the game ID is not a UUID")
+	// ErrSuspended means Platform refused the config with 403 game_suspended: the game, or its
+	// developer, is switched off by an admin. It is an answer about the game, not trouble.
+	ErrSuspended = errors.New("the game is suspended")
 )
+
+// codeGameSuspended is the error code Platform uses for a suspended game and for a suspended
+// developer alike, so players never see whose contract is behind it.
+const codeGameSuspended = "game_suspended"
 
 // maxResponseBytes bounds what is read from Platform. A config is at most 64 KB.
 const maxResponseBytes = 256 << 10
@@ -46,7 +53,7 @@ type Config struct {
 // Source is where the config comes from.
 type Source interface {
 	// Fetch returns the newest published config of the game. Its errors wrap ErrNotPublished,
-	// ErrUnavailable or ErrInvalidGame.
+	// ErrSuspended, ErrUnavailable or ErrInvalidGame.
 	Fetch(ctx context.Context, gameID string) (Config, error)
 }
 
@@ -100,15 +107,17 @@ func (s *HTTPSource) Fetch(ctx context.Context, gameID string) (Config, error) {
 	case http.StatusOK:
 	case http.StatusNotFound:
 		// Only Platform's own "not published" answer counts; any other 404 is a wrong address.
-		var e struct {
-			Error struct {
-				Code string `json:"code"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(body, &e) == nil && e.Error.Code == "widget_not_published" {
+		if errorCode(body) == "widget_not_published" {
 			return Config{}, ErrNotPublished
 		}
 		return Config{}, fmt.Errorf("platform answered 404: %w", ErrUnavailable)
+	case http.StatusForbidden:
+		// Only Platform's own "suspended" answer counts. Any other 403 says nothing about the
+		// game, so it is trouble like a 500: the last known status stays.
+		if errorCode(body) == codeGameSuspended {
+			return Config{}, ErrSuspended
+		}
+		return Config{}, fmt.Errorf("platform answered 403: %w", ErrUnavailable)
 	default:
 		return Config{}, fmt.Errorf("platform answered %d: %w", resp.StatusCode, ErrUnavailable)
 	}
@@ -121,4 +130,17 @@ func (s *HTTPSource) Fetch(ctx context.Context, gameID string) (Config, error) {
 		return Config{}, fmt.Errorf("platform answer is not a config: %w", ErrUnavailable)
 	}
 	return Config{Version: c.Version, Settings: c.Config}, nil
+}
+
+// errorCode reads error.code from Platform's standard error body; "" when it is not one.
+func errorCode(body []byte) string {
+	var e struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &e) != nil {
+		return ""
+	}
+	return e.Error.Code
 }

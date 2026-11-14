@@ -10,6 +10,10 @@ info:
     - Browser calls are only accepted from the origins in `SOCIAL_CORS_ORIGINS`
       (default `http://localhost:5174`, the demo game where the SDK runs). Other origins get 403 `origin_not_allowed`.
       Calls without an `Origin` header (the platform service, curl) are not affected.
+    - Every `/api/v1` endpoint answers 403 `game_suspended` while an admin has switched off the caller's game
+      or its developer. The token is checked first (an invalid one still gets 401), nothing is changed or deleted,
+      and the game works again by itself within `SOCIAL_CONFIG_CACHE_TTL` (30 s by default) of being resumed.
+      If the platform cannot be reached, the last status Social saw is kept, and a game it has never seen is served.
 
     This file lists only implemented routes. `TestOpenAPIMatchesRoutes` fails when it
     and `services/social/internal/handler` drift apart.
@@ -133,7 +137,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
   /api/v1/players/me:
     get:
       tags: [players]
@@ -162,7 +166,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
   /api/v1/players/me/clan:
     get:
       tags: [clans]
@@ -190,7 +194,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: The caller is not in a clan (not_in_clan).
           content:
@@ -226,7 +230,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
   /api/v1/players/{playerID}/block:
     parameters:
       - name: playerID
@@ -274,7 +278,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/BlockPlayerNotFound"
     delete:
@@ -303,7 +307,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/BlockPlayerNotFound"
   /api/v1/clans:
@@ -393,7 +397,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
     post:
       tags: [clans]
       operationId: createClan
@@ -450,7 +454,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
         "409":
           description: The name is taken in this game (clan_name_taken), or the caller is already in a clan (already_in_clan).
           content:
@@ -520,8 +524,9 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: |
-            The caller is not this clan's owner (not_clan_owner), or the request came from a
-            website that is not in the allowed origins (origin_not_allowed).
+            The caller is not this clan's owner (not_clan_owner), the request came from a
+            website that is not in the allowed origins (origin_not_allowed), or the caller's game is
+            suspended (game_suspended).
           content:
             application/json:
               schema:
@@ -586,7 +591,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: No such clan in the caller's game (clan_not_found).
           content:
@@ -643,7 +648,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: No such clan in the caller's game (clan_not_found). This also happens when the clan was deleted because its last member left.
           content:
@@ -703,7 +708,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: No such clan in the caller's game (clan_not_found).
           content:
@@ -767,8 +772,8 @@ paths:
         "403":
           description: |
             The caller's clan role does not allow it, or the caller is not in the clan
-            (not_allowed), or the request came from a website that is not in the allowed
-            origins (origin_not_allowed).
+            (not_allowed), the request came from a website that is not in the allowed
+            origins (origin_not_allowed), or the caller's game is suspended (game_suspended).
           content:
             application/json:
               schema:
@@ -835,8 +840,9 @@ paths:
         "403":
           description: |
             The caller's clan role does not allow this step, the caller names themselves or is
-            not in the clan (not_allowed), or the request came from a website that is not in
-            the allowed origins (origin_not_allowed).
+            not in the clan (not_allowed), the request came from a website that is not in
+            the allowed origins (origin_not_allowed), or the caller's game is suspended
+            (game_suspended).
           content:
             application/json:
               schema:
@@ -901,8 +907,9 @@ paths:
         "403":
           description: |
             The caller's clan role does not allow this step, the caller names themselves or is
-            not in the clan (not_allowed), or the request came from a website that is not in
-            the allowed origins (origin_not_allowed).
+            not in the clan (not_allowed), the request came from a website that is not in
+            the allowed origins (origin_not_allowed), or the caller's game is suspended
+            (game_suspended).
           content:
             application/json:
               schema:
@@ -958,7 +965,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
   /api/v1/friends/requests:
     get:
       tags: [friends]
@@ -988,7 +995,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
     post:
       tags: [friends]
       operationId: sendFriendRequest
@@ -1052,7 +1059,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: No such player in the caller's game (player_not_found). A player of another game, or an ID that is not a UUID, counts as not found.
           content:
@@ -1111,8 +1118,9 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: |
-            The website is not allowed (origin_not_allowed), or the caller sent this request and
-            only the other player can accept it (not_request_receiver).
+            The website is not allowed (origin_not_allowed), the caller's game is suspended
+            (game_suspended), or the caller sent this request and only the other player can
+            accept it (not_request_receiver).
           content:
             application/json:
               schema:
@@ -1156,7 +1164,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: The caller is not friends with this player (not_friends). Also for an unknown player, a player of another game, or an ID that is not a UUID.
           content:
@@ -1192,8 +1200,9 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: |
-            The website is not allowed (origin_not_allowed), or the caller received this request and
-            can only decline it (not_request_sender).
+            The website is not allowed (origin_not_allowed), the caller's game is suspended
+            (game_suspended), or the caller received this request and can only decline it
+            (not_request_sender).
           content:
             application/json:
               schema:
@@ -1238,8 +1247,9 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           description: |
-            The website is not allowed (origin_not_allowed), or the caller sent this request and
-            can only cancel it (not_request_receiver).
+            The website is not allowed (origin_not_allowed), the caller's game is suspended
+            (game_suspended), or the caller sent this request and can only cancel it
+            (not_request_receiver).
           content:
             application/json:
               schema:
@@ -1739,6 +1749,29 @@ components:
             error:
               code: origin_not_allowed
               message: This website is not allowed to call the API
+    Forbidden:
+      description: |
+        The request was refused: it came from a website that is not in the allowed origins
+        (`origin_not_allowed`), or the caller's game is suspended (`game_suspended`). A suspended game
+        is one that an admin switched off, or whose developer was; the answer does not say which.
+        Nothing is changed or deleted, and the game is served again within `SOCIAL_CONFIG_CACHE_TTL`
+        of being resumed. It is the same for every `/api/v1` endpoint, and comes after the token
+        check, so a request without a valid token gets 401.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            origin_not_allowed:
+              value:
+                error:
+                  code: origin_not_allowed
+                  message: This website is not allowed to call the API
+            game_suspended:
+              value:
+                error:
+                  code: game_suspended
+                  message: This game is suspended
     NotReady:
       description: The database is not reachable.
       content:
