@@ -26,7 +26,7 @@ func (r *Repository) AdminByEmail(ctx context.Context, email string) (Admin, err
 	if r.pool == nil {
 		return Admin{}, ErrNoDatabase
 	}
-	row := r.pool.QueryRow(ctx,
+	row := r.db(ctx).QueryRow(ctx,
 		`select id::text, email, password_hash, name, created_at, disabled_at
 		 from admins where email = $1`, email)
 	return scanAdmin(row)
@@ -37,7 +37,7 @@ func (r *Repository) AdminByID(ctx context.Context, id string) (Admin, error) {
 	if r.pool == nil {
 		return Admin{}, ErrNoDatabase
 	}
-	row := r.pool.QueryRow(ctx,
+	row := r.db(ctx).QueryRow(ctx,
 		`select id::text, email, password_hash, name, created_at, disabled_at
 		 from admins where id = $1`, id)
 	return scanAdmin(row)

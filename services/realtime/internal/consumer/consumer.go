@@ -9,11 +9,18 @@
 //   - the message is acknowledged only after the handler succeeded;
 //   - an event the handler cannot make sense of (ErrDrop) is rejected without requeue at once;
 //   - any other failure puts the message back once, after RetryDelay; if it fails again it is
-//     rejected without requeue and logged. Nothing is parked anywhere: a dead-letter queue is future work.
+//     rejected without requeue and logged.
+//
+// A rejected message is not deleted: a broker policy (deploy/rabbitmq/definitions.json) dead-letters
+// it to realtime.events.dead, where it is kept for 14 days with RabbitMQ's x-death header (queue,
+// reason, count, original routing key). The broker keeps no reason of ours, so every rejection is
+// logged once, with the event's ID, as "event rejected to the dead-letter queue". While the consumer
+// is connected it also counts the dead-letter queue now and then and warns while it holds events.
 package consumer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -42,7 +49,20 @@ type Config struct {
 	HandleTimeout time.Duration
 	// MinBackoff and MaxBackoff bound the wait between connection attempts (it doubles); 1s and 30s.
 	MinBackoff, MaxBackoff time.Duration
+	// DeadLetterQueue is where the broker moves what this consumer rejects; Queue + ".dead".
+	DeadLetterQueue string
+	// DeadLetterCheck is how often the dead-letter queue is counted while connected; 5m.
+	DeadLetterCheck time.Duration
 }
+
+// DefaultDeadLetterCheck is how often the dead-letter queue is counted when Config does not say.
+const DefaultDeadLetterCheck = 5 * time.Minute
+
+// Reasons of a rejection, in the "reason" field of its log line.
+const (
+	reasonUnusable    = "unusable"     // the handler cannot make sense of the event (ErrDrop)
+	reasonFailedTwice = "failed_twice" // handling failed, and failed again after the one retry
+)
 
 func (c Config) withDefaults() Config {
 	if c.Queue == "" {
@@ -62,6 +82,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MaxBackoff < c.MinBackoff {
 		c.MaxBackoff = 30 * time.Second
+	}
+	if c.DeadLetterQueue == "" {
+		c.DeadLetterQueue = c.Queue + ".dead"
+	}
+	if c.DeadLetterCheck <= 0 {
+		c.DeadLetterCheck = DefaultDeadLetterCheck
 	}
 	return c
 }
@@ -139,10 +165,18 @@ func (c *Consumer) session(ctx context.Context) (connected bool, err error) {
 	closed := conn.NotifyClose(make(chan *amqp.Error, 1))
 	c.log.Info("event consumer started", "broker", c.host, "queue", c.cfg.Queue, "prefetch", c.cfg.Prefetch)
 
+	// Count the dead-letter queue now and every DeadLetterCheck, for as long as this session lasts.
+	dead := connCounter{conn: conn}
+	c.checkDeadLetters(dead)
+	check := time.NewTicker(c.cfg.DeadLetterCheck)
+	defer check.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return true, nil
+		case <-check.C:
+			c.checkDeadLetters(dead)
 		case e := <-closed:
 			if e == nil {
 				return true, errors.New("connection closed")
@@ -165,10 +199,11 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 	case err == nil:
 		c.done(d.Ack(false), "ack", d)
 	case errors.Is(err, ErrDrop):
-		c.log.Warn("dropping unusable event", "routing_key", d.RoutingKey, "error", err)
+		c.logRejected(slog.LevelWarn, d, reasonUnusable, err)
 		c.done(d.Nack(false, false), "reject", d)
 	case !d.Redelivered:
-		c.log.Warn("event failed, will try once more", "routing_key", d.RoutingKey, "error", err)
+		id, typ := identify(d)
+		c.log.Warn("event failed, will try once more", "event_id", id, "type", typ, "routing_key", d.RoutingKey, "error", err)
 		// A short pause, so a database hiccup is over before the second try.
 		select {
 		case <-ctx.Done():
@@ -176,7 +211,7 @@ func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
 		}
 		c.done(d.Nack(false, true), "requeue", d)
 	default:
-		c.log.Error("event failed twice, dropping it", "routing_key", d.RoutingKey, "error", err)
+		c.logRejected(slog.LevelError, d, reasonFailedTwice, err)
 		c.done(d.Nack(false, false), "reject", d)
 	}
 }
@@ -192,6 +227,73 @@ func (c *Consumer) callHandler(ctx context.Context, body []byte) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.HandleTimeout)
 	defer cancel()
 	return c.handler.Handle(ctx, body)
+}
+
+// logRejected writes the one log line of a rejected event. The broker keeps the event in the
+// dead-letter queue but not our reason, so this line is where it is found again, by event_id.
+func (c *Consumer) logRejected(level slog.Level, d amqp.Delivery, reason string, err error) {
+	id, typ := identify(d)
+	c.log.Log(context.Background(), level, "event rejected to the dead-letter queue",
+		"event_id", id, "type", typ, "routing_key", d.RoutingKey, "reason", reason, "error", err,
+		"dead_letter_queue", c.cfg.DeadLetterQueue)
+}
+
+// identify returns the event ID and type of a delivery: from its body when that is an event, else
+// from the message's properties (publishers set message_id to the event ID and type to its type).
+// Either can be empty for a message that is neither.
+func identify(d amqp.Delivery) (id, typ string) {
+	var env struct {
+		ID   string `json:"event_id"`
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(d.Body, &env) // a body that is not JSON leaves both empty
+	id, typ = env.ID, env.Type
+	if id == "" {
+		id = d.MessageId
+	}
+	if typ == "" {
+		typ = d.Type
+	}
+	return id, typ
+}
+
+// queueCounter tells how many messages a queue holds.
+type queueCounter interface {
+	count(queue string) (int, error)
+}
+
+// connCounter counts with a passive declare on a channel of its own: a missing queue makes the
+// broker close that channel, never the one the consumer reads from.
+type connCounter struct{ conn *amqp.Connection }
+
+func (c connCounter) count(queue string) (int, error) {
+	ch, err := c.conn.Channel()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = ch.Close() }()
+	q, err := ch.QueueDeclarePassive(queue, true, false, false, false, nil)
+	if err != nil {
+		return 0, err
+	}
+	return q.Messages, nil
+}
+
+// checkDeadLetters warns while the dead-letter queue holds events, and when it is missing (then a
+// rejected event is deleted). An empty queue logs nothing. A failure is only logged: it never
+// stops the consumer.
+func (c *Consumer) checkDeadLetters(counter queueCounter) {
+	queue := c.cfg.DeadLetterQueue
+	n, err := counter.count(queue)
+	var amqpErr *amqp.Error
+	switch {
+	case errors.As(err, &amqpErr) && amqpErr.Code == amqp.NotFound:
+		c.log.Warn("dead-letter queue not found, rejected events are deleted; run rabbitmq-setup", "dead_letter_queue", queue)
+	case err != nil:
+		c.log.Warn("could not count the dead-letter queue", "dead_letter_queue", queue, "error", err)
+	case n > 0:
+		c.log.Warn("dead-letter queue holds rejected events", "dead_letter_queue", queue, "count", n)
+	}
 }
 
 // done logs a failed ack. The usual cause is a closed channel; the session ends on its own and the

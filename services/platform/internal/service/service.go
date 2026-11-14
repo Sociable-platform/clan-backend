@@ -47,6 +47,11 @@ type Store interface {
 	WidgetVersionsOfGame(ctx context.Context, gameID string) ([]repository.WidgetVersion, error)
 	WidgetVersionOfGame(ctx context.Context, gameID string, version int) (repository.WidgetVersion, error)
 	LatestWidgetVersion(ctx context.Context, gameID string) (repository.WidgetVersion, error)
+	// InTx runs fn in one transaction; the store methods fn calls with its ctx join it. fn's error
+	// is returned as it is, and then nothing fn did is kept.
+	InTx(ctx context.Context, fn func(ctx context.Context) error) error
+	// AddEvents writes events to the outbox inside the transaction of InTx; outside it fails.
+	AddEvents(ctx context.Context, evs ...events.Event) error
 }
 
 // Service is the platform service's logic.
@@ -62,8 +67,6 @@ type Service struct {
 	// "no such developer" and "wrong password" take about the same time.
 	dummyHash []byte
 	now       func() time.Time
-	// events tells the other services what changed (config.published); see pkg/events.
-	events events.Publisher
 }
 
 // defaultAdminTokenTTL is used until WithAdminTokenTTL is called.
@@ -90,15 +93,23 @@ func newService(store Store, key ed25519.PrivateKey, tokenTTL time.Duration, cos
 	}
 	return &Service{
 		store: store, key: key, pub: pub, tokenTTL: tokenTTL, adminTokenTTL: defaultAdminTokenTTL,
-		bcryptCost: cost, dummyHash: dummy, now: time.Now, events: events.Noop{},
+		bcryptCost: cost, dummyHash: dummy, now: time.Now,
 	}, nil
 }
 
-// WithPublisher sets where the service sends events for the other services (see pkg/events).
-// Until it is called, events are dropped. It returns s, so it can follow New.
-func (s *Service) WithPublisher(p events.Publisher) *Service {
-	s.events = p
-	return s
+// change makes one change and records its events for the other services, in one transaction:
+// fn does the change through the store with the ctx it is given and returns the events that
+// describe it, which are written to the outbox before the commit. Either both are kept or neither
+// is, and the outbox relay publishes the events once the transaction has committed (pkg/events).
+// fn's error is returned as it is, so callers map the store's errors as before.
+func (s *Service) change(ctx context.Context, fn func(ctx context.Context) ([]events.Event, error)) error {
+	return s.store.InTx(ctx, func(ctx context.Context) error {
+		evs, err := fn(ctx)
+		if err != nil || len(evs) == 0 {
+			return err
+		}
+		return s.store.AddEvents(ctx, evs...)
+	})
 }
 
 // WithAdminTokenTTL sets how long an admin token stays valid (default 1 hour). It returns s,

@@ -83,9 +83,9 @@ func run() error {
 		log.Warn("PLATFORM_DATABASE_URL is not set: starting without a database, /ready will report not ready")
 	}
 
-	// Events for the other services (config.published for Realtime's live re-skin). The broker is
-	// reached lazily, so a broker that is down does not stop platform from starting, and
-	// events.Safe makes sure it never fails a publish or rollback either.
+	// Events for the other services (config.published for Realtime's live re-skin, game.suspended and
+	// game.resumed), sent by the outbox relay below. The broker is reached lazily, so a broker that is
+	// down does not stop platform from starting, and requests never wait for it.
 	var publisher events.Publisher = events.Noop{}
 	if url := config.String("PLATFORM_RABBITMQ_URL", ""); url != "" {
 		rabbit := events.NewRabbitMQ(url, log)
@@ -97,8 +97,9 @@ func run() error {
 	}
 
 	// The outbox relay publishes the events written to the outbox table, in the order they were
-	// written, and retries until the broker confirms them (README "Event outbox"). It gets the bare
-	// publisher, not events.Safe, so it sees a failed send and keeps the row.
+	// written, and retries until the broker confirms them (README "Event outbox"). It gets the
+	// publisher, so it sees a failed send and keeps the row. The service writes every event to the
+	// outbox in the transaction of its change; the relay is the publisher's only user.
 	relayDone, err := startRelay(ctx, pool, publisher, "PLATFORM", log)
 	if err != nil {
 		return err
@@ -110,7 +111,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	svc.WithAdminTokenTTL(adminTokenTTL).WithPublisher(events.Safe(publisher, log))
+	svc.WithAdminTokenTTL(adminTokenTTL)
 
 	// The /internal routes (for realtime) need a shared secret. Without one they answer 404.
 	internalToken := config.String("PLATFORM_INTERNAL_TOKEN", "")

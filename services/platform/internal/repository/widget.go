@@ -24,7 +24,7 @@ func (r *Repository) WidgetDraftOfGame(ctx context.Context, gameID string) (Widg
 		return WidgetDraft{}, ErrNoDatabase
 	}
 	d := WidgetDraft{GameID: gameID}
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select config, updated_at from widget_drafts where game_id = $1`, gameID,
 	).Scan(&d.Config, &d.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -44,7 +44,7 @@ func (r *Repository) SaveWidgetDraft(ctx context.Context, gameID string, config 
 		return WidgetDraft{}, ErrNoDatabase
 	}
 	d := WidgetDraft{GameID: gameID}
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`insert into widget_drafts (game_id, config) values ($1, $2)
 		 on conflict (game_id) do update set config = excluded.config, updated_at = now()
 		 returning config, updated_at`,
@@ -79,7 +79,7 @@ func (r *Repository) AddWidgetVersion(ctx context.Context, gameID, developerID s
 	if r.pool == nil {
 		return WidgetVersion{}, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return WidgetVersion{}, fmt.Errorf("begin publish: %w", err)
 	}
@@ -122,7 +122,7 @@ func (r *Repository) WidgetVersionsOfGame(ctx context.Context, gameID string) ([
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select id::text, game_id::text, version, published_at, published_by::text
 		 from widget_versions where game_id = $1 order by version desc`, gameID)
 	if err != nil {
@@ -150,7 +150,7 @@ func (r *Repository) WidgetVersionOfGame(ctx context.Context, gameID string, ver
 		return WidgetVersion{}, ErrNoDatabase
 	}
 	var v WidgetVersion
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select id::text, game_id::text, version, config, published_at, published_by::text
 		 from widget_versions where game_id = $1 and version = $2`, gameID, version,
 	).Scan(&v.ID, &v.GameID, &v.Version, &v.Config, &v.PublishedAt, &v.PublishedBy)
@@ -171,7 +171,7 @@ func (r *Repository) LatestWidgetVersion(ctx context.Context, gameID string) (Wi
 		return WidgetVersion{}, ErrNoDatabase
 	}
 	var v WidgetVersion
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select id::text, game_id::text, version, config, published_at, published_by::text
 		 from widget_versions where game_id = $1 order by version desc limit 1`, gameID,
 	).Scan(&v.ID, &v.GameID, &v.Version, &v.Config, &v.PublishedAt, &v.PublishedBy)

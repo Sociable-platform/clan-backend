@@ -162,10 +162,10 @@ sequenceDiagram
     end
 ```
 
-Social writes each event to its outbox table in the transaction of the change; the outbox relay publishes it after the
-commit and retries until the broker confirms, so a request never waits for RabbitMQ and a broker that is down loses
-nothing. Delivery is at least once; Realtime skips a copy by its `event_id`. There is no dead-letter queue yet, so an event
-the consumer drops is lost.
+Social and Platform write each event to their outbox table in the transaction of the change; the outbox relay publishes
+it after the commit and retries until the broker confirms, so a request never waits for RabbitMQ and a broker that is down
+loses nothing. Delivery is at least once; Realtime skips a copy by its `event_id`. An event the consumer rejects is moved by the broker to
+the dead-letter queue `realtime.events.dead` and kept there 14 days; `go run ./tools/dlq replay` sends it back once the cause is fixed.
 
 ## 4 Sending a message
 
@@ -456,7 +456,7 @@ Chat in a clan room is the same `message.send` flow as diagram 4: a clan room is
 ## 11 Live re-skin
 
 The developer presses Publish; every player who has the game open sees the new look without reloading. Realtime fetches the new config
-first, so the version in the frame is one it really holds. Platform publishes `config.published` after a publish or rollback is saved.
+first, so the version in the frame is one it really holds. Platform writes `config.published` to its outbox in the transaction that saves a publish or rollback; its relay sends it after the commit.
 
 ```mermaid
 sequenceDiagram
@@ -470,8 +470,8 @@ sequenceDiagram
     participant P as Players of the game (SDK)
 
     Dev->>Platform: POST /api/v1/games/{gameID}/widget/publish
-    Platform->>Platform: save version N, COMMIT
-    Platform-)MQ: config.published (version N)
+    Platform->>Platform: save version N and config.published in the outbox, COMMIT
+    Platform-)MQ: outbox relay: config.published (version N)
     MQ->>Cons: deliver
     Cons->>Cache: Published(game, N)
     Cache->>Platform: GET /api/v1/public/games/{gameID}/widget-config (no-cache)
@@ -559,8 +559,8 @@ with a restart.
 
 | What is down | What happens |
 |---|---|
-| RabbitMQ | Social still answers and loses nothing: its events wait in its outbox table and the relay sends them when the broker is back (it retries after 1 s, doubling up to 30 s); Realtime then acts on them. Platform's `config.published` and game status events published meanwhile are still lost (platform moves to the outbox next). Realtime keeps serving WebSockets and REST and reconnects to the broker with 1, 2, 4 ... up to 30 s |
-| Realtime database | REST answers 500 `internal_error`, `message.send` answers an `error` frame `internal`, the consumer retries an event once and then drops it; `hello.onlineFriends` is `[]`, and when a player's 10 s end and the friends cannot be looked up, nobody is told and the player stops counting as online |
+| RabbitMQ | Social and Platform still answer and lose nothing: their events (friends, blocks, clans, `config.published`, `game.suspended` / `game.resumed`) wait in each service's outbox table and the relay sends them when the broker is back (it retries after 1 s, doubling up to 30 s); Realtime then acts on them. Delivery is at least once, and Realtime skips a copy by its `event_id`. Realtime keeps serving WebSockets and REST and reconnects to the broker with 1, 2, 4 ... up to 30 s. Events Realtime rejected before are safe in `realtime.events.dead` (the broker keeps them on disk) and can be replayed with `go run ./tools/dlq replay` |
+| Realtime database | REST answers 500 `internal_error`, `message.send` answers an `error` frame `internal`, the consumer retries an event once and then rejects it to the dead-letter queue `realtime.events.dead` (replay it with `go run ./tools/dlq replay` once the database is back); `hello.onlineFriends` is `[]`, and when a player's 10 s end and the friends cannot be looked up, nobody is told and the player stops counting as online |
 | Platform | message rules of a game whose config is not cached are the permissive defaults (chat on, 1000 characters, no slow mode, no filter); `hello` says `configVersion` 0 after a second (and for a few seconds after, without asking again); a `config.published` event is retried once and then dropped, so a missed `config.updated` is caught by `configVersion` in the next `hello`. Chat and friends are not affected |
 | Social | new WebSocket connections and REST calls to Realtime get 503 `social_unavailable`. Open sockets keep working |
 | Realtime itself | events wait in the queue and are handled when it is back. Frames sent meanwhile are not replayed: after a reconnect the SDK reloads the list and the history |

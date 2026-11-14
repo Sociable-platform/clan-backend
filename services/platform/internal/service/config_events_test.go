@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"os"
 	"reflect"
 	"regexp"
@@ -15,13 +13,13 @@ import (
 	"gitlab.com/clan-platform/clan-backend/pkg/events"
 )
 
-// recordingService is a service whose events go to a Recorder, with one game owned by alice.
+// recordingService is a service with one game owned by alice, and the events its transactions
+// committed to the outbox.
 func recordingService(t *testing.T) (*Service, *events.Recorder, *fakeStore, string, string) {
 	t.Helper()
 	svc, alice, _, game := aliceGame(t)
-	rec := &events.Recorder{}
-	svc.WithPublisher(rec)
-	return svc, rec, svc.store.(*fakeStore), alice.ID, game.ID
+	store := svc.store.(*fakeStore)
+	return svc, &store.committed, store, alice.ID, game.ID
 }
 
 // wantConfigPublished fails unless the recorder holds exactly one config.published per
@@ -97,22 +95,17 @@ func TestPublishAndRollback_PublishNothingWhenTheyFail(t *testing.T) {
 	wantConfigPublished(t, rec, game) // none
 }
 
-// failingPublisher fails every publish, like a broker that is down (without events.Safe).
-type failingPublisher struct{}
+// The event is part of the publish: when it cannot be written to the outbox, the publish fails and
+// its version rolls back with it (the broker is never asked during a request).
+func TestPublishWidget_FailsWhenTheEventCannotBeWritten(t *testing.T) {
+	svc, rec, store, alice, game := recordingService(t)
+	saveDraft(t, svc, alice, game, cfg("LookA"))
+	store.addErr = errors.New("outbox insert failed")
 
-func (failingPublisher) Publish(context.Context, events.Event) error {
-	return errors.New("broker down")
-}
-
-func TestPublishWidget_SucceedsWhenTheBrokerIsDown(t *testing.T) {
-	svc, alice, _, game := aliceGame(t)
-	svc.WithPublisher(events.Safe(failingPublisher{}, slog.New(slog.NewTextHandler(io.Discard, nil))))
-
-	saveDraft(t, svc, alice.ID, game.ID, cfg("LookA"))
-	v, err := svc.PublishWidget(context.Background(), alice.ID, game.ID)
-	if err != nil || v.Version != 1 {
-		t.Fatalf("publish = %+v, %v; want version 1 saved even with the broker down", v, err)
+	if _, err := svc.PublishWidget(context.Background(), alice, game); !errors.Is(err, store.addErr) {
+		t.Fatalf("publish = %v, want the outbox error", err)
 	}
+	wantConfigPublished(t, rec, game) // none
 }
 
 // config.published must have exactly the fields of the same message in docs/event-messages.md.

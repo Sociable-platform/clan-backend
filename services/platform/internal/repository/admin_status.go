@@ -35,7 +35,7 @@ func (r *Repository) SetDeveloperStatus(ctx context.Context, developerID string,
 	if r.pool == nil {
 		return AdminDeveloper{}, false, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return AdminDeveloper{}, false, fmt.Errorf("begin developer status change: %w", err)
 	}
@@ -82,7 +82,7 @@ func (r *Repository) SetGameStatus(ctx context.Context, gameID string, c StatusC
 	if r.pool == nil {
 		return AdminGame{}, false, ErrNoDatabase
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.db(ctx).Begin(ctx)
 	if err != nil {
 		return AdminGame{}, false, fmt.Errorf("begin game status change: %w", err)
 	}
@@ -168,7 +168,7 @@ func (r *Repository) GameAccessOf(ctx context.Context, gameID string) (GameAcces
 		return GameAccess{}, ErrNoDatabase
 	}
 	var a GameAccess
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select g.status, d.status
 		 from games g join developers d on d.id = g.developer_id
 		 where g.id = $1`, gameID,

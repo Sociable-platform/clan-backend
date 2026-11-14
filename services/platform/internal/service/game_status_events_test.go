@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"reflect"
@@ -25,13 +23,12 @@ const (
 	statusGame3 = "7a2e3d4c-5b6a-4f79-9c8b-0d1e2f3a4b5c"
 )
 
-// statusEventsService is a service whose events go to a Recorder. Its store knows one developer
-// with the games game1 and game2, both served.
+// statusEventsService is a service, and the events its transactions committed to the outbox. Its
+// store knows one developer with the games game1 and game2, both served.
 func statusEventsService(t *testing.T) (*Service, *fakeStore, *events.Recorder) {
 	t.Helper()
 	svc, store, _ := newTestService(t)
-	rec := &events.Recorder{}
-	svc.WithPublisher(rec)
+	rec := &store.committed
 	store.games = []repository.Game{
 		{ID: statusGame1, DeveloperID: statusDev},
 		{ID: statusGame2, DeveloperID: statusDev},
@@ -99,22 +96,20 @@ func TestSetGameStatus_PublishesNothingWhileTheDeveloperIsSuspended(t *testing.T
 	}
 }
 
-func TestSetGameStatus_WhenTheAccessCheckFailsOnlyASuspensionIsAnnounced(t *testing.T) {
+// The access check runs in the change's transaction. When it fails, the whole change fails (and
+// rolls back), so the admin can try again; no event is guessed.
+func TestSetGameStatus_WhenTheAccessCheckFailsTheChangeFails(t *testing.T) {
 	svc, store, rec := statusEventsService(t)
 	store.accessErr = errors.New("connection refused")
 	ctx := context.Background()
 
-	store.statusGame = repository.AdminGame{ID: statusGame1, Status: StatusActive}
-	if _, err := svc.SetGameStatus(ctx, "admin-1", statusGame1, SetStatusInput{Status: StatusActive}); err != nil {
-		t.Fatalf("the change was saved, so the admin must not get an error: %v", err)
+	for _, in := range []SetStatusInput{{Status: StatusActive}, {Status: StatusSuspended, Reason: ReasonAbuse}} {
+		store.statusGame = repository.AdminGame{ID: statusGame1, Status: in.Status}
+		if _, err := svc.SetGameStatus(ctx, "admin-1", statusGame1, in); !errors.Is(err, store.accessErr) {
+			t.Errorf("%s: err = %v, want the access check's error", in.Status, err)
+		}
 	}
-	wantGameEvents(t, rec) // cannot tell whether the game is served again
-
-	store.statusGame = repository.AdminGame{ID: statusGame1, Status: StatusSuspended}
-	if _, err := svc.SetGameStatus(ctx, "admin-1", statusGame1, SetStatusInput{Status: StatusSuspended, Reason: ReasonAbuse}); err != nil {
-		t.Fatal(err)
-	}
-	wantGameEvents(t, rec, [2]string{EventGameSuspended, statusGame1})
+	wantGameEvents(t, rec)
 }
 
 func TestSetGameStatus_ADeadStoreOrBadInputPublishesNothing(t *testing.T) {
@@ -178,58 +173,23 @@ func TestSetDeveloperStatus_PublishesNothingWhenNothingChangedOrThereAreNoGames(
 	wantGameEvents(t, rec)
 }
 
-func TestSetStatus_SucceedsWhenTheBrokerIsDown(t *testing.T) {
-	svc, store, _ := statusEventsService(t)
-	svc.WithPublisher(events.Safe(failingPublisher{}, slog.New(slog.NewTextHandler(io.Discard, nil))))
+// The events are part of the change: when they cannot be written to the outbox, the status change
+// fails and rolls back with them (the broker is never asked during a request).
+func TestSetStatus_FailsWhenTheEventCannotBeWritten(t *testing.T) {
+	svc, store, rec := statusEventsService(t)
+	store.addErr = errors.New("outbox insert failed")
 	ctx := context.Background()
 
 	store.statusGame = repository.AdminGame{ID: statusGame1, Status: StatusSuspended}
-	g, err := svc.SetGameStatus(ctx, "admin-1", statusGame1, SetStatusInput{Status: StatusSuspended, Reason: ReasonAbuse})
-	if err != nil || g.Status != StatusSuspended {
-		t.Fatalf("game = %+v, %v; want the change saved with the broker down", g, err)
-	}
-
-	store.statusDev = repository.AdminDeveloper{ID: statusDev, Status: StatusSuspended}
-	store.adminGames = []repository.AdminGame{{ID: statusGame1, Status: StatusActive}}
-	d, err := svc.SetDeveloperStatus(ctx, "admin-1", statusDev, SetStatusInput{Status: StatusSuspended, Reason: ReasonAbuse})
-	if err != nil || d.Status != StatusSuspended {
-		t.Fatalf("developer = %+v, %v; want the change saved with the broker down", d, err)
-	}
-}
-
-// liveContextPublisher fails the test if it is called with a context that is already over.
-type liveContextPublisher struct {
-	t     *testing.T
-	count int
-}
-
-func (p *liveContextPublisher) Publish(ctx context.Context, _ events.Event) error {
-	p.count++
-	if err := ctx.Err(); err != nil {
-		p.t.Errorf("event %d published with a finished context: %v", p.count, err)
-	}
-	return nil
-}
-
-func TestSetStatus_AnAdminWhoHangsUpDoesNotLoseTheEvent(t *testing.T) {
-	svc, store, _ := statusEventsService(t)
-	pub := &liveContextPublisher{t: t}
-	svc.WithPublisher(pub)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // the request is over by the time the change is saved
-
-	store.statusGame = repository.AdminGame{ID: statusGame1, Status: StatusSuspended}
-	if _, err := svc.SetGameStatus(ctx, "admin-1", statusGame1, SetStatusInput{Status: StatusSuspended, Reason: ReasonAbuse}); err != nil {
-		t.Fatal(err)
+	if _, err := svc.SetGameStatus(ctx, "admin-1", statusGame1, SetStatusInput{Status: StatusSuspended, Reason: ReasonAbuse}); !errors.Is(err, store.addErr) {
+		t.Errorf("game: err = %v, want the outbox error", err)
 	}
 	store.statusDev = repository.AdminDeveloper{ID: statusDev, Status: StatusSuspended}
 	store.adminGames = []repository.AdminGame{{ID: statusGame1, Status: StatusActive}}
-	if _, err := svc.SetDeveloperStatus(ctx, "admin-1", statusDev, SetStatusInput{Status: StatusSuspended, Reason: ReasonAbuse}); err != nil {
-		t.Fatal(err)
+	if _, err := svc.SetDeveloperStatus(ctx, "admin-1", statusDev, SetStatusInput{Status: StatusSuspended, Reason: ReasonAbuse}); !errors.Is(err, store.addErr) {
+		t.Errorf("developer: err = %v, want the outbox error", err)
 	}
-	if pub.count != 2 {
-		t.Fatalf("published %d events, want 2", pub.count)
-	}
+	wantGameEvents(t, rec)
 }
 
 // game.suspended and game.resumed must have exactly the fields of the same messages in

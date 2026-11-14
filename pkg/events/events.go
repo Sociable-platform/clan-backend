@@ -13,7 +13,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -62,24 +61,6 @@ type Noop struct{}
 
 // Publish does nothing and never fails.
 func (Noop) Publish(context.Context, Event) error { return nil }
-
-// Safe wraps p so that a failed publish is logged and not returned.
-// Services use it because a user's request must not fail when the broker is down.
-func Safe(p Publisher, log *slog.Logger) Publisher {
-	return safe{p: p, log: log}
-}
-
-type safe struct {
-	p   Publisher
-	log *slog.Logger
-}
-
-func (s safe) Publish(ctx context.Context, e Event) error {
-	if err := s.p.Publish(ctx, e); err != nil {
-		s.log.Error("publish event failed", "event_id", e.ID, "type", e.Type, "error", err)
-	}
-	return nil
-}
 
 // Recorder keeps every event instead of sending it. Tests use it to check what was published.
 type Recorder struct {

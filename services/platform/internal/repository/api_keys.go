@@ -25,7 +25,7 @@ func (r *Repository) CreateAPIKey(ctx context.Context, gameID, keyPrefix, keyHas
 		return APIKey{}, ErrNoDatabase
 	}
 	k := APIKey{GameID: gameID, KeyPrefix: keyPrefix}
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`insert into api_keys (id, game_id, key_prefix, key_hash)
 		 values (gen_random_uuid(), $1, $2, $3)
 		 returning id::text, created_at`,
@@ -43,7 +43,7 @@ func (r *Repository) APIKeysByGame(ctx context.Context, gameID string) ([]APIKey
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.db(ctx).Query(ctx,
 		`select id::text, game_id::text, key_prefix, created_at, revoked_at
 		 from api_keys where game_id = $1
 		 order by created_at desc, id`, gameID)
@@ -73,7 +73,7 @@ func (r *Repository) RevokeAPIKey(ctx context.Context, keyID, developerID string
 	if r.pool == nil {
 		return ErrNoDatabase
 	}
-	tag, err := r.pool.Exec(ctx,
+	tag, err := r.db(ctx).Exec(ctx,
 		`update api_keys k set revoked_at = coalesce(k.revoked_at, now())
 		 from games g
 		 where k.id = $1 and g.id = k.game_id and g.developer_id = $2`,
@@ -95,7 +95,7 @@ func (r *Repository) GameIDByActiveKeyHash(ctx context.Context, keyHash string) 
 		return "", ErrNoDatabase
 	}
 	var gameID string
-	err := r.pool.QueryRow(ctx,
+	err := r.db(ctx).QueryRow(ctx,
 		`select game_id::text from api_keys where key_hash = $1 and revoked_at is null`, keyHash,
 	).Scan(&gameID)
 	if errors.Is(err, pgx.ErrNoRows) {
