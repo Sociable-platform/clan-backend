@@ -201,17 +201,23 @@ func (s *Service) RollbackWidget(ctx context.Context, developerID, gameID string
 	return s.addWidgetVersion(ctx, developerID, gameID, old.Config)
 }
 
+// addWidgetVersion saves config as the game's next version and, in the same transaction, writes
+// config.published to the outbox, so Realtime reloads the config and re-skins open widgets.
 func (s *Service) addWidgetVersion(ctx context.Context, developerID, gameID string, config []byte) (WidgetVersion, error) {
-	v, err := s.store.AddWidgetVersion(ctx, gameID, developerID, config)
+	var v repository.WidgetVersion
+	err := s.change(ctx, func(ctx context.Context) ([]events.Event, error) {
+		var err error
+		if v, err = s.store.AddWidgetVersion(ctx, gameID, developerID, config); err != nil {
+			return nil, err
+		}
+		return []events.Event{events.New(EventConfigPublished, gameID, map[string]any{"version": v.Version})}, nil
+	})
 	if errors.Is(err, repository.ErrNotFound) {
 		return WidgetVersion{}, errGameNotFound() // the game was removed after the ownership check
 	}
 	if err != nil {
 		return WidgetVersion{}, fmt.Errorf("publish widget of game %s: %w", gameID, err)
 	}
-	// The version is saved, so tell Realtime: it reloads the config and re-skins open widgets.
-	// The publisher is wrapped in events.Safe, so a broker problem never fails the publish.
-	_ = s.events.Publish(ctx, events.New(EventConfigPublished, gameID, map[string]any{"version": v.Version}))
 	return toWidgetVersion(v), nil
 }
 
