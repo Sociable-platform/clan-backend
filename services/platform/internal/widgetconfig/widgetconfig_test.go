@@ -291,6 +291,27 @@ func TestRejectsTheWrongTypeOfValue(t *testing.T) {
 	}
 }
 
+// clan.tags is retired (TEAM-276): a config may leave it out, and configs saved or published
+// with it, true or false, stay valid. While it is in the schema it must still be a boolean.
+func TestClanTagsIsOptionalButStillABoolean(t *testing.T) {
+	if _, ok := obj(arena(t), "clan")["tags"]; ok {
+		t.Fatal("the examples should no longer have clan.tags; update this test")
+	}
+	if issues := issuesOf(t, arena(t)); len(issues) != 0 {
+		t.Fatalf("without clan.tags: %+v, want valid", issues)
+	}
+	for _, v := range []bool{true, false} {
+		m := arena(t)
+		obj(m, "clan")["tags"] = v
+		if issues := issuesOf(t, m); len(issues) != 0 {
+			t.Fatalf("with clan.tags %v: %+v, want valid", v, issues)
+		}
+	}
+	m := arena(t)
+	obj(m, "clan")["tags"] = "yes"
+	wantIssue(t, issuesOf(t, m), "/clan/tags", "type")
+}
+
 // A whole number written as 30.0 or 3e1 is still a whole number (as in the SDK's validator).
 func TestAcceptsWholeNumbersWrittenInOtherWays(t *testing.T) {
 	for _, text := range []string{"30.0", "3e1", "30.00", "0.3e2"} {
