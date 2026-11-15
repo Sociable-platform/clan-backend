@@ -55,7 +55,9 @@ func enqueue(ctx context.Context, tx pgx.Tx, table string, e Event) error {
 	if e.ID == "" || e.Type == "" {
 		return ErrInvalidEvent
 	}
-	payload, err := json.Marshal(e)
+	// The row holds the event as it will be published, plus the trace context of the request that
+	// caused it (trace.go): the relay publishes later, outside the request, and continues the trace.
+	payload, err := json.Marshal(storedEvent{Event: e, Trace: captureTrace(ctx)})
 	if err != nil {
 		return fmt.Errorf("events: encode %s: %w", e.Type, err)
 	}
@@ -305,10 +307,12 @@ func (s pgStore) lockUnsent(ctx context.Context, tx pgx.Tx, limit int) ([]pendin
 		if err := rows.Scan(&id, &payload); err != nil {
 			return nil, err
 		}
-		var e Event
-		if err := json.Unmarshal(payload, &e); err != nil {
+		var stored storedEvent
+		if err := json.Unmarshal(payload, &stored); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", id, err)
 		}
+		e := stored.Event
+		e.trace = stored.Trace
 		out = append(out, pendingRow{id: id, event: e})
 	}
 	return out, rows.Err()

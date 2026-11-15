@@ -28,6 +28,8 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"gitlab.com/clan-platform/clan-backend/pkg/events"
 )
 
 // ErrDrop is wrapped by a Handler's error when the event is unusable and handling it again would
@@ -194,7 +196,10 @@ func (c *Consumer) session(ctx context.Context) (connected bool, err error) {
 // handle runs the handler for one message and acknowledges it the way the rules in the package
 // comment say.
 func (c *Consumer) handle(ctx context.Context, d amqp.Delivery) {
-	err := c.callHandler(ctx, d.Body)
+	// The handler runs in the trace the message carries in its headers, if it carries one.
+	handleCtx, end := events.StartConsume(ctx, d, c.cfg.Queue)
+	err := c.callHandler(handleCtx, d.Body)
+	end(err)
 	switch {
 	case err == nil:
 		c.done(d.Ack(false), "ack", d)
