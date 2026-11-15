@@ -62,7 +62,8 @@ What each hop guarantees:
 | RabbitMQ publisher (confirms, lazy connect, reconnect) | `pkg/events/rabbitmq.go` |
 | Where Social publishes friend events | `services/social/internal/service/friends.go` |
 | Where Social publishes `player.blocked` / `player.unblocked` | `services/social/internal/service/blocks.go` (`BlockPlayer` also publishes the friend events a block causes; `UnblockPlayer`) |
-| Where Social publishes `player.renamed` | `services/social/internal/service/players.go` (`EnsurePlayer`) |
+| Where Social publishes `player.renamed` | `services/social/internal/service/players.go` (`EnsurePlayer`) and `services/social/internal/service/player_deletion.go` (`DeletePlayer`) |
+| Where Social publishes the events of a player deletion | `services/social/internal/service/player_deletion.go` (`deletionEvents`): only existing types, see "Player deletion" under `player.renamed` |
 | Where Social publishes clan events | `services/social/internal/service/clans.go` (leave and kick both go through `publishLeave`; `clan.renamed` from `RenameClan`); `clan.member_role_changed` in `services/social/internal/service/roles.go` |
 | Where Platform publishes `config.published` | `services/platform/internal/service/widget.go` (`addWidgetVersion`), wired in `services/platform/cmd/main.go` |
 | Where Platform publishes `game.suspended` / `game.resumed` | `services/platform/internal/service/admin_status.go` (`SetGameStatus`, `SetDeveloperStatus`); Realtime handles them in `services/realtime/internal/consumer/dispatch.go` (`gameStatusChanged`) |
@@ -330,6 +331,12 @@ Cancel and decline are two event types because they have different recipients; a
 
 - **Published by Social** when a player's display name changed: the first request whose player token carries the new
   name publishes it once (`EnsurePlayer`, `services/social/internal/service/players.go`). Not on the first request of a new player.
+  Also, last, when a player is deleted (`DELETE /api/v1/players/me`), with the name `Deleted player`.
+- **Player deletion (TEAM-249)** has no event type of its own. In one outbox transaction Social publishes, in this order:
+  `clan.member_left` with reason `left` (or `clan.disbanded` when the player was the last member), one `friend.removed`
+  per friendship with `removed_by` = the deleted player, `friend.request_cancelled` for each request the player sent and
+  `friend.request_declined` for each one they received, `player.unblocked` for each block by or of the player, and then
+  `player.renamed`. So Realtime cleans up DMs, notifications and names with the handlers it already has.
 - **`data`:** `player` = `{ id, name }` with the **new** name.
 
 ```json

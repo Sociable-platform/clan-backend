@@ -28,6 +28,11 @@ type Event struct {
 	OccurredAt time.Time      `json:"occurred_at"`
 	GameID     string         `json:"game_id"`
 	Data       map[string]any `json:"data,omitempty"`
+
+	// trace is the trace context of the request that caused the event (the W3C traceparent, as
+	// text). Enqueue captures it and the relay hands it to Publish, which sends it in the
+	// message headers. It is not part of the message body.
+	trace map[string]string
 }
 
 // New returns an event with a fresh random ID and the current time (UTC).

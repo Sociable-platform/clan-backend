@@ -6,7 +6,8 @@
 //
 // RequirePlayer verifies the token with platform's public key (no call to platform),
 // answers 401 for anything else, and stores the player in the request context.
-// RequireServedGame then refuses the requests of a suspended game with 403.
+// RequireServedGame then refuses the requests of a suspended game with 403, and
+// RejectDeletedPlayers the tokens issued before their player was deleted with 401.
 // Handlers read the caller with PlayerFrom. The game ID used in every database query
 // comes from there, never from the request body or URL, so a player can only ever
 // see and change data of their own game.
@@ -27,9 +28,10 @@ import (
 
 // Player is the caller, as proven by their token.
 type Player struct {
-	GameID     string // the token's gid: the game the player belongs to (a UUID)
-	ExternalID string // the token's sub: the game's own player ID, e.g. "u_42"
-	Name       string // the token's name: display name
+	GameID     string    // the token's gid: the game the player belongs to (a UUID)
+	ExternalID string    // the token's sub: the game's own player ID, e.g. "u_42"
+	Name       string    // the token's name: display name
+	IssuedAt   time.Time // the token's iat, to the second
 }
 
 // ctxKey is private, so no other package can overwrite the player in the context.
@@ -78,6 +80,7 @@ func RequirePlayer(key ed25519.PublicKey, now func() time.Time) httpx.Middleware
 				GameID:     strings.ToLower(claims.GameID),
 				ExternalID: claims.Subject,
 				Name:       claims.Name,
+				IssuedAt:   time.Unix(claims.IssuedAt, 0),
 			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, player)))
 		})
@@ -103,6 +106,33 @@ func RequireServedGame(isSuspended func(ctx context.Context, gameID string) bool
 			if isSuspended(r.Context(), player.GameID) {
 				// Same code and message as Platform, so a player never learns whose switch is off.
 				httpx.WriteError(w, http.StatusForbidden, "game_suspended", "This game is suspended")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RejectDeletedPlayers returns middleware that refuses a token issued before its player was
+// deleted (TEAM-249) with 401 player_deleted. A player token cannot be revoked and lives for an
+// hour, so without this a deleted player could keep using it, and the next request would even
+// create them again. It must run after RequirePlayer. deletedSince gets the caller and must never
+// fail: when it cannot tell, it says false (fail open), like RequireServedGame, and the request
+// meets the same trouble further on.
+//
+// A token issued after the deletion passes: the game vouches for a new account with that player
+// ID, and it gets a new, empty profile.
+func RejectDeletedPlayers(deletedSince func(ctx context.Context, p Player) bool) httpx.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			player, ok := PlayerFrom(r.Context())
+			if !ok {
+				// RequirePlayer did not run first: a wiring mistake, never a client error.
+				httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Something went wrong")
+				return
+			}
+			if deletedSince(r.Context(), player) {
+				unauthorized(w, "player_deleted", "This player was deleted; the game must issue a new token")
 				return
 			}
 			next.ServeHTTP(w, r)

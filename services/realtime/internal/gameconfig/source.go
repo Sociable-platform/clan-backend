@@ -18,6 +18,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 )
 
 var (
@@ -73,6 +75,7 @@ func NewHTTPSource(baseURL string, timeout time.Duration) (*HTTPSource, error) {
 	return &HTTPSource{
 		base: u.String(),
 		http: &http.Client{
+			Transport:     httpx.Transport(), // the call continues the caller's trace
 			Timeout:       timeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},

@@ -9,6 +9,8 @@
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
+# The commit this image is built from; the service reports it as service.version (pkg/otelx).
+ARG VERSION=dev
 WORKDIR /src
 
 # Download dependencies first so this layer is cached between builds
@@ -18,7 +20,7 @@ RUN go mod download
 COPY pkg ./pkg
 COPY services/platform ./services/platform
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/platform ./services/platform/cmd
+    go build -trimpath -ldflags="-s -w -X gitlab.com/clan-platform/clan-backend/pkg/otelx.Version=$VERSION" -o /out/platform ./services/platform/cmd
 
 # 2. Small runtime image: only the binary, no shell, runs as a non-root user
 FROM gcr.io/distroless/static-debian12:nonroot

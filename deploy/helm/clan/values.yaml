@@ -52,6 +52,34 @@ image:
 
 logLevel: info
 
+# OpenTelemetry traces and metrics (pkg/otelx). When enabled, each service gets
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://<its node's IP>:<agentPort> (OTLP gRPC) and reports
+# deployment.environment=<environment>. Off by default: the services then start no exporter.
+# Enable it only where a collector agent listens on every node, or the services log
+# "telemetry export failed" warnings.
+telemetry:
+  enabled: false
+  agentPort: 4317
+  environment: production
+  # The collector agent itself (templates/otel-collector.yaml): one pod per node that receives the
+  # services' traces and metrics on agentPort and forwards them to Datadog. It needs
+  # secrets.datadogApiKey. Turn it on together with telemetry.enabled; either one alone is useless.
+  collector:
+    enabled: false
+    # The "contrib" build has the Datadog exporter. Pinned: a new version can change the config format.
+    image: otel/opentelemetry-collector-contrib:0.165.1
+    # The Datadog site of your account, from the address you log in at:
+    # datadoghq.com (US1), us3.datadoghq.com, us5.datadoghq.com, datadoghq.eu (EU), ap1.datadoghq.com
+    datadogSite: datadoghq.com
+    # The collector refuses new data above this, well before the pod's memory limit below.
+    memoryLimitMiB: 200
+    resources:
+      requests:
+        cpu: 50m
+        memory: 96Mi
+      limits:
+        memory: 256Mi
+
 # One Postgres database for all services, each with its own user and schema (see postgres above).
 # Browsers may call a service only from these origins (CORS): comma-separated scheme://host[:port],
 # no trailing slash, "*" not allowed. The real domains are set in values-prod.yaml with the Ingress.
@@ -107,6 +135,8 @@ secrets:
   # PEM files, given with --set-file (see README.md).
   jwtPrivateKey: ""
   jwtPublicKey: ""
+  # The Datadog API key of the OpenTelemetry Collector. Required when telemetry.collector.enabled.
+  datadogApiKey: ""
   # A GitLab group deploy token with the read_registry scope. Empty: no pull secret is created.
   registryUsername: ""
   registryPassword: ""

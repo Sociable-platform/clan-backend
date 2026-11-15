@@ -25,6 +25,7 @@ clan-backend/
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
+│   ├── otelx/                 # OpenTelemetry tracing and metrics setup, off unless an endpoint is set
 │   ├── pg/                    # PostgreSQL connection pool (pgx)
 │   ├── httpx/                 # error format, JSON helpers, middleware, server with graceful shutdown
 │   └── jwt/                   # sign (platform) and verify (social) tokens, Ed25519
@@ -476,6 +477,41 @@ An ARM image cannot run on an Intel or AMD computer; Docker Desktop marks it wit
 
 docker-compose does not use these images: it builds the services itself and mounts the migrations folders.
 
+## Telemetry (OpenTelemetry)
+
+`pkg/otelx` builds the tracer and meter providers for all three services, so each `main.go` has one line:
+`defer otelx.Setup(ctx, serviceName, log)()`.
+
+- **Off by default.** Nothing happens unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so `go run`, `docker compose` and
+  `go test` start no exporter and never look for a collector.
+- **On:** set `OTEL_EXPORTER_OTLP_ENDPOINT` to the collector's OTLP gRPC address (for example `http://localhost:4317`).
+  Traces and metrics are sent there. A collector that is down is logged as a warning and never fails a request or
+  the start of a service.
+- **What every span and metric carries:** `service.name` (`platform`, `social` or `realtime`), `service.version` (the
+  commit the image was built from: the `VERSION` build argument of the Dockerfiles, which CI sets; `dev` otherwise)
+  and `deployment.environment` (`DEPLOYMENT_ENVIRONMENT`, `local` when unset).
+- **Shutdown:** on SIGTERM or Ctrl+C the service stops as before, then sends what is still waiting, for at most
+  5 seconds.
+- **On the server** the chart sets the variables when `telemetry.enabled` is true (see `deploy/helm/clan/values.yaml`).
+
+### What is traced
+
+With telemetry on, one request is one trace across the services:
+
+- **HTTP in** (`httpx.Trace()`, first in `httpx.Chain`): a span per request, named after the route pattern
+  (`POST /api/v1/clans`, `GET /api/v1/clans/{clanID}`), never the raw path. A request that carries a `traceparent`
+  header continues that trace. `/health`, `/ready` and WebSocket upgrades are not traced.
+- **HTTP out** (`httpx.Transport()` on the services' own HTTP clients): a span per call, and the trace goes on to the
+  service that is called.
+- **Postgres** (`pkg/pg`): a span per query run for a traced request, with the SQL text (values are parameters and
+  are never recorded). Queries of background loops (the outbox relay, the cleanups) are not traced.
+- **RabbitMQ** (`pkg/events`): `Enqueue` stores the request's trace context with the outbox row, the relay publishes
+  the event in a `<type> publish` span and writes the context to the message headers, and realtime handles it in a
+  `<type> process` span. So a `clan.created` from social links to what realtime does with it.
+- **Logs** (`pkg/logx`): a line logged with a context inside a trace (`log.InfoContext(ctx, ...)`) gets `trace_id`
+  and `span_id`. The request line and the "request failed" and panic lines do; a line logged with plain
+  `log.Info(...)` does not, so pass the context when a new log line should link to its trace.
+
 ## API contracts (OpenAPI)
 
 | Service | File |
@@ -630,10 +666,16 @@ Social learns it from the call it already makes for the clan rules: the platform
 take effect within that time. Nothing is changed or deleted: friends, clans, blocks and players stay as they were. If
 the platform cannot be reached, Social keeps the last status it saw, and a game it has never seen is served (fail open).
 
+**Deleted players are refused.** After `DELETE /api/v1/players/me`, every token of that player issued before the call (or
+in the same second, as `iat` has whole seconds) answers `401 player_deleted` on every `/api/v1/` route, although it has not
+expired. A token for the same `externalPlayerId` issued later starts a new, empty player (TEAM-249). If the database cannot
+be asked, the request goes on (fail open) and fails on its own.
+
 | Method | Path | Answer |
 |---|---|---|
 | GET | `/api/v1/players/me` | 200 with the calling player; the record is created on the first call |
-| GET | `/api/v1/players?q=&limit=` | 200 `{ players: [...] }`: players of the caller's game whose name contains `q` (ignoring upper/lower case; `%` and `_` are normal characters), sorted by name, never the caller. Each has `id`, `displayName`, `relation` (`none` / `friend` / `request_sent` / `request_received` / `blocked`, a player the caller blocked) and, for the two pending ones, `requestId`. Players who blocked the caller are left out. `q` is required: 400 `invalid_query` (missing, empty or over 50 characters); `limit` 1 to 100, default 100 (400 `invalid_limit`) |
+| DELETE | `/api/v1/players/me` | The game deleted the player's account: the game's server gets a token for the player as usual and calls this. 204, no body. In one transaction the player leaves their clan (as with `/leave`), and their friendships, pending friend requests and blocks are removed; they are renamed `Deleted player` and never found by the player search again. Their older tokens then get 401 `player_deleted` (see above). A player Social never saw: 204. Publishes `clan.member_left` (or `clan.disbanded`), `friend.removed`, `friend.request_cancelled` / `friend.request_declined`, `player.unblocked`, then `player.renamed` with the new name: the existing types, so Realtime needs no change |
+| GET | `/api/v1/players?q=&limit=` | 200 `{ players: [...] }`: players of the caller's game whose name contains `q` (ignoring upper/lower case; `%` and `_` are normal characters), sorted by name, never the caller and never a deleted player. Each has `id`, `displayName`, `relation` (`none` / `friend` / `request_sent` / `request_received` / `blocked`, a player the caller blocked) and, for the two pending ones, `requestId`. Players who blocked the caller are left out. `q` is required: 400 `invalid_query` (missing, empty or over 50 characters); `limit` 1 to 100, default 100 (400 `invalid_limit`) |
 | GET | `/api/v1/players/me/clan` | 200 `{ clan, role }` with the caller's clan and role (`owner` / `member`); 404 `not_in_clan` |
 | GET | `/api/v1/players/me/blocks` | 200 `{ blocks: [...] }` with `id`, `displayName`, `since` (when the caller blocked them), newest first |
 | POST | `/api/v1/players/{playerID}/block` | no body. 204: the caller blocked that player (see "Blocks" below); blocking again changes nothing (204, no event). 400 `cannot_block_self`; 404 `player_not_found` (also for another game's player). Publishes `player.blocked` |
