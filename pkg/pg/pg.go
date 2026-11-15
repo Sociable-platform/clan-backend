@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
 )
 
 // Connect opens a pool for url (for example postgres://user:pass@localhost:5432/clan)
@@ -18,6 +19,8 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("pg: invalid database URL: %w", err)
 	}
 	cfg.MaxConns = 10
+	// Queries run for a traced request show up as spans under it (trace.go).
+	cfg.ConnConfig.Tracer = queryTracer{tracer: otel.Tracer(tracerName)}
 	cfg.MaxConnIdleTime = 5 * time.Minute
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
