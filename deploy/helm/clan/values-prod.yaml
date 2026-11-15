@@ -12,14 +12,16 @@ ingress:
     enabled: true
     issuer: letsencrypt
 
-# Traces and metrics go to the collector agent on the node (port 4317), and from there to Datadog.
-# Needs secrets.datadogApiKey in the secrets file. To switch telemetry off, set both to false.
+# Traces and metrics go to the OpenTelemetry Collector that already runs on this server, outside
+# this chart: Helm release in the "datadog" namespace, listening on the node's port 4317, with
+# pipelines for traces, metrics and logs to Datadog. The services only need its address.
+# The chart's own collector stays off here: it would ask for the same port and never start
+# (its pod stays Pending, and the deploy then waits for it and fails).
+# To switch telemetry off altogether, set telemetry.enabled to false.
 telemetry:
   enabled: true
   collector:
-    enabled: true
-    # Check this against your Datadog login address (see values.yaml).
-    datadogSite: datadoghq.com
+    enabled: false
 
 # Browser pages allowed to call each service: Studio (studio.<domain>) and the demo game
 # (game.<domain>), plus the local dev servers so a local Studio or game can try the deployed backend.

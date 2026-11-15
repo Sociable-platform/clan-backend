@@ -278,17 +278,15 @@ The server has one Linux user, so everyone with access can do everything. To tak
 - **Telemetry:** with `telemetry.enabled: true` (set in `values-prod.yaml`) every service sends OpenTelemetry traces
   and metrics to the collector agent on its own node, at `http://<node IP>:4317`. Without an agent there, set it to
   `false`: the services run the same, but would log "telemetry export failed" warnings.
-- **The collector** (`telemetry.collector.enabled: true`, `templates/otel-collector.yaml`) is that agent: the
-  OpenTelemetry Collector, one pod per node, which forwards everything to Datadog.
-  - **API key:** create one in Datadog (Organization Settings -> API Keys) and put it in `secrets.prod.yaml` as
-    `secrets.datadogApiKey`. For CI deploys, update the `DEPLOY_SECRETS_B64` variable with the new file. The install
-    fails with a clear message when the collector is on and the key is missing.
-  - **Site:** set `telemetry.collector.datadogSite` to the site of your account (`datadoghq.com`, `datadoghq.eu`, ...).
-    With the wrong site Datadog answers 403 and nothing arrives.
-  - **Check it:** `kubectl -n clan get pods -l app.kubernetes.io/name=otel-collector` and
-    `kubectl -n clan logs daemonset/otel-collector`. A wrong key or site shows there as export errors.
-  - **Port 4317** is for the pods on the node only. Keep it closed in the Oracle security list.
-  - **Switch off:** set `telemetry.enabled` and `telemetry.collector.enabled` to `false` and deploy.
+- **The collector on the Oracle server is not part of this chart.** An OpenTelemetry Collector was installed there
+  separately (Helm release in the `datadog` namespace). It listens on the node's port 4317 and sends traces, metrics
+  and the pods' logs to Datadog, so `values-prod.yaml` only sets `telemetry.enabled: true`.
+  - **Check it:** `kubectl -n datadog get pods` and `kubectl -n datadog logs daemonset/<its name> --tail=50`.
+  - **Its pipelines:** `kubectl -n datadog get configmap -o name`, then read the `relay` key of the collector's ConfigMap.
+- **The chart's own collector** (`telemetry.collector.enabled`, `templates/otel-collector.yaml`) is for a cluster that
+  has none. It is off by default and must stay off on the Oracle server: two collectors cannot share port 4317, and
+  the second one's pod stays `Pending`. On another cluster, turn it on with `secrets.datadogApiKey` set (Datadog:
+  Organization Settings -> API Keys) and `telemetry.collector.datadogSite` set to the account's site.
 - **The data survives** pod restarts and `helm upgrade`. It even survives `helm uninstall`: the disks (PVCs) stay
   until you delete them by hand (`kubectl -n clan delete pvc data-postgres-0 data-rabbitmq-0`), which erases all data.
 - **The init script and the RabbitMQ user only run on an empty disk.** Changing a password in the secrets file later
