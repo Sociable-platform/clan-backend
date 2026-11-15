@@ -82,7 +82,7 @@ paths:
         `none` (Add), `request_sent` (Pending / Cancel), `request_received` (Accept / Decline),
         `friend`, or `blocked` (the caller blocked this player: Unblock). For the two pending
         relations, `requestId` is the request to accept, decline or cancel. A player who blocked
-        the caller is not in the list.
+        the caller is not in the list, and neither is a deleted player (`DELETE /api/v1/players/me`).
 
         `q` is required, so the whole game can never be listed.
       security:
@@ -163,6 +163,37 @@ paths:
                 externalId: u_42
                 displayName: Ali
                 createdAt: "2026-11-07T10:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    delete:
+      tags: [players]
+      operationId: deleteMyPlayer
+      summary: Delete the calling player's profile (the game deleted the account)
+      description: |
+        Call this when the game deletes a player's account. The game's server gets a token for
+        the player (`POST /api/v1/players/auth` on platform, as usual) and sends it here; the
+        browser never has to.
+
+        In one transaction the player leaves their clan exactly as with
+        `POST /api/v1/clans/{clanID}/leave` (the owner hands over, the last member's clan is
+        deleted), and their friendships, pending friend requests and blocks are removed. The
+        player is renamed `Deleted player` and is never found by the player search again.
+
+        Every token of this player issued before the call stops working at once (401
+        `player_deleted` on every endpoint, this one too), even though it has not expired. Tokens
+        carry their issue time in whole seconds, so a token issued in the same second as the
+        deletion is refused as well. A token for the same `externalPlayerId` issued later starts a
+        new, empty profile, so a game that gives the ID to a new account gets a fresh player.
+
+        Calling it again with an old token answers 401 `player_deleted`, which also means the
+        player is already gone. A player social never saw answers 204 like any other.
+      security:
+        - playerToken: []
+      responses:
+        "204":
+          description: The player's profile is deleted. No body.
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1703,7 +1734,8 @@ components:
       description: |
         No valid player token. Every /api/v1 endpoint needs `Authorization: Bearer <player token>`.
         Codes: missing_token, invalid_token, token_expired (get a new token from the game),
-        wrong_token_type (for example a developer token).
+        wrong_token_type (for example a developer token), player_deleted (the token was issued
+        before its player was deleted with `DELETE /api/v1/players/me`).
       headers:
         WWW-Authenticate:
           schema:

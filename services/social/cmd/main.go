@@ -139,8 +139,19 @@ func run() error {
 	// The answer comes from the same platform call and cache as the clan rules, so it applies
 	// (and lifts) within SOCIAL_CONFIG_CACHE_TTL. Without SOCIAL_PLATFORM_URL nothing is suspended.
 	isSuspended := func(ctx context.Context, gameID string) bool { return rules.Rules(ctx, gameID).Suspended }
+	// Then a token issued before its player was deleted (DELETE /api/v1/players/me) is refused with
+	// 401 player_deleted. When the database cannot tell, the request goes on and fails there.
+	deletedSince := func(ctx context.Context, p auth.Player) bool {
+		deleted, err := svc.PlayerDeletedSince(ctx, p.GameID, p.ExternalID, p.IssuedAt)
+		if err != nil {
+			log.Warn("could not check whether the player was deleted", "game_id", p.GameID, "err", err)
+			return false
+		}
+		return deleted
+	}
 	handler.New(serviceName, svc, auth.RequirePlayer(verifyKey, time.Now), log).
 		WithGameGate(auth.RequireServedGame(isSuspended)).
+		WithPlayerGate(auth.RejectDeletedPlayers(deletedSince)).
 		WithInternal(httpx.RequireInternal(internalToken)).
 		Register(mux)
 

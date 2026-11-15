@@ -190,13 +190,19 @@ func (r *Repository) SendFriendRequest(ctx context.Context, gameID, senderID, re
 	return SendFriendRequestResult{Request: &req}, nil
 }
 
-// friendPlayer reads one player of gameID. The returned ID is the database's own spelling
-// (lower case), even if playerID was sent in upper case.
+// friendPlayer reads one live player of gameID. The returned ID is the database's own spelling
+// (lower case), even if playerID was sent in upper case. A deleted player counts as not found.
+//
+// "for key share" waits for a DeletePlayer of this player that is running at the same moment and
+// then sees its result, so no friend request or block is saved for a player who was just deleted.
+// It does not wait for other requests: they take the same shared lock, and renames do not block it.
 // Errors: pgx.ErrNoRows, or 22P02 for an ID that is not a UUID.
 func friendPlayer(ctx context.Context, tx pgx.Tx, gameID, playerID string) (FriendPlayer, error) {
 	var p FriendPlayer
 	err := tx.QueryRow(ctx,
-		`select id::text, display_name from players where id = $1 and game_id = $2`,
+		`select id::text, display_name from players
+		 where id = $1 and game_id = $2 and deleted_at is null
+		 for key share`,
 		playerID, gameID).Scan(&p.ID, &p.DisplayName)
 	return p, err
 }
