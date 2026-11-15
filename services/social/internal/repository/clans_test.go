@@ -1154,11 +1154,11 @@ func TestCreateClanSavesTheDescriptionAndBadge(t *testing.T) {
 	ctx := context.Background()
 
 	made, err := r.CreateClan(ctx, game, newPlayer(t, r, game, "u_1"),
-		NewClan{Name: "Wolves", Description: "Casual farmers", Badge: "wolf", Tag: "WOLF"})
+		NewClan{Name: "Wolves", Description: "Casual farmers", Badge: "wolf"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if made.Description != "Casual farmers" || made.Badge != "wolf" || made.Tag != "WOLF" {
+	if made.Description != "Casual farmers" || made.Badge != "wolf" {
 		t.Fatalf("create answered %+v", made)
 	}
 
@@ -1167,14 +1167,14 @@ func TestCreateClanSavesTheDescriptionAndBadge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].Description != "Casual farmers" || list[0].Badge != "wolf" || list[0].Tag != "WOLF" {
+	if len(list) != 1 || list[0].Description != "Casual farmers" || list[0].Badge != "wolf" {
 		t.Fatalf("list gave %+v", list)
 	}
 	mine, err := r.MyClan(ctx, game, "u_1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mine.Clan.Description != "Casual farmers" || mine.Clan.Badge != "wolf" || mine.Clan.Tag != "WOLF" {
+	if mine.Clan.Description != "Casual farmers" || mine.Clan.Badge != "wolf" {
 		t.Fatalf("my clan gave %+v", mine.Clan)
 	}
 }
@@ -1191,7 +1191,7 @@ func TestClanWithoutTheOptionalFieldsReadsAsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].ID != id || list[0].Description != "" || list[0].Badge != "" || list[0].Tag != "" {
+	if len(list) != 1 || list[0].ID != id || list[0].Description != "" || list[0].Badge != "" {
 		t.Fatalf("list gave %+v", list)
 	}
 }

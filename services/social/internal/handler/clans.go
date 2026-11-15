@@ -17,7 +17,6 @@ type clanResponse struct {
 	// existed looks exactly as it did. A client reads a missing field as an empty one.
 	Description string `json:"description,omitempty"`
 	Badge       string `json:"badge,omitempty"`
-	Tag         string `json:"tag,omitempty"`
 	MemberCount int    `json:"memberCount"`
 	MaxMembers  int    `json:"maxMembers"`
 }
@@ -32,7 +31,6 @@ func toClanResponse(c service.Clan) clanResponse {
 		Name:        c.Name,
 		Description: c.Description,
 		Badge:       c.Badge,
-		Tag:         c.Tag,
 		MemberCount: c.MemberCount,
 		MaxMembers:  c.MaxMembers,
 	}
@@ -71,10 +69,12 @@ type createClanRequest struct {
 	// sends a description to a build without these fields gets 400 invalid_json.
 	Description string `json:"description"`
 	Badge       string `json:"badge"`
-	Tag         string `json:"tag"`
+	// Tag is read and ignored: clans have no tags any more (TEAM-277). It stays here only so
+	// that an older SDK that still sends it is not refused as an unknown field.
+	Tag any `json:"tag"`
 }
 
-// createClan handles POST /api/v1/clans with { "name", "description", "badge", "tag" }:
+// createClan handles POST /api/v1/clans with { "name", "description", "badge" }:
 // the caller creates a clan in their game and becomes its owner. The game and player come
 // only from the token; everything but the name may be left out.
 func (h *Handler) createClan(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +92,6 @@ func (h *Handler) createClan(w http.ResponseWriter, r *http.Request) {
 		Name:        req.Name,
 		Description: req.Description,
 		Badge:       req.Badge,
-		Tag:         req.Tag,
 	})
 	if err != nil {
 		h.fail(w, r, err)
