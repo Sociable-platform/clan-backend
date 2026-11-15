@@ -1,0 +1,149 @@
+{{- /*
+The OpenTelemetry Collector: the agent the services send their traces and metrics to (pkg/otelx),
+which forwards them to Datadog. One pod on every node, listening on the node's own port
+(hostPort), because the services reach it at http://<their node's IP>:<agentPort>.
+Only the collector knows the Datadog API key; the services speak plain OpenTelemetry.
+*/}}
+{{- if .Values.telemetry.collector.enabled }}
+{{- $sel := dict "root" . "name" "otel-collector" }}
+{{- $c := .Values.telemetry.collector }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+
+    processors:
+      # Refuses data before the pod reaches its memory limit, instead of being killed.
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: {{ $c.memoryLimitMiB }}
+        spike_limit_mib: {{ div $c.memoryLimitMiB 4 }}
+
+    connectors:
+      # Computes Datadog's APM statistics (requests, errors, latency per service and route) from
+      # the spans, and passes the spans on.
+      datadog/connector:
+
+    exporters:
+      datadog:
+        # The node's name: one host in Datadog, whatever the pod is called after a restart.
+        hostname: ${env:K8S_NODE_NAME}
+        api:
+          key: ${env:DD_API_KEY}
+          site: {{ $c.datadogSite | quote }}
+        # Sends in batches and keeps what could not be sent for a retry.
+        sending_queue:
+          batch:
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter]
+          exporters: [datadog/connector]
+        traces/datadog:
+          receivers: [datadog/connector]
+          exporters: [datadog]
+        metrics:
+          receivers: [otlp, datadog/connector]
+          processors: [memory_limiter]
+          exporters: [datadog]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector
+  labels:
+    {{- include "clan.labels" . | nindent 4 }}
+    {{- include "clan.selector" $sel | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "clan.selector" $sel | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "clan.labels" . | nindent 8 }}
+        {{- include "clan.selector" $sel | nindent 8 }}
+      annotations:
+        # A changed config or API key restarts the pod, so it reads the new value.
+        checksum/config: {{ toYaml $c | sha256sum }}
+        checksum/secrets: {{ include (print .Template.BasePath "/secrets.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: otel-collector
+          image: {{ $c.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config=/etc/otelcol/config.yaml
+          ports:
+            # hostPort: the services send to the node's address, not to a Service.
+            - name: otlp-grpc
+              containerPort: 4317
+              hostPort: {{ .Values.telemetry.agentPort }}
+            - name: health
+              containerPort: 13133
+          env:
+            - name: DD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: clan-secrets
+                  key: datadog-api-key
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Go frees memory before the limit of memory_limiter, not after.
+            - name: GOMEMLIMIT
+              value: {{ printf "%dMiB" (int $c.memoryLimitMiB) }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+          # A config the collector cannot load, or a collector that hangs, shows as a failing pod.
+          startupProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 10
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector
+{{- end }}
