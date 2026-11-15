@@ -451,7 +451,6 @@ paths:
               name: Wolves
               description: Casual farmers. Everyone welcome.
               badge: wolf
-              tag: WOLF
       responses:
         "201":
           description: The new clan.
@@ -464,16 +463,14 @@ paths:
                 name: Wolves
                 description: Casual farmers. Everyone welcome.
                 badge: wolf
-                tag: WOLF
                 memberCount: 1
                 maxMembers: 10
         "400":
           description: |
             The body is not valid JSON (invalid_json), the name is not 3 to 20 visible
             characters (invalid_clan_name), the description is too long or has invisible
-            characters (invalid_clan_description), the badge id has a character it cannot
-            have (invalid_clan_badge), or the tag is not 1 to 8 letters or digits
-            (invalid_clan_tag).
+            characters (invalid_clan_description), or the badge id has a character it cannot
+            have (invalid_clan_badge).
           content:
             application/json:
               schema:
@@ -1445,13 +1442,6 @@ components:
             stores only the id: the picture belongs to the game, which lists its badges in
             Studio and ships the same assets with the game itself. Left out when the clan
             has no badge.
-        tag:
-          type: string
-          maxLength: 8
-          description: |
-            The clan's short tag, such as `WOLF`. Left out when the clan has none. The widget
-            no longer shows or asks for tags (the config's `clan.tags` is retired, TEAM-276),
-            so clans created through it have none.
         memberCount:
           type: integer
           description: How many players are in the clan now.
@@ -1488,13 +1478,10 @@ components:
             form offers only those, so a game whose config cannot be read at this moment can
             still create clans. Social never stores the picture.
         tag:
-          type: string
-          maxLength: 8
-          pattern: "^[A-Za-z0-9]+$"
+          deprecated: true
           description: |
-            Optional. The clan's short tag, letters and digits only. The clan form allows 4
-            characters and writes them in capitals; the contract allows up to 8 so the form
-            can be widened later. The widget no longer sends it (TEAM-276).
+            Ignored, whatever its value. Clans have no tags (TEAM-277). It is listed only so that
+            an older SDK that still sends it is not refused as an unknown field. Do not send it.
     RenameClanRequest:
       type: object
       required: [name]

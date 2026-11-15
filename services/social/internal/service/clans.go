@@ -34,10 +34,6 @@ const (
 	// belongs to the game, which lists its badges in the widget config in Studio and ships
 	// the same assets with the game, so Social never stores or serves an image.
 	maxClanBadgeLen = 64
-	// maxClanTagLen limits the clan tag, the few characters shown above a member's name.
-	// The clan form allows 4; this is the contract's own limit, a little wider so the form
-	// can be widened without a migration.
-	maxClanTagLen = 8
 )
 
 // Clan is a clan as shown in clan lists.
@@ -46,7 +42,6 @@ type Clan struct {
 	Name        string
 	Description string
 	Badge       string
-	Tag         string
 	MemberCount int
 	MaxMembers  int
 }
@@ -56,7 +51,6 @@ type NewClan struct {
 	Name        string
 	Description string
 	Badge       string
-	Tag         string
 }
 
 // limitText is a positive whole number written with plain digits.
@@ -134,7 +128,6 @@ func (s *Service) ListClans(ctx context.Context, gameID string, in ListClansInpu
 //   - 400 invalid_clan_description: the description is longer than 300 characters or has
 //     invisible characters
 //   - 400 invalid_clan_badge: the badge id is too long or has characters a badge id cannot have
-//   - 400 invalid_clan_tag: the tag is longer than 8 characters or is not only letters and digits
 //   - 409 clan_name_taken: the game already has a clan with this name (ignoring upper/lower case)
 //   - 409 already_in_clan: the player is already in a clan of this game
 func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayName string, in NewClan) (Clan, error) {
@@ -147,10 +140,6 @@ func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayNam
 		return Clan{}, err
 	}
 	badge, err := cleanClanBadge(in.Badge)
-	if err != nil {
-		return Clan{}, err
-	}
-	tag, err := cleanClanTag(in.Tag)
 	if err != nil {
 		return Clan{}, err
 	}
@@ -167,7 +156,6 @@ func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayNam
 			Name:        clean,
 			Description: description,
 			Badge:       badge,
-			Tag:         tag,
 		})
 		if err != nil {
 			return nil, err
@@ -211,7 +199,6 @@ func toClan(c repository.Clan, maxMembers int) Clan {
 		Name:        c.Name,
 		Description: c.Description,
 		Badge:       c.Badge,
-		Tag:         c.Tag,
 		MemberCount: c.MemberCount,
 		MaxMembers:  maxMembers,
 	}
@@ -272,25 +259,6 @@ func cleanClanBadge(badge string) (string, error) {
 		return "", httpx.NewError(http.StatusBadRequest, "invalid_clan_badge",
 			fmt.Sprintf("Clan badge must be at most %d characters of letters, digits, '-', '_', '.' or ':'",
 				maxClanBadgeLen))
-	}
-	return clean, nil
-}
-
-// tagPattern is the shape of a clan tag: letters and digits only, so a tag cannot be made
-// of spaces or punctuation that would not read as a tag above a player's name.
-var tagPattern = regexp.MustCompile(`^[A-Za-z0-9]+$`)
-
-// cleanClanTag trims the tag and checks it; an empty one is allowed, and is what a game
-// that does not use tags (clan.tags is false in its config) always sends. Upper and lower
-// case are kept as given: the clan form already writes tags in capitals.
-func cleanClanTag(tag string) (string, error) {
-	clean := strings.TrimSpace(tag)
-	if clean == "" {
-		return "", nil
-	}
-	if utf8.RuneCountInString(clean) > maxClanTagLen || !tagPattern.MatchString(clean) {
-		return "", httpx.NewError(http.StatusBadRequest, "invalid_clan_tag",
-			fmt.Sprintf("Clan tag must be at most %d letters or digits", maxClanTagLen))
 	}
 	return clean, nil
 }

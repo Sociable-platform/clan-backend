@@ -146,7 +146,6 @@ func (c *creatingStore) CreateClan(_ context.Context, gameID, ownerID string, in
 		Name:        in.Name,
 		Description: in.Description,
 		Badge:       in.Badge,
-		Tag:         in.Tag,
 		MemberCount: 1,
 	}, nil
 }
@@ -571,7 +570,6 @@ func TestCreateClanKeepsTheDescriptionAndBadge(t *testing.T) {
 		Name:        "Wolves",
 		Description: "  Casual farmers.\r\nEveryone welcome.  ",
 		Badge:       " wolf-01 ",
-		Tag:         " WOLF ",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -580,12 +578,8 @@ func TestCreateClanKeepsTheDescriptionAndBadge(t *testing.T) {
 	if store.got.Description != "Casual farmers.\nEveryone welcome." || store.got.Badge != "wolf-01" {
 		t.Fatalf("store got description %q badge %q", store.got.Description, store.got.Badge)
 	}
-	if store.got.Tag != "WOLF" {
-		t.Fatalf("store got tag %q, want it trimmed", store.got.Tag)
-	}
-	if got.Description != store.got.Description || got.Badge != "wolf-01" || got.Tag != "WOLF" {
-		t.Fatalf("answer has description %q badge %q tag %q; want what was saved",
-			got.Description, got.Badge, got.Tag)
+	if got.Description != store.got.Description || got.Badge != "wolf-01" {
+		t.Fatalf("answer has description %q badge %q; want what was saved", got.Description, got.Badge)
 	}
 }
 
@@ -595,8 +589,7 @@ func TestCreateClanWithoutADescriptionOrBadge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a clan without a description must be allowed: %v", err)
 	}
-	if store.got.Description != "" || store.got.Badge != "" || store.got.Tag != "" ||
-		got.Description != "" || got.Badge != "" || got.Tag != "" {
+	if store.got.Description != "" || store.got.Badge != "" || got.Description != "" || got.Badge != "" {
 		t.Fatalf("empty stayed empty? store %+v, answer %+v", store.got, got)
 	}
 }
@@ -612,8 +605,6 @@ func TestCreateClanRejectsABadDescriptionOrBadge(t *testing.T) {
 		{"badge too long", NewClan{Name: "Wolves", Badge: strings.Repeat("b", 65)}, "invalid_clan_badge"},
 		{"badge with a space", NewClan{Name: "Wolves", Badge: "grey wolf"}, "invalid_clan_badge"},
 		{"badge with a slash", NewClan{Name: "Wolves", Badge: "../etc/passwd"}, "invalid_clan_badge"},
-		{"tag too long", NewClan{Name: "Wolves", Tag: "ABCDEFGHI"}, "invalid_clan_tag"},
-		{"tag with punctuation", NewClan{Name: "Wolves", Tag: "[WF]"}, "invalid_clan_tag"},
 	}
 	for _, tc := range tests {
 		store := newCreatingStore()

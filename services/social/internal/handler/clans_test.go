@@ -188,7 +188,6 @@ func (s *creatingService) CreateClan(_ context.Context, gameID, externalID, play
 		Name:        in.Name,
 		Description: in.Description,
 		Badge:       in.Badge,
-		Tag:         in.Tag,
 		MemberCount: 1,
 		MaxMembers:  10,
 	}, nil
@@ -547,16 +546,34 @@ func TestListClansBadOptionsAre400(t *testing.T) {
 
 func TestCreateClanPassesTheDescriptionAndBadge(t *testing.T) {
 	svc := &creatingService{}
-	rec := postClan(t, svc, `{"name":"Wolves","description":"Casual farmers","badge":"wolf","tag":"WOLF"}`, false)
+	rec := postClan(t, svc, `{"name":"Wolves","description":"Casual farmers","badge":"wolf"}`, false)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
 	}
-	if svc.in.Description != "Casual farmers" || svc.in.Badge != "wolf" || svc.in.Tag != "WOLF" {
-		t.Fatalf("service got %+v; want the body's description, badge and tag", svc.in)
+	if svc.in.Description != "Casual farmers" || svc.in.Badge != "wolf" {
+		t.Fatalf("service got %+v; want the body's description and badge", svc.in)
 	}
-	want := `{"id":"c-9","name":"Wolves","description":"Casual farmers","badge":"wolf","tag":"WOLF","memberCount":1,"maxMembers":10}`
+	want := `{"id":"c-9","name":"Wolves","description":"Casual farmers","badge":"wolf","memberCount":1,"maxMembers":10}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("body\n got %s\nwant %s", got, want)
+	}
+}
+
+// Clans have no tags (TEAM-277), but an older SDK may still send one: it is ignored, whatever
+// its value, and never refused as an unknown field.
+func TestCreateClanIgnoresATag(t *testing.T) {
+	for _, tag := range []string{`"WOLF"`, `""`, `"[too long and odd]"`, `5`, `null`} {
+		t.Run(tag, func(t *testing.T) {
+			svc := &creatingService{}
+			rec := postClan(t, svc, `{"name":"Wolves","tag":`+tag+`}`, false)
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status %d, body %s; want 201", rec.Code, rec.Body.String())
+			}
+			want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10}`
+			if got := strings.TrimSpace(rec.Body.String()); got != want {
+				t.Fatalf("body\n got %s\nwant %s", got, want)
+			}
+		})
 	}
 }
 
