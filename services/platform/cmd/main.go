@@ -18,6 +18,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
+	"gitlab.com/clan-platform/clan-backend/pkg/otelx"
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
 	"gitlab.com/clan-platform/clan-backend/services/platform/internal/handler"
@@ -70,6 +71,10 @@ func run() error {
 	// Stop cleanly on Ctrl+C or when Docker sends SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Tracing and metrics (pkg/otelx), on only when OTEL_EXPORTER_OTLP_ENDPOINT is set. Deferred this
+	// early, the flush runs last: after the server and everything below has stopped.
+	defer otelx.Setup(ctx, serviceName, log)()
 
 	var pool *pgxpool.Pool
 	if url := config.String("PLATFORM_DATABASE_URL", ""); url != "" {
@@ -135,7 +140,7 @@ func run() error {
 	}
 	log.Info("cors", "allowed_origins", origins)
 
-	h := httpx.Chain(mux, httpx.Recover(log), httpx.RequestLog(log), cors)
+	h := httpx.Chain(mux, httpx.Trace(), httpx.Recover(log), httpx.RequestLog(log), cors)
 	err = httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
 	// The relay stops with ctx too, after recording the batch it was sending; wait for it before
 	// the pool and the broker connection are closed.

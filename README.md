@@ -25,6 +25,7 @@ clan-backend/
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
+│   ├── otelx/                 # OpenTelemetry tracing and metrics setup, off unless an endpoint is set
 │   ├── pg/                    # PostgreSQL connection pool (pgx)
 │   ├── httpx/                 # error format, JSON helpers, middleware, server with graceful shutdown
 │   └── jwt/                   # sign (platform) and verify (social) tokens, Ed25519
@@ -475,6 +476,41 @@ docker image inspect social:arm64-test --format "{{.Architecture}}"   # arm64
 An ARM image cannot run on an Intel or AMD computer; Docker Desktop marks it with an ARM64 warning.
 
 docker-compose does not use these images: it builds the services itself and mounts the migrations folders.
+
+## Telemetry (OpenTelemetry)
+
+`pkg/otelx` builds the tracer and meter providers for all three services, so each `main.go` has one line:
+`defer otelx.Setup(ctx, serviceName, log)()`.
+
+- **Off by default.** Nothing happens unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so `go run`, `docker compose` and
+  `go test` start no exporter and never look for a collector.
+- **On:** set `OTEL_EXPORTER_OTLP_ENDPOINT` to the collector's OTLP gRPC address (for example `http://localhost:4317`).
+  Traces and metrics are sent there. A collector that is down is logged as a warning and never fails a request or
+  the start of a service.
+- **What every span and metric carries:** `service.name` (`platform`, `social` or `realtime`), `service.version` (the
+  commit the image was built from: the `VERSION` build argument of the Dockerfiles, which CI sets; `dev` otherwise)
+  and `deployment.environment` (`DEPLOYMENT_ENVIRONMENT`, `local` when unset).
+- **Shutdown:** on SIGTERM or Ctrl+C the service stops as before, then sends what is still waiting, for at most
+  5 seconds.
+- **On the server** the chart sets the variables when `telemetry.enabled` is true (see `deploy/helm/clan/values.yaml`).
+
+### What is traced
+
+With telemetry on, one request is one trace across the services:
+
+- **HTTP in** (`httpx.Trace()`, first in `httpx.Chain`): a span per request, named after the route pattern
+  (`POST /api/v1/clans`, `GET /api/v1/clans/{clanID}`), never the raw path. A request that carries a `traceparent`
+  header continues that trace. `/health`, `/ready` and WebSocket upgrades are not traced.
+- **HTTP out** (`httpx.Transport()` on the services' own HTTP clients): a span per call, and the trace goes on to the
+  service that is called.
+- **Postgres** (`pkg/pg`): a span per query run for a traced request, with the SQL text (values are parameters and
+  are never recorded). Queries of background loops (the outbox relay, the cleanups) are not traced.
+- **RabbitMQ** (`pkg/events`): `Enqueue` stores the request's trace context with the outbox row, the relay publishes
+  the event in a `<type> publish` span and writes the context to the message headers, and realtime handles it in a
+  `<type> process` span. So a `clan.created` from social links to what realtime does with it.
+- **Logs** (`pkg/logx`): a line logged with a context inside a trace (`log.InfoContext(ctx, ...)`) gets `trace_id`
+  and `span_id`. The request line and the "request failed" and panic lines do; a line logged with plain
+  `log.Info(...)` does not, so pass the context when a new log line should link to its trace.
 
 ## API contracts (OpenAPI)
 

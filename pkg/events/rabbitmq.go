@@ -50,7 +50,16 @@ func NewRabbitMQ(url string, log *slog.Logger) *RabbitMQ {
 
 // Publish sends e to Exchange with e.Type as the routing key and waits until the broker
 // confirms it. The message is persistent, so it survives a broker restart once confirmed.
+// An event that belongs to a trace is published in a span of that trace, and carries the trace
+// in its message headers for the consumer (trace.go).
 func (r *RabbitMQ) Publish(ctx context.Context, e Event) error {
+	ctx, end := startPublish(ctx, e)
+	err := r.publish(ctx, e)
+	end(err)
+	return err
+}
+
+func (r *RabbitMQ) publish(ctx context.Context, e Event) error {
 	body, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("events: encode %s: %w", e.Type, err)
@@ -73,6 +82,7 @@ func (r *RabbitMQ) Publish(ctx context.Context, e Event) error {
 		MessageId:    e.ID,
 		Type:         e.Type,
 		Timestamp:    e.OccurredAt,
+		Headers:      traceHeaders(ctx),
 		Body:         body,
 	})
 	if err != nil {
