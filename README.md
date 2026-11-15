@@ -25,6 +25,7 @@ clan-backend/
 ├── pkg/                       # shared code, used by both services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
+│   ├── otelx/                 # OpenTelemetry tracing and metrics setup, off unless an endpoint is set
 │   ├── pg/                    # PostgreSQL connection pool (pgx)
 │   ├── httpx/                 # error format, JSON helpers, middleware, server with graceful shutdown
 │   └── jwt/                   # sign (platform) and verify (social) tokens, Ed25519
@@ -475,6 +476,25 @@ docker image inspect social:arm64-test --format "{{.Architecture}}"   # arm64
 An ARM image cannot run on an Intel or AMD computer; Docker Desktop marks it with an ARM64 warning.
 
 docker-compose does not use these images: it builds the services itself and mounts the migrations folders.
+
+## Telemetry (OpenTelemetry)
+
+`pkg/otelx` builds the tracer and meter providers for all three services, so each `main.go` has one line:
+`defer otelx.Setup(ctx, serviceName, log)()`.
+
+- **Off by default.** Nothing happens unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so `go run`, `docker compose` and
+  `go test` start no exporter and never look for a collector.
+- **On:** set `OTEL_EXPORTER_OTLP_ENDPOINT` to the collector's OTLP gRPC address (for example `http://localhost:4317`).
+  Traces and metrics are sent there. A collector that is down is logged as a warning and never fails a request or
+  the start of a service.
+- **What every span and metric carries:** `service.name` (`platform`, `social` or `realtime`), `service.version` (the
+  commit the image was built from: the `VERSION` build argument of the Dockerfiles, which CI sets; `dev` otherwise)
+  and `deployment.environment` (`DEPLOYMENT_ENVIRONMENT`, `local` when unset).
+- **Shutdown:** on SIGTERM or Ctrl+C the service stops as before, then sends what is still waiting, for at most
+  5 seconds.
+- **On the server** the chart sets the variables when `telemetry.enabled` is true (see `deploy/helm/clan/values.yaml`).
+
+This only sets telemetry up. No request or event is traced yet; that comes with the instrumentation tasks.
 
 ## API contracts (OpenAPI)
 
