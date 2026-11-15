@@ -91,7 +91,7 @@ images:
           migrate_tags="$migrate_tags -t $CI_REGISTRY_IMAGE/$svc-migrate:$tag"
         done
         echo "== $svc: $tags"
-        docker buildx build --platform "$PLATFORMS" -f "services/$svc/Dockerfile" $image_tags --push .
+        docker buildx build --platform "$PLATFORMS" -f "services/$svc/Dockerfile" --build-arg "VERSION=$CI_COMMIT_SHA" $image_tags --push .
         docker buildx build --platform "$PLATFORMS" -f deploy/migrate/Dockerfile --build-arg "SERVICE=$svc" $migrate_tags --push .
       done
 
