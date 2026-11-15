@@ -291,25 +291,21 @@ func TestRejectsTheWrongTypeOfValue(t *testing.T) {
 	}
 }
 
-// clan.tags is retired (TEAM-276): a config may leave it out, and configs saved or published
-// with it, true or false, stay valid. While it is in the schema it must still be a boolean.
-func TestClanTagsIsOptionalButStillABoolean(t *testing.T) {
+// clan.tags is gone (TEAM-276 step 2): clans have no tags, and migration 000011 removed it from
+// every stored config, so a config that still sends it is refused like any unknown field.
+func TestRejectsClanTags(t *testing.T) {
 	if _, ok := obj(arena(t), "clan")["tags"]; ok {
 		t.Fatal("the examples should no longer have clan.tags; update this test")
-	}
-	if issues := issuesOf(t, arena(t)); len(issues) != 0 {
-		t.Fatalf("without clan.tags: %+v, want valid", issues)
 	}
 	for _, v := range []bool{true, false} {
 		m := arena(t)
 		obj(m, "clan")["tags"] = v
-		if issues := issuesOf(t, m); len(issues) != 0 {
-			t.Fatalf("with clan.tags %v: %+v, want valid", v, issues)
+		issues := issuesOf(t, m)
+		wantIssue(t, issues, "/clan", "additionalProperties")
+		if len(issues) != 1 || !strings.Contains(issues[0].Message, "tags") {
+			t.Fatalf("with clan.tags %v: %+v, want one problem that names tags", v, issues)
 		}
 	}
-	m := arena(t)
-	obj(m, "clan")["tags"] = "yes"
-	wantIssue(t, issuesOf(t, m), "/clan/tags", "type")
 }
 
 // A whole number written as 30.0 or 3e1 is still a whole number (as in the SDK's validator).
