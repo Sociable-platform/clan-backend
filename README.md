@@ -494,7 +494,23 @@ docker-compose does not use these images: it builds the services itself and moun
   5 seconds.
 - **On the server** the chart sets the variables when `telemetry.enabled` is true (see `deploy/helm/clan/values.yaml`).
 
-This only sets telemetry up. No request or event is traced yet; that comes with the instrumentation tasks.
+### What is traced
+
+With telemetry on, one request is one trace across the services:
+
+- **HTTP in** (`httpx.Trace()`, first in `httpx.Chain`): a span per request, named after the route pattern
+  (`POST /api/v1/clans`, `GET /api/v1/clans/{clanID}`), never the raw path. A request that carries a `traceparent`
+  header continues that trace. `/health`, `/ready` and WebSocket upgrades are not traced.
+- **HTTP out** (`httpx.Transport()` on the services' own HTTP clients): a span per call, and the trace goes on to the
+  service that is called.
+- **Postgres** (`pkg/pg`): a span per query run for a traced request, with the SQL text (values are parameters and
+  are never recorded). Queries of background loops (the outbox relay, the cleanups) are not traced.
+- **RabbitMQ** (`pkg/events`): `Enqueue` stores the request's trace context with the outbox row, the relay publishes
+  the event in a `<type> publish` span and writes the context to the message headers, and realtime handles it in a
+  `<type> process` span. So a `clan.created` from social links to what realtime does with it.
+- **Logs** (`pkg/logx`): a line logged with a context inside a trace (`log.InfoContext(ctx, ...)`) gets `trace_id`
+  and `span_id`. The request line and the "request failed" and panic lines do; a line logged with plain
+  `log.Info(...)` does not, so pass the context when a new log line should link to its trace.
 
 ## API contracts (OpenAPI)
 
