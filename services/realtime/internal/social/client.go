@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 )
 
 // ErrUnavailable means social could not tell who the player is: it is down, too slow, or
@@ -48,7 +50,8 @@ func NewClient(baseURL string, timeout time.Duration) (*Client, error) {
 	return &Client{
 		base: u.String(),
 		http: &http.Client{
-			Timeout: timeout,
+			Transport: httpx.Transport(), // the call continues the caller's trace
+			Timeout:   timeout,
 			// The token must only ever go to the configured address, so redirects are not followed.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},

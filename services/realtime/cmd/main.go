@@ -202,7 +202,7 @@ func run() error {
 		}()
 	}
 
-	h := httpx.Chain(mux, httpx.Recover(log), httpx.RequestLog(log), cors)
+	h := httpx.Chain(mux, httpx.Trace(), httpx.Recover(log), httpx.RequestLog(log), cors)
 	err = httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
 	// Run does not wait for upgraded connections; give them time to send their close frame.
 	hdl.Wait(5 * time.Second)

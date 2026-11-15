@@ -157,7 +157,7 @@ func run() error {
 	}
 	log.Info("cors", "allowed_origins", origins)
 
-	h := httpx.Chain(mux, httpx.Recover(log), httpx.RequestLog(log), cors)
+	h := httpx.Chain(mux, httpx.Trace(), httpx.Recover(log), httpx.RequestLog(log), cors)
 	err = httpx.Run(ctx, fmt.Sprintf(":%d", port), h, log)
 	// The relay stops with ctx too, after recording the batch it was sending; wait for it before
 	// the pool and the broker connection are closed.
