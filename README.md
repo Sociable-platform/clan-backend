@@ -161,10 +161,11 @@ config v1 contract (JSON Schema 2020-12, owned by the frontend team: `docs/confi
 shared fixtures in `testdata/examples/`; when the contract changes, copy the new files over and run
 `go test ./services/platform/...`.
 
-`clan.tags` is retired (TEAM-276): clans have no tags and nothing reads it. It is optional (any boolean), so configs
-saved or published with it stay valid and new ones leave it out. Platform made this change first; the copies in
-`clan-frontend` `docs/config-v1` follow in the same release. Removing it from the schema is a later, breaking step,
-after stored drafts and published versions are cleaned of it.
+`clan.tags` is gone (TEAM-276): clans have no tags. A config that still sends it gets `400 invalid_widget_config`
+(`/clan`, `additionalProperties`, "has the unknown field \"tags\""). Migration `000011_remove_clan_tags` removed it from
+every stored draft and published version first, so they can still be published and rolled back; that is the only time a
+published version was changed, and nothing else in it (or its version number) moved. Studio must stop sending the field
+before this is deployed, and the copies in `clan-frontend` `docs/config-v1` change in the same release.
 
 A config over 64 KB, text that is not JSON, or a config that breaks the contract gets
 `400 invalid_widget_config`. `error.details` lists every problem as `{ path, rule, message }`
