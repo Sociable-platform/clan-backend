@@ -52,6 +52,16 @@ image:
 
 logLevel: info
 
+# OpenTelemetry traces and metrics (pkg/otelx). When enabled, each service gets
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://<its node's IP>:<agentPort> (OTLP gRPC) and reports
+# deployment.environment=<environment>. Off by default: the services then start no exporter.
+# Enable it only where a collector agent listens on every node, or the services log
+# "telemetry export failed" warnings.
+telemetry:
+  enabled: false
+  agentPort: 4317
+  environment: production
+
 # One Postgres database for all services, each with its own user and schema (see postgres above).
 # Browsers may call a service only from these origins (CORS): comma-separated scheme://host[:port],
 # no trailing slash, "*" not allowed. The real domains are set in values-prod.yaml with the Ingress.

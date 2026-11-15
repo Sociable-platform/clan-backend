@@ -6,6 +6,18 @@
 {{- $db := printf "@postgres:5432/%s?sslmode=disable" .Values.postgres.database }}
 {{- $amqp := printf "amqp://%s:$(RABBITMQ_PASSWORD)@rabbitmq:5672/" .Values.rabbitmq.user }}
 
+{{- /* OpenTelemetry (pkg/otelx), added to every service when telemetry.enabled. The collector runs
+       as an agent on each node, so a pod reaches it on its own node's address (downward API).
+       HOST_IP must come before the variable that uses it. */}}
+{{- $otel := list }}
+{{- if .Values.telemetry.enabled }}
+{{- $otel = list
+  (dict "name" "HOST_IP" "valueFrom" (dict "fieldRef" (dict "fieldPath" "status.hostIP")))
+  (dict "name" "OTEL_EXPORTER_OTLP_ENDPOINT" "value" (printf "http://$(HOST_IP):%v" .Values.telemetry.agentPort))
+  (dict "name" "DEPLOYMENT_ENVIRONMENT" "value" .Values.telemetry.environment)
+}}
+{{- end }}
+
 {{- /* platform */}}
 {{- $env := list
   (dict "name" "PLATFORM_PORT" "value" "8081")
@@ -21,7 +33,7 @@
   (dict "name" "LOG_LEVEL" "value" .Values.logLevel)
 }}
 {{- include "clan.goService" (dict "root" $root "name" "platform" "port" 8081 "replicas" .Values.platform.replicas
-      "resources" .Values.platform.resources "env" $env "dbURLVar" "PLATFORM_DATABASE_URL"
+      "resources" .Values.platform.resources "env" (concat $env $otel) "dbURLVar" "PLATFORM_DATABASE_URL"
       "keySecret" "clan-jwt-private" "keyFile" "platform_jwt_private.pem") }}
 
 {{- /* social */}}
@@ -39,7 +51,7 @@
   (dict "name" "LOG_LEVEL" "value" .Values.logLevel)
 }}
 {{- include "clan.goService" (dict "root" $root "name" "social" "port" 8082 "replicas" .Values.social.replicas
-      "resources" .Values.social.resources "env" $env "dbURLVar" "SOCIAL_DATABASE_URL"
+      "resources" .Values.social.resources "env" (concat $env $otel) "dbURLVar" "SOCIAL_DATABASE_URL"
       "keySecret" "clan-jwt-public" "keyFile" "platform_jwt_public.pem") }}
 
 {{- /* realtime */}}
@@ -58,5 +70,5 @@
   (dict "name" "LOG_LEVEL" "value" .Values.logLevel)
 }}
 {{- include "clan.goService" (dict "root" $root "name" "realtime" "port" 8083 "replicas" 1 "recreate" true
-      "resources" .Values.realtime.resources "env" $env "dbURLVar" "REALTIME_DATABASE_URL"
+      "resources" .Values.realtime.resources "env" (concat $env $otel) "dbURLVar" "REALTIME_DATABASE_URL"
       "keySecret" "clan-jwt-public" "keyFile" "platform_jwt_public.pem") }}

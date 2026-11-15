@@ -274,6 +274,9 @@ The server has one Linux user, so everyone with access can do everything. To tak
 
 ## Good to know
 
+- **Telemetry:** with `telemetry.enabled: true` (set in `values-prod.yaml`) every service sends OpenTelemetry traces
+  and metrics to the collector agent on its own node, at `http://<node IP>:4317`. Without an agent there, set it to
+  `false`: the services run the same, but would log "telemetry export failed" warnings.
 - **The data survives** pod restarts and `helm upgrade`. It even survives `helm uninstall`: the disks (PVCs) stay
   until you delete them by hand (`kubectl -n clan delete pvc data-postgres-0 data-rabbitmq-0`), which erases all data.
 - **The init script and the RabbitMQ user only run on an empty disk.** Changing a password in the secrets file later
