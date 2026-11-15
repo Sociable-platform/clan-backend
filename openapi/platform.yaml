@@ -59,7 +59,6 @@ x-valid-widget-config: &validConfig
   clan:
     enabled: false
     maxMembers: 10
-    tags: false
     descriptionMax: 140
     badges: { source: developer, allowed: [] }
     screens:

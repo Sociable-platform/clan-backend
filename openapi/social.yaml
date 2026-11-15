@@ -1449,9 +1449,9 @@ components:
           type: string
           maxLength: 8
           description: |
-            The clan's short tag, shown above its members' names, such as `WOLF`. Left out
-            when the clan has none, which is every clan of a game whose config has
-            `clan.tags: false`.
+            The clan's short tag, such as `WOLF`. Left out when the clan has none. The widget
+            no longer shows or asks for tags (the config's `clan.tags` is retired, TEAM-276),
+            so clans created through it have none.
         memberCount:
           type: integer
           description: How many players are in the clan now.
@@ -1494,7 +1494,7 @@ components:
           description: |
             Optional. The clan's short tag, letters and digits only. The clan form allows 4
             characters and writes them in capitals; the contract allows up to 8 so the form
-            can be widened later. Sent empty by a game whose config has `clan.tags: false`.
+            can be widened later. The widget no longer sends it (TEAM-276).
     RenameClanRequest:
       type: object
       required: [name]
