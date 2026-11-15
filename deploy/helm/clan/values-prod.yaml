@@ -12,9 +12,14 @@ ingress:
     enabled: true
     issuer: letsencrypt
 
-# Traces and metrics go to the collector agent on the node (port 4317). Set to false while no agent runs.
+# Traces and metrics go to the collector agent on the node (port 4317), and from there to Datadog.
+# Needs secrets.datadogApiKey in the secrets file. To switch telemetry off, set both to false.
 telemetry:
   enabled: true
+  collector:
+    enabled: true
+    # Check this against your Datadog login address (see values.yaml).
+    datadogSite: datadoghq.com
 
 # Browser pages allowed to call each service: Studio (studio.<domain>) and the demo game
 # (game.<domain>), plus the local dev servers so a local Studio or game can try the deployed backend.
