@@ -23,7 +23,7 @@ func Recover(log *slog.Logger) Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if v := recover(); v != nil {
-					log.Error("panic in handler", "panic", v, "method", r.Method, "path", r.URL.Path)
+					log.ErrorContext(r.Context(), "panic in handler", "panic", v, "method", r.Method, "path", r.URL.Path)
 					WriteError(w, http.StatusInternalServerError, "internal_error", "Something went wrong")
 				}
 			}()
@@ -48,14 +48,15 @@ func (s *statusRecorder) WriteHeader(code int) {
 // RequestLog could not be upgraded to a WebSocket.
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
-// RequestLog logs one line per request with method, path, status and duration.
+// RequestLog logs one line per request with method, path, status and duration. After Trace in the
+// chain, the line also carries the request's trace_id and span_id (see logx).
 func RequestLog(log *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(rec, r)
-			log.Info("request",
+			log.InfoContext(r.Context(), "request",
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rec.status,
