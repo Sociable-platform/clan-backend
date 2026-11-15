@@ -171,7 +171,7 @@ var errNoPlayerInContext = errors.New("handler: no player in request context; ro
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var apiErr *httpx.Error
 	if !errors.As(err, &apiErr) {
-		h.log.Error("request failed", "method", r.Method, "path", r.URL.Path, "error", err)
+		h.log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 	}
 	httpx.WriteErr(w, err)
 }
