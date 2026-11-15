@@ -630,10 +630,16 @@ Social learns it from the call it already makes for the clan rules: the platform
 take effect within that time. Nothing is changed or deleted: friends, clans, blocks and players stay as they were. If
 the platform cannot be reached, Social keeps the last status it saw, and a game it has never seen is served (fail open).
 
+**Deleted players are refused.** After `DELETE /api/v1/players/me`, every token of that player issued before the call (or
+in the same second, as `iat` has whole seconds) answers `401 player_deleted` on every `/api/v1/` route, although it has not
+expired. A token for the same `externalPlayerId` issued later starts a new, empty player (TEAM-249). If the database cannot
+be asked, the request goes on (fail open) and fails on its own.
+
 | Method | Path | Answer |
 |---|---|---|
 | GET | `/api/v1/players/me` | 200 with the calling player; the record is created on the first call |
-| GET | `/api/v1/players?q=&limit=` | 200 `{ players: [...] }`: players of the caller's game whose name contains `q` (ignoring upper/lower case; `%` and `_` are normal characters), sorted by name, never the caller. Each has `id`, `displayName`, `relation` (`none` / `friend` / `request_sent` / `request_received` / `blocked`, a player the caller blocked) and, for the two pending ones, `requestId`. Players who blocked the caller are left out. `q` is required: 400 `invalid_query` (missing, empty or over 50 characters); `limit` 1 to 100, default 100 (400 `invalid_limit`) |
+| DELETE | `/api/v1/players/me` | The game deleted the player's account: the game's server gets a token for the player as usual and calls this. 204, no body. In one transaction the player leaves their clan (as with `/leave`), and their friendships, pending friend requests and blocks are removed; they are renamed `Deleted player` and never found by the player search again. Their older tokens then get 401 `player_deleted` (see above). A player Social never saw: 204. Publishes `clan.member_left` (or `clan.disbanded`), `friend.removed`, `friend.request_cancelled` / `friend.request_declined`, `player.unblocked`, then `player.renamed` with the new name: the existing types, so Realtime needs no change |
+| GET | `/api/v1/players?q=&limit=` | 200 `{ players: [...] }`: players of the caller's game whose name contains `q` (ignoring upper/lower case; `%` and `_` are normal characters), sorted by name, never the caller and never a deleted player. Each has `id`, `displayName`, `relation` (`none` / `friend` / `request_sent` / `request_received` / `blocked`, a player the caller blocked) and, for the two pending ones, `requestId`. Players who blocked the caller are left out. `q` is required: 400 `invalid_query` (missing, empty or over 50 characters); `limit` 1 to 100, default 100 (400 `invalid_limit`) |
 | GET | `/api/v1/players/me/clan` | 200 `{ clan, role }` with the caller's clan and role (`owner` / `member`); 404 `not_in_clan` |
 | GET | `/api/v1/players/me/blocks` | 200 `{ blocks: [...] }` with `id`, `displayName`, `since` (when the caller blocked them), newest first |
 | POST | `/api/v1/players/{playerID}/block` | no body. 204: the caller blocked that player (see "Blocks" below); blocking again changes nothing (204, no event). 400 `cannot_block_self`; 404 `player_not_found` (also for another game's player). Publishes `player.blocked` |

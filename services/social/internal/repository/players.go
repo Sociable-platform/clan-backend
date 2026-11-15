@@ -20,16 +20,17 @@ type Player struct {
 	Renamed bool
 }
 
-// UpsertPlayer returns the player (gameID, externalID), creating the row the first time
-// that pair appears. For an existing player it updates the display name, so a rename
+// UpsertPlayer returns the live player (gameID, externalID), creating the row the first time
+// that pair appears, or the first time after the player was deleted (a deleted record is left
+// as it is; see DeletePlayer). For an existing player it updates the display name, so a rename
 // in the game shows up here on the next call. Renamed is true only for the call that
 // changed the name of an existing player: not for the first insert, and not when the
 // name was already the same.
 //
 // Most calls change nothing, so it first only reads the row. Only a new player or a new
 // name runs the upsert, which is one SQL statement on purpose:
-//   - two requests for a brand-new player at the same moment: the unique key
-//     (game_id, external_id) and ON CONFLICT make sure only one row is created;
+//   - two requests for a brand-new player at the same moment: the unique index on
+//     (game_id, external_id) of live players and ON CONFLICT make sure only one row is created;
 //   - two requests with the same new name at the same moment: "where the name differs"
 //     lets only the first one update the row, so only one call reports Renamed.
 func (r *Repository) UpsertPlayer(ctx context.Context, gameID, externalID, displayName string) (Player, error) {
@@ -49,7 +50,7 @@ func (r *Repository) UpsertPlayer(ctx context.Context, gameID, externalID, displ
 	err = r.db(ctx).QueryRow(ctx,
 		`insert into players (game_id, external_id, display_name)
 		 values ($1, $2, $3)
-		 on conflict (game_id, external_id)
+		 on conflict (game_id, external_id) where deleted_at is null
 		 do update set display_name = excluded.display_name
 		   where players.display_name <> excluded.display_name
 		 returning id::text, display_name, created_at, xmax = 0`, // xmax = 0: the row was inserted, not updated
@@ -70,11 +71,13 @@ func (r *Repository) UpsertPlayer(ctx context.Context, gameID, externalID, displ
 	return p, nil
 }
 
-// playerByExternalID reads the player (gameID, externalID); pgx.ErrNoRows if there is none.
+// playerByExternalID reads the live player (gameID, externalID); pgx.ErrNoRows if there is none.
+// A deleted record of the same pair is never returned (see DeletePlayer).
 func (r *Repository) playerByExternalID(ctx context.Context, gameID, externalID string) (Player, error) {
 	p := Player{GameID: gameID, ExternalID: externalID}
 	err := r.db(ctx).QueryRow(ctx,
-		`select id::text, display_name, created_at from players where game_id = $1 and external_id = $2`,
+		`select id::text, display_name, created_at from players
+		 where game_id = $1 and external_id = $2 and deleted_at is null`,
 		gameID, externalID,
 	).Scan(&p.ID, &p.DisplayName, &p.CreatedAt)
 	return p, err
@@ -128,6 +131,7 @@ func (r *Repository) SearchPlayers(ctx context.Context, gameID, playerID, query 
 		 left join blocks mine
 		        on mine.game_id = p.game_id and mine.blocker_id = $2::uuid and mine.blocked_id = p.id
 		 where p.game_id = $1 and p.id <> $2::uuid
+		   and p.deleted_at is null -- a deleted player is never found (TEAM-249)
 		   and strpos(lower(p.display_name), lower($3)) > 0
 		   -- a player who blocked the caller is not shown to them: the block stays hidden
 		   and not exists (select 1 from blocks theirs

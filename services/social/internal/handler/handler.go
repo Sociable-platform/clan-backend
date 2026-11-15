@@ -17,6 +17,7 @@ import (
 type Service interface {
 	Ready(ctx context.Context) error
 	EnsurePlayer(ctx context.Context, gameID, externalID, displayName string) (service.Player, error)
+	DeletePlayer(ctx context.Context, gameID, externalID string) error
 	ListClans(ctx context.Context, gameID string, in service.ListClansInput) ([]service.Clan, error)
 	CreateClan(ctx context.Context, gameID, externalID, displayName string, in service.NewClan) (service.Clan, error)
 	JoinClan(ctx context.Context, gameID, externalID, displayName, clanID string) (service.Clan, error)
@@ -49,6 +50,9 @@ type Handler struct {
 	// requireServed runs after requirePlayer and refuses the requests of a suspended game (see
 	// WithGameGate); nil lets every game through.
 	requireServed httpx.Middleware
+	// requireLive runs after requireServed and refuses the tokens of deleted players (see
+	// WithPlayerGate); nil lets every token through.
+	requireLive httpx.Middleware
 	// requireInternal guards the /internal routes (see WithInternal); nil switches them off.
 	requireInternal httpx.Middleware
 	log             *slog.Logger
@@ -80,6 +84,14 @@ func (h *Handler) WithGameGate(requireServed httpx.Middleware) *Handler {
 	return h
 }
 
+// WithPlayerGate sets the guard that runs after the game gate on every /api/v1 route and refuses
+// a token issued before its player was deleted (see auth.RejectDeletedPlayers). It returns h, so
+// it can follow New.
+func (h *Handler) WithPlayerGate(requireLive httpx.Middleware) *Handler {
+	h.requireLive = requireLive
+	return h
+}
+
 // Route is one endpoint. Path uses the same {param} syntax as ServeMux and OpenAPI.
 type Route struct {
 	Method string
@@ -98,6 +110,7 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/health", h.health},
 		{http.MethodGet, "/ready", h.ready},
 		{http.MethodGet, "/api/v1/players/me", h.getMe},
+		{http.MethodDelete, "/api/v1/players/me", h.deleteMe},
 		{http.MethodGet, "/api/v1/players/me/clan", h.getMyClan},
 		{http.MethodGet, "/api/v1/players", h.searchPlayers},
 		{http.MethodGet, "/api/v1/players/me/blocks", h.listBlocks},
@@ -137,6 +150,10 @@ func (h *Handler) register(mux *http.ServeMux, routes []Route) {
 		var handle http.Handler = r.Handle
 		switch {
 		case isPlayerRoute(r.Path):
+			// Wrapped inside out, so they run: requirePlayer, requireServed, requireLive.
+			if h.requireLive != nil {
+				handle = h.requireLive(handle)
+			}
 			if h.requireServed != nil {
 				handle = h.requireServed(handle) // inside requirePlayer: the token is proven first
 			}

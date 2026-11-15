@@ -130,7 +130,8 @@ func TestRequirePlayerAcceptsValidToken(t *testing.T) {
 		if res.status != http.StatusOK || !res.reached {
 			t.Fatalf("%s: status %d, reached %v", scheme, res.status, res.reached)
 		}
-		want := Player{GameID: testGame, ExternalID: "u_42", Name: "Ali"} // game ID lower-cased
+		// game ID lower-cased; the issue time is the token's iat (sign uses testNow)
+		want := Player{GameID: testGame, ExternalID: "u_42", Name: "Ali", IssuedAt: time.Unix(testNow.Unix(), 0)}
 		if res.player != want {
 			t.Errorf("%s: player = %+v, want %+v", scheme, res.player, want)
 		}

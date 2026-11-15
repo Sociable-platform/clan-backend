@@ -44,6 +44,24 @@ func (h *Handler) getMe(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, toPlayerResponse(p))
 }
 
+// deleteMe handles DELETE /api/v1/players/me: the game deleted the calling player's account, so
+// their social profile goes too (see service.DeletePlayer). It answers 204 with no body. The
+// game's server gets a token for the player (POST /api/v1/players/auth on platform) and calls this
+// with it. Calling it again with a token issued before the deletion never gets here: the player
+// gate answers 401 player_deleted, which tells the game the player is already gone.
+func (h *Handler) deleteMe(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.PlayerFrom(r.Context())
+	if !ok {
+		h.fail(w, r, errNoPlayerInContext)
+		return
+	}
+	if err := h.svc.DeletePlayer(r.Context(), caller.GameID, caller.ExternalID); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type playerSearchResultResponse struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
