@@ -1036,7 +1036,8 @@
                 "exec": [
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "const j = pm.response.json();",
-                  "pm.test('every message has id, senderId, senderName, body, createdAt', () => j.messages.forEach(m => pm.expect(m).to.have.all.keys('id', 'senderId', 'senderName', 'body', 'createdAt')));",
+                  "pm.test('every message has id, kind, senderId, senderName, body, createdAt', () => j.messages.forEach(m => pm.expect(m).to.have.all.keys('id', 'kind', 'senderId', 'senderName', 'body', 'createdAt')));",
+                  "pm.test('DM messages are text', () => j.messages.forEach(m => pm.expect(m.kind).to.eql('text')));",
                   "pm.test('newest first', () => pm.expect(j.messages.map(m => m.body)).to.eql(['alice 1', 'bob 3', 'bob 2', 'bob 1']));",
                   "pm.test('nothing older', () => pm.expect(j.hasMore).to.eql(false));",
                   "pm.test('ids are UUIDv7: newest has the biggest id', () => { const ids = j.messages.map(m => m.id); pm.expect(ids).to.eql([...ids].sort().reverse()); });",

@@ -20,8 +20,10 @@ type clanRoom struct {
 		ID string `json:"id"`
 	} `json:"members"`
 	LastMessage *struct {
-		ID   string `json:"id"`
-		Body string `json:"body"`
+		ID       string `json:"id"`
+		Kind     string `json:"kind"`
+		SenderID string `json:"senderId"`
+		Body     string `json:"body"`
 	} `json:"lastMessage"`
 	Unread int `json:"unread"`
 }
@@ -44,10 +46,16 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	}
 	pass(a.name+" created a clan and got its room", time.Since(start))
 
-	// b joins: b gets the room with both members, a is told.
+	// b joins: b gets the room with both members, a is told, and both get b's member_joined line.
 	if err := s.joinClan(ctx, b, a, clan.ID, room.ID, "joined"); err != nil {
 		return err
 	}
+	start = time.Now()
+	joined1, err := s.expectMemberLine(start, room.ID, "member_joined", b, a, b)
+	if err != nil {
+		return err
+	}
+	pass("clan: both got "+b.name+"'s member_joined line", time.Since(start))
 
 	// a writes; both get it.
 	start = time.Now()
@@ -57,7 +65,7 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	}
 	pass("clan: ack for the sender, message.new for both", time.Since(start))
 
-	// b leaves: the room leaves b's list.
+	// b leaves: the room leaves b's list, and a gets b's member_left line.
 	start = time.Now()
 	if err := s.api.call(ctx, http.MethodPost, social+"/"+clan.ID+"/leave", bearerHeader(b.token), nil, nil, http.StatusNoContent); err != nil {
 		return fmt.Errorf("leave clan: %w", err)
@@ -65,7 +73,11 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	if _, err := b.ws.expect(start.Add(s.cfg.deadline), "conversation.removed", ofConversationRemoved(room.ID)); err != nil {
 		return err
 	}
-	pass(b.name+" left and got conversation.removed", time.Since(start))
+	left, err := s.expectMemberLine(start, room.ID, "member_left", b, a)
+	if err != nil {
+		return err
+	}
+	pass(b.name+" left: conversation.removed, and "+a.name+" got the member_left line", time.Since(start))
 
 	// a writes while b is away; b must not get it.
 	start = time.Now()
@@ -78,22 +90,28 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	}
 	pass("clan: a message while "+b.name+" is away reaches only the members", time.Since(start))
 
-	// b joins again and gets the whole history, the missed message included.
+	// b joins again and gets the whole history, the missed message included. The room ends with b's
+	// new member_joined line, which both get.
 	start = time.Now()
 	back, err := s.joinClanRoom(ctx, b, a, clan.ID, room.ID)
 	if err != nil {
 		return err
 	}
-	if back.LastMessage == nil || back.LastMessage.ID != missed {
-		return fmt.Errorf("%s: the room's last message is %+v, want the one written while away (%s)", b.name, back.LastMessage, missed)
+	joined2, err := s.expectMemberLine(start, room.ID, "member_joined", b, a, b)
+	if err != nil {
+		return err
 	}
-	// What was written before joining is history, not unread.
+	if back.LastMessage == nil || back.LastMessage.ID != joined2 || back.LastMessage.Kind != "member_joined" {
+		return fmt.Errorf("%s: the room's last message is %+v, want the new member_joined line (%s)", b.name, back.LastMessage, joined2)
+	}
+	// What was written before joining is history, not unread, and member lines never count.
 	if back.Unread != 0 {
 		return fmt.Errorf("%s: unread = %d, want 0 (a joiner starts with nothing unread)", b.name, back.Unread)
 	}
 	var history struct {
 		Messages []struct {
-			ID string `json:"id"`
+			ID   string `json:"id"`
+			Kind string `json:"kind"`
 		} `json:"messages"`
 	}
 	err = s.api.call(ctx, http.MethodGet, s.cfg.realtimeURL+"/api/v1/conversations/"+room.ID+"/messages",
@@ -101,10 +119,19 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	if err != nil {
 		return fmt.Errorf("read clan history: %w", err)
 	}
-	if len(history.Messages) != 2 || history.Messages[0].ID != missed || history.Messages[1].ID != first {
-		return fmt.Errorf("%s: history = %+v, want the two messages, newest first", b.name, history.Messages)
+	want := []string{joined2 + " member_joined", missed + " text", left + " member_left", first + " text", joined1 + " member_joined"}
+	var got []string
+	for _, m := range history.Messages {
+		got = append(got, m.ID+" "+m.Kind)
 	}
-	pass(b.name+" joined again and got the whole history", time.Since(start))
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		return fmt.Errorf("%s: history = %v, want %v (newest first)", b.name, got, want)
+	}
+	// a has read nothing in the room: the member lines must not count, and the messages are a's own.
+	if unread, err := s.roomUnread(ctx, a, room.ID); err != nil || unread != 0 {
+		return fmt.Errorf("%s: unread in the clan room = %d (%v), want 0: member lines are never unread", a.name, unread, err)
+	}
+	pass(b.name+" joined again and got the whole history with the member lines, none unread", time.Since(start))
 
 	// a, the owner, kicks b.
 	start = time.Now()
@@ -118,7 +145,10 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	if _, err := b.ws.expect(start.Add(s.cfg.deadline), "clan_kicked notification", ofClanNotification("clan_kicked", clan.ID)); err != nil {
 		return err
 	}
-	pass(b.name+" was kicked: conversation.removed and clan_kicked", time.Since(start))
+	if _, err := s.expectMemberLine(start, room.ID, "member_kicked", b, a); err != nil {
+		return err
+	}
+	pass(b.name+" was kicked: conversation.removed and clan_kicked, and "+a.name+" got the member_kicked line", time.Since(start))
 
 	// a, the last member, leaves: the clan is disbanded.
 	start = time.Now()
@@ -133,6 +163,53 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	}
 	pass(a.name+" left last: conversation.removed and clan_disbanded", time.Since(start))
 	return nil
+}
+
+// expectMemberLine waits until every player in to got the message.new member line of kind about
+// subject in the room, checks it (subject as sender, empty body) and returns its ID.
+func (s *scenario) expectMemberLine(start time.Time, roomID, kind string, subject *player, to ...*player) (string, error) {
+	var id string
+	for _, p := range to {
+		f, err := p.ws.expect(start.Add(s.cfg.deadline), kind+" line", ofMemberLine(roomID, kind))
+		if err != nil {
+			return "", err
+		}
+		var line struct {
+			Message struct {
+				ID       string `json:"id"`
+				SenderID string `json:"senderId"`
+				Body     string `json:"body"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(f.Data, &line); err != nil {
+			return "", fmt.Errorf("%s: read the %s line: %w", p.name, kind, err)
+		}
+		if line.Message.SenderID != subject.socialID || line.Message.Body != "" {
+			return "", fmt.Errorf("%s: the %s line is %+v, want %s as the sender and an empty body", p.name, kind, line.Message, subject.name)
+		}
+		if id != "" && line.Message.ID != id {
+			return "", fmt.Errorf("%s: the %s line is %s, another player got %s", p.name, kind, line.Message.ID, id)
+		}
+		id = line.Message.ID
+	}
+	return id, nil
+}
+
+// roomUnread returns p's unread count of one conversation from GET /api/v1/conversations.
+func (s *scenario) roomUnread(ctx context.Context, p *player, roomID string) (int, error) {
+	var list struct {
+		Conversations []clanRoom `json:"conversations"`
+	}
+	err := s.api.call(ctx, http.MethodGet, s.cfg.realtimeURL+"/api/v1/conversations", bearerHeader(p.token), nil, &list, http.StatusOK)
+	if err != nil {
+		return 0, fmt.Errorf("list conversations: %w", err)
+	}
+	for _, c := range list.Conversations {
+		if c.ID == roomID {
+			return c.Unread, nil
+		}
+	}
+	return 0, fmt.Errorf("%s: room %s is not in the conversation list", p.name, roomID)
 }
 
 // joinClan lets p join the clan and checks the room p gets and the clan_joined of member.
@@ -219,6 +296,22 @@ func ofClanRoom(clanID string) func(frame) bool {
 		}
 		return json.Unmarshal(f.Data, &added) == nil && added.Conversation.Kind == "clan" &&
 			added.Conversation.ClanID != nil && *added.Conversation.ClanID == clanID
+	}
+}
+
+// ofMemberLine matches the message.new of a member line of one kind in one conversation.
+func ofMemberLine(conversationID, kind string) func(frame) bool {
+	return func(f frame) bool {
+		if f.Type != "message.new" {
+			return false
+		}
+		var m struct {
+			ConversationID string `json:"conversationId"`
+			Message        struct {
+				Kind string `json:"kind"`
+			} `json:"message"`
+		}
+		return json.Unmarshal(f.Data, &m) == nil && m.ConversationID == conversationID && m.Message.Kind == kind
 	}
 }
 

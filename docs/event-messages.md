@@ -392,6 +392,7 @@
       ],
       "lastMessage": {
         "id": "0193a6b8-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "kind": "text",
         "senderId": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
         "senderName": "Alice",
         "body": "Wolves practice tonight at 8",
@@ -513,10 +514,38 @@
     "conversationId": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
     "message": {
       "id": "0193a6c0-1111-7222-8333-944455556666",
+      "kind": "text",
       "senderId": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
       "senderName": "Alice",
       "body": "See you at 8",
       "createdAt": "2026-11-10T09:45:12.314Z"
+    }
+  }
+}
+```
+
+## message.new: a member line in the clan room (clan.member_joined, clan.member_left)
+
+When a player joins, Realtime stores a `member_joined` line and sends it to every member, the joiner included.
+When a player leaves or is kicked, the line is `member_left` or `member_kicked` and goes to the members who stay.
+`senderId` / `senderName` are the player who joined or left, and `body` is empty: the widget writes the sentence.
+A member line is never unread.
+
+```json
+{
+  "event_id": "5b7e0f6c-2a4d-4e1b-9c3f-8d6a1e2b4c70",
+  "type": "message.new",
+  "occurred_at": "2026-11-10T09:43:10.455Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "conversationId": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
+    "message": {
+      "id": "0193a6bd-2222-7333-8444-555566667777",
+      "kind": "member_joined",
+      "senderId": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "senderName": "Bob",
+      "body": "",
+      "createdAt": "2026-11-10T09:43:10.461Z"
     }
   }
 }

@@ -177,7 +177,9 @@ Application-level liveness check for the SDK's own use. The server answers `pong
 | `pong` | `{ replyTo }` |
 | `error` | `{ code, message, replyTo, retryAfterMs }` |
 
-`message` is the same object as in the REST history: `{ id, senderId, senderName, body, createdAt }`.
+`message` is the same object as in the REST history: `{ id, kind, senderId, senderName, body, createdAt }`.
+`kind` is `text` for a message a player wrote, or a member line in a clan room (`member_joined`, `member_left`,
+`member_kicked`, see "Member lines" below).
 `conversation` is the same object as in the REST conversation list: `{ id, kind, clanId, members, lastMessage, unread }`.
 See `Message` and `Conversation` in [`realtime.yaml`](realtime.yaml).
 
@@ -233,7 +235,7 @@ Members who are offline get the message from history the next time they load it.
   "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
   "data": {
     "conversationId": "0193a6b4-...",
-    "message": { "id": "0193a6c0-...", "senderId": "5a2b3c4d-...", "senderName": "Rashad", "body": "gg", "createdAt": "2026-11-09T18:20:00.314Z" }
+    "message": { "id": "0193a6c0-...", "kind": "text", "senderId": "5a2b3c4d-...", "senderName": "Rashad", "body": "gg", "createdAt": "2026-11-09T18:20:00.314Z" }
   }
 }
 ```
@@ -302,8 +304,8 @@ position kept. `readOnly` is sent only when it is true.
 A clan room (`kind` `clan`, with the clan's `clanId`) is added when the player creates or joins the clan, and removed
 when they leave or are kicked. It comes with its whole history: the messages written before the player joined, and
 while they were away if they were a member before; `unread` counts the other members' messages from the start of the
-history. The members who stay get no frame when someone leaves (their list is right on the next
-`GET /api/v1/conversations`). When the clan is disbanded the room is deleted with its messages and everybody still in
+history. The members who stay get no `conversation.*` frame when someone leaves (their member list is right on the next
+`GET /api/v1/conversations`), but they get the member line below. When the clan is disbanded the room is deleted with its messages and everybody still in
 it gets `conversation.removed`. In a clan room `online` is the state when the room was sent: live `presence.update`
 frames go to friends only.
 
@@ -314,6 +316,37 @@ frames go to friends only.
   "occurred_at": "2026-11-09T18:22:10.000Z",
   "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
   "data": { "conversationId": "0193a6b4-..." }
+}
+```
+
+#### Member lines: joins, leaves and kicks in a clan room
+
+When a player joins a clan, leaves it or is kicked, Realtime stores a member line in the clan room and sends it as
+`message.new`, so it is in the chat live and in the history later (TEAM-291). Its `kind` is `member_joined`,
+`member_left` or `member_kicked`; `senderId` / `senderName` are the player who joined or left (the name they had in
+the room) and `body` is empty: the widget writes the sentence ("Bob joined the clan"), so a game can change or
+translate it.
+
+- `member_joined` goes to every member, the joiner included; the joiner's `conversation.added` already has it as
+  `lastMessage`. Only a new membership writes one: a repeated `clan.member_joined` writes no second line.
+- `member_left` (`member_kicked` when the reason is `kicked`) goes to the members who stay. The player who left gets
+  `conversation.removed` as before, not the line.
+- The clan owner's room (`clan.created`) starts without a line.
+- Member lines are never unread: `unread` counts `text` messages only, and a member line gives nobody a badge.
+- Players cannot send them: `message.send` always stores `text`.
+
+An SDK that does not know a `kind` should skip the message rather than show it as an empty bubble.
+
+```json
+{
+  "event_id": "5b7e0f6c-2a4d-4e1b-9c3f-8d6a1e2b4c70",
+  "type": "message.new",
+  "occurred_at": "2026-11-09T18:22:10.000Z",
+  "game_id": "8d4e2a10-5b7c-4f3e-9a61-2c0d7e9b4f15",
+  "data": {
+    "conversationId": "0193a6b4-...",
+    "message": { "id": "0193a6bd-...", "kind": "member_left", "senderId": "5a2b3c4d-...", "senderName": "Rashad", "body": "", "createdAt": "2026-11-09T18:22:10.006Z" }
+  }
 }
 ```
 
@@ -403,7 +436,7 @@ server → {"event_id":"6bfe...","type":"hello","occurred_at":"2026-11-09T18:19:
 client → GET /api/v1/conversations           (REST)
 client → {"type":"message.send","id":"c-1","data":{"conversationId":"0193...","body":"hello"}}
 server → {"event_id":"24ea...","type":"message.ack","occurred_at":"2026-11-09T18:20:00.314Z","game_id":"8d4e...","data":{"replyTo":"c-1","messageId":"0193a6c0...","createdAt":"2026-11-09T18:20:00.314Z"}}
-server → {"event_id":"4a30...","type":"message.new","occurred_at":"2026-11-09T18:20:00.314Z","game_id":"8d4e...","data":{"conversationId":"0193...","message":{"id":"0193a6c0...","senderId":"7f1e...","senderName":"Ali","body":"hello","createdAt":"2026-11-09T18:20:00.314Z"}}}
+server → {"event_id":"4a30...","type":"message.new","occurred_at":"2026-11-09T18:20:00.314Z","game_id":"8d4e...","data":{"conversationId":"0193...","message":{"id":"0193a6c0...","kind":"text","senderId":"7f1e...","senderName":"Ali","body":"hello","createdAt":"2026-11-09T18:20:00.314Z"}}}
 client → {"type":"message.send","id":"c-2","data":{"conversationId":"0193...","body":"again"}}
 server → {"event_id":"9f98...","type":"error","occurred_at":"2026-11-09T18:20:02.000Z","game_id":"8d4e...","data":{"code":"slow_mode","message":"Wait a moment before sending again","replyTo":"c-2","retryAfterMs":1400}}
 server → {"event_id":"dd8b...","type":"config.updated","occurred_at":"2026-11-09T18:23:00.000Z","game_id":"8d4e...","data":{"version":13}}

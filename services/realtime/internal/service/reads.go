@@ -133,5 +133,5 @@ func toMessage(m *repository.Message) *Message {
 	if m == nil {
 		return nil
 	}
-	return &Message{ID: m.ID, SenderID: m.SenderID, SenderName: m.SenderName, Body: m.Body, CreatedAt: m.CreatedAt.UTC()}
+	return &Message{ID: m.ID, Kind: m.Kind, SenderID: m.SenderID, SenderName: m.SenderName, Body: m.Body, CreatedAt: m.CreatedAt.UTC()}
 }

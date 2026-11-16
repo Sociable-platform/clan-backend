@@ -157,7 +157,17 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 			wantKeys(t, data, jsonKeys(t, messageAckData{}), typ+" data")
 		case "message.new":
 			wantKeys(t, data, jsonKeys(t, messageNewData{}), typ+" data")
-			wantKeys(t, object(t, data["message"], "message"), messageKeys, "message")
+			msg := object(t, data["message"], "message")
+			wantKeys(t, msg, messageKeys, "message")
+			switch msg["kind"] {
+			case service.MessageText:
+			case service.MessageMemberJoined, service.MessageMemberLeft, service.MessageMemberKicked:
+				if msg["body"] != "" {
+					t.Errorf("a %v line has the body %q, want empty", msg["kind"], msg["body"])
+				}
+			default:
+				t.Errorf("message kind = %v, want text or a member line", msg["kind"])
+			}
 		default:
 			t.Errorf("frame type %q is in the file but not in this test", typ)
 		}

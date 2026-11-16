@@ -438,10 +438,15 @@ Cancel and decline are two event types because they have different recipients; a
   - `clan.member_joined`: adds the `player` (and makes the room if `clan.created` was never seen), sends `conversation.added` to
     the player and a `clan_joined` notification to the other members. The room comes with its **whole history**: what was written
     before the player joined, and while they were away if they were a member before. Their read position went with their
-    membership, so the other members' messages count as unread.
+    membership, so the other members' messages count as unread. When the player was not a member yet, a `member_joined`
+    member line is stored in the room and sent as `message.new` to every member, the joiner included (TEAM-291); a repeated
+    event finds the membership and writes no second line.
   - `clan.member_left`: deletes the player's membership (the messages stay) and sends `conversation.removed` to that player;
-    when `reason` is `kicked`, also a `clan_kicked` notification (even if Realtime never had the room). `kicked_by` and
-    `new_owner` are not needed. The members who stay are not told.
+    when `reason` is `kicked`, also a `clan_kicked` notification (even if Realtime never had the room). When the player was a
+    member, a `member_left` line (`member_kicked` for a kick) with the name they had in the room is stored and sent as
+    `message.new` to the members who stay. `kicked_by` and `new_owner` are not needed.
+  - Member lines are messages with a `kind` other than `text` and an empty body (the widget writes the sentence). They are
+    in the history like any message and never count as unread (`openapi/realtime-ws.md`, "Member lines").
   - `clan.disbanded`: deletes the room with its members and messages and sends `conversation.removed` and a `clan_disbanded`
     notification to everybody who was still in it. Social publishes only this event when the last member leaves, so that member is told here.
 - **A copy of an event** (same `event_id`) is skipped (section 9): no rows and no frames. A new event about the same thing
@@ -662,7 +667,7 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | Clan rooms are not backfilled | A clan made before Realtime ran, or whose `clan.created` / `clan.member_joined` was lost, has no room (or misses that member) until the next join; a lost `clan.member_left` leaves the player in the room | A backfill like the friendships one: needs an internal Social endpoint that lists clan members (Social has none yet), then a clan pass in `REALTIME_BACKFILL`. |
-| The members who stay in a clan are not told when someone leaves | Open tabs list the old members until they reload the conversations | A frame for it, if the SDK needs it live (the contract has none). |
+| The members who stay in a clan get only the `member_left` / `member_kicked` line when someone leaves, not a new member list | Open tabs list the old members until they reload the conversations, unless the SDK reloads them when the line arrives | A members frame, if the SDK needs more than the line. |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
 | A lost `player.blocked` (only at consume time now: Social writes it through the outbox) | The blocked player can still message the blocker | Replay it from the dead-letter queue (`go run ./tools/dlq replay`), and a backfill of the blocks: Social stores them now (TEAM-154) but has no internal endpoint that lists them, like `/internal/v1/friendships` (the friendships backfill of TEAM-151 does not cover blocks). |
 | Slow mode and the rate limit are in the memory of the one Realtime process | A restart gives everybody a fresh start | Fine while Realtime is one process. |

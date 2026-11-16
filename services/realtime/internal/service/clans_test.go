@@ -22,9 +22,18 @@ func (m *memStore) JoinClanRoom(_ context.Context, gameID, clanID string, mem re
 	return m.room, m.clanErr
 }
 
-func (m *memStore) LeaveClanRoom(_ context.Context, gameID, clanID, playerID string) (string, bool, error) {
+func (m *memStore) LeaveClanRoom(_ context.Context, gameID, clanID, playerID string) (repository.ClanLeave, bool, error) {
 	m.clanCalls = append(m.clanCalls, "leave "+gameID+"|"+clanID+"|"+playerID)
-	return m.roomID, m.roomFound, m.clanErr
+	return repository.ClanLeave{ConversationID: m.roomID, Left: m.roomLeft, Name: m.roomLeftName}, m.roomFound, m.clanErr
+}
+
+func (m *memStore) InsertMemberMessage(_ context.Context, gameID, conversationID string, msg repository.MemberMessage) ([]string, error) {
+	if m.lineErr != nil {
+		return nil, m.lineErr
+	}
+	m.lines = append(m.lines, msg)
+	m.lineConvs = append(m.lineConvs, gameID+"|"+conversationID)
+	return m.lineMembers, nil
 }
 
 func (m *memStore) DeleteClanRoom(_ context.Context, gameID, clanID string) (string, []string, bool, error) {
@@ -79,7 +88,7 @@ func TestClanMemberJoinedGivesTheRoomWithItsHistoryAndTellsTheOthers(t *testing.
 		Members: []repository.Member{
 			{PlayerID: ali, Name: "Ali"}, {PlayerID: emma, Name: "Emma"}, {PlayerID: rashad, Name: "Rashad"},
 		},
-		LastMessage: &repository.Message{ID: "m-7", SenderID: ali, SenderName: "Ali", Body: "practice at 8", CreatedAt: last},
+		LastMessage: &repository.Message{ID: "m-7", Kind: "text", SenderID: ali, SenderName: "Ali", Body: "practice at 8", CreatedAt: last},
 		Unread:      map[string]int{ali: 0, emma: 3, rashad: 5},
 	}}
 	svc := New(store, WithPresence(onlineSet{ali: true, rashad: true}))
@@ -90,6 +99,10 @@ func TestClanMemberJoinedGivesTheRoomWithItsHistoryAndTellsTheOthers(t *testing.
 	}
 	if want := []string{"join " + game + "|" + wolves + "|" + rashad + "|Rashad"}; !reflect.DeepEqual(store.clanCalls, want) {
 		t.Errorf("store calls = %v, want %v", store.clanCalls, want)
+	}
+	// The player was a member already (Joined false, a repeated event): no member line.
+	if len(store.lines) != 0 {
+		t.Errorf("member lines = %+v, want none for a player who already was a member", store.lines)
 	}
 	if len(pushes) != 2 {
 		t.Fatalf("pushes = %d, want conversation.added for the joiner and clan_joined for the others", len(pushes))
@@ -104,7 +117,7 @@ func TestClanMemberJoinedGivesTheRoomWithItsHistoryAndTellsTheOthers(t *testing.
 		`{"id":"` + ali + `","name":"Ali","online":true},` +
 		`{"id":"` + emma + `","name":"Emma","online":false},` +
 		`{"id":"` + rashad + `","name":"Rashad","online":true}],` +
-		`"lastMessage":{"id":"m-7","senderId":"` + ali + `","senderName":"Ali","body":"practice at 8","createdAt":"2026-11-10T09:30:41.207Z"},` +
+		`"lastMessage":{"id":"m-7","kind":"text","senderId":"` + ali + `","senderName":"Ali","body":"practice at 8","createdAt":"2026-11-10T09:30:41.207Z"},` +
 		`"unread":5}}`
 	if got := frameJSON(t, added); got != want {
 		t.Errorf("conversation.added data = %s\nwant                      %s", got, want)
@@ -132,39 +145,143 @@ func TestClanMemberJoinedAloneTellsNobodyElse(t *testing.T) {
 	}
 }
 
+const lineID = "0193a6c0-1111-7222-8333-944455556666" // the ID fixedIDs gives every new message
+
+func TestClanMemberJoinedWritesOneJoinedLine(t *testing.T) {
+	store := &memStore{
+		room: repository.ClanRoom{
+			ConversationID: "c-9",
+			Members:        []repository.Member{{PlayerID: ali, Name: "Ali"}, {PlayerID: rashad, Name: "Rashad"}},
+			LastMessage:    &repository.Message{ID: "m-7", Kind: "text", SenderID: ali, SenderName: "Ali", Body: "practice at 8", CreatedAt: testNow},
+			Unread:         map[string]int{ali: 0, rashad: 0},
+			Joined:         true,
+		},
+		lineMembers: []string{ali, rashad},
+	}
+	svc := New(store, WithIDs(fixedIDs{id: lineID, at: testNow}))
+
+	pushes, err := svc.ClanMemberJoined(context.Background(), game, wolves, Player{ID: rashad, Name: "Rashad"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLine := repository.MemberMessage{ID: lineID, Kind: "member_joined", PlayerID: rashad, PlayerName: "Rashad", CreatedAt: testNow}
+	if !reflect.DeepEqual(store.lines, []repository.MemberMessage{wantLine}) || !reflect.DeepEqual(store.lineConvs, []string{game + "|c-9"}) {
+		t.Errorf("member lines = %+v in %v, want one member_joined line for Rashad in c-9", store.lines, store.lineConvs)
+	}
+
+	line := `{"id":"` + lineID + `","kind":"member_joined","senderId":"` + rashad + `","senderName":"Rashad","body":"","createdAt":"2026-11-10T08:00:00Z"}`
+	var got []string
+	for _, p := range pushes {
+		got = append(got, p.Type+" "+strings.Join(p.PlayerIDs, ","))
+	}
+	want := []string{"conversation.added " + rashad, "notification " + ali, "message.new " + ali + "," + rashad}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pushes = %v\nwant     %v", got, want)
+	}
+	// The joiner's room already ends with the line, and it is not unread.
+	if added := frameJSON(t, pushes[0]); !strings.Contains(added, `"lastMessage":`+line+`,"unread":0}`) {
+		t.Errorf("conversation.added = %s\nwant the joined line as the last message and nothing unread", added)
+	}
+	if got, want := frameJSON(t, pushes[2]), `{"conversationId":"c-9","message":`+line+`}`; got != want {
+		t.Errorf("message.new data = %s\nwant             %s", got, want)
+	}
+}
+
 func TestClanMemberLeft(t *testing.T) {
 	removed := `{"conversationId":"c-9"}`
 	kickedNote := `{"kind":"clan_kicked","payload":{"clanId":"` + wolves + `"}}`
+	line := func(kind string) string {
+		return `{"conversationId":"c-9","message":{"id":"` + lineID + `","kind":"` + kind + `","senderId":"` + rashad +
+			`","senderName":"Rashad","body":"","createdAt":"2026-11-10T08:00:00Z"}}`
+	}
 	tests := []struct {
-		name   string
-		found  bool
-		kicked bool
-		want   []string // "type data"
+		name      string
+		found     bool
+		left      bool     // the player was a member
+		stay      []string // the members after the leave
+		kicked    bool
+		want      []string // "type to data"
+		wantLines []string // kinds of the stored member lines
 	}{
-		{"left", true, false, []string{"conversation.removed " + removed}},
-		{"kicked", true, true, []string{"conversation.removed " + removed, "notification " + kickedNote}},
-		{"left a clan realtime has no room for", false, false, nil},
-		{"kicked from a clan realtime has no room for still hears it", false, true, []string{"notification " + kickedNote}},
+		{"left", true, true, []string{ali, emma}, false, []string{
+			"conversation.removed " + rashad + " " + removed,
+			"message.new " + ali + "," + emma + " " + line("member_left"),
+		}, []string{"member_left"}},
+		{"kicked", true, true, []string{ali}, true, []string{
+			"conversation.removed " + rashad + " " + removed,
+			"notification " + rashad + " " + kickedNote,
+			"message.new " + ali + " " + line("member_kicked"),
+		}, []string{"member_kicked"}},
+		{"left again: not a member any more, no second line", true, false, []string{ali}, false, []string{
+			"conversation.removed " + rashad + " " + removed,
+		}, nil},
+		{"left with nobody staying: the line is stored, nobody to tell", true, true, nil, false, []string{
+			"conversation.removed " + rashad + " " + removed,
+		}, []string{"member_left"}},
+		{"left a clan realtime has no room for", false, false, nil, false, nil, nil},
+		{"kicked from a clan realtime has no room for still hears it", false, false, nil, true, []string{
+			"notification " + rashad + " " + kickedNote,
+		}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := &memStore{roomID: "c-9", roomFound: tt.found}
-			pushes, err := New(store).ClanMemberLeft(context.Background(), game, wolves, rashad, tt.kicked)
+			store := &memStore{roomID: "c-9", roomFound: tt.found, roomLeft: tt.left, roomLeftName: "Rashad", lineMembers: tt.stay}
+			pushes, err := New(store, WithIDs(fixedIDs{id: lineID, at: testNow})).ClanMemberLeft(context.Background(), game, wolves, rashad, tt.kicked)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if want := []string{"leave " + game + "|" + wolves + "|" + rashad}; !reflect.DeepEqual(store.clanCalls, want) {
 				t.Errorf("store calls = %v, want %v", store.clanCalls, want)
 			}
+			var kinds []string
+			for i, l := range store.lines {
+				// The name is the one the player had in the room.
+				if l.PlayerID != rashad || l.PlayerName != "Rashad" || store.lineConvs[i] != game+"|c-9" {
+					t.Errorf("member line = %+v in %s, want Rashad's in c-9", l, store.lineConvs[i])
+				}
+				kinds = append(kinds, l.Kind)
+			}
+			if !reflect.DeepEqual(kinds, tt.wantLines) {
+				t.Errorf("member lines = %v, want %v", kinds, tt.wantLines)
+			}
 			var got []string
 			for _, p := range pushes {
-				if p.GameID != game || !reflect.DeepEqual(p.PlayerIDs, []string{rashad}) {
-					t.Errorf("%s goes to %v in %s, want only the player who left", p.Type, p.PlayerIDs, p.GameID)
+				if p.GameID != game {
+					t.Errorf("%s goes to game %s, want %s", p.Type, p.GameID, game)
 				}
-				got = append(got, p.Type+" "+frameJSON(t, p))
+				got = append(got, p.Type+" "+strings.Join(p.PlayerIDs, ",")+" "+frameJSON(t, p))
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("frames = %v\nwant     %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A member line that cannot be stored fails the event: the consumer tries it again, and nothing is sent.
+func TestClanMemberLinesPassStoreErrorsOn(t *testing.T) {
+	errDB := errors.New("database down")
+	calls := map[string]func(*Service) ([]Push, error){
+		"joined": func(s *Service) ([]Push, error) {
+			return s.ClanMemberJoined(context.Background(), game, wolves, Player{ID: rashad, Name: "Rashad"})
+		},
+		"left": func(s *Service) ([]Push, error) {
+			return s.ClanMemberLeft(context.Background(), game, wolves, rashad, false)
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			store := &memStore{
+				room:   repository.ClanRoom{ConversationID: "c-9", Joined: true},
+				roomID: "c-9", roomFound: true, roomLeft: true, roomLeftName: "Rashad",
+				lineErr: errDB,
+			}
+			pushes, err := call(New(store))
+			if !errors.Is(err, errDB) || errors.Is(err, ErrInvalidEvent) {
+				t.Errorf("error = %v, want the database error, not ErrInvalidEvent", err)
+			}
+			if len(pushes) != 0 {
+				t.Errorf("pushes = %v, want none", pushes)
 			}
 		})
 	}

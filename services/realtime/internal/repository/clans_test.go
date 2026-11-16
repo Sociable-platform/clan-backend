@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 var memberC = Member{PlayerID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Name: "Emma"}
@@ -27,8 +28,8 @@ func TestJoinClanRoomMakesOneRoomAndIsRepeatable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owner.ConversationID == "" || owner.LastMessage != nil || !equal(memberIDs(owner.Members), []string{memberA.PlayerID}) {
-		t.Fatalf("owner = %+v, want a new empty room with only the owner", owner)
+	if owner.ConversationID == "" || owner.LastMessage != nil || !equal(memberIDs(owner.Members), []string{memberA.PlayerID}) || !owner.Joined {
+		t.Fatalf("owner = %+v, want a new empty room with only the owner, who just joined", owner)
 	}
 
 	// The same event again, now with a renamed owner.
@@ -36,16 +37,16 @@ func TestJoinClanRoomMakesOneRoomAndIsRepeatable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.ConversationID != owner.ConversationID || len(again.Members) != 1 || again.Members[0].Name != "Ali B" {
-		t.Errorf("again = %+v, want the same room, one member, the new name", again)
+	if again.ConversationID != owner.ConversationID || len(again.Members) != 1 || again.Members[0].Name != "Ali B" || again.Joined {
+		t.Errorf("again = %+v, want the same room, one member, the new name, and Joined false (a member already)", again)
 	}
 
 	joined, err := r.JoinClanRoom(ctx, game, clan, memberB)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if joined.ConversationID != owner.ConversationID {
-		t.Errorf("the joiner got room %s, the owner %s", joined.ConversationID, owner.ConversationID)
+	if joined.ConversationID != owner.ConversationID || !joined.Joined {
+		t.Errorf("the joiner got room %s (joined %v), the owner %s; want the same room, newly joined", joined.ConversationID, joined.Joined, owner.ConversationID)
 	}
 	// The order is the order of joining, not of the IDs.
 	if got := memberIDs(joined.Members); !equal(got, []string{memberA.PlayerID, memberB.PlayerID}) {
@@ -188,9 +189,13 @@ func TestLeaveClanRoomKeepsTheRoomForTheOthers(t *testing.T) {
 	r.addMessage(t, game, room.ConversationID, mid(1), memberB.PlayerID, "Rashad", "bye")
 
 	for i := range 2 { // the second run is a redelivered event
-		id, found, err := r.LeaveClanRoom(ctx, game, clan, memberB.PlayerID)
-		if err != nil || !found || id != room.ConversationID {
-			t.Fatalf("leave %d: id=%s found=%v err=%v, want the room", i+1, id, found, err)
+		leave, found, err := r.LeaveClanRoom(ctx, game, clan, memberB.PlayerID)
+		if err != nil || !found || leave.ConversationID != room.ConversationID {
+			t.Fatalf("leave %d: %+v found=%v err=%v, want the room", i+1, leave, found, err)
+		}
+		// Only the first run removed a member, and it reports the name they had in the room.
+		if want := (ClanLeave{ConversationID: room.ConversationID, Left: i == 0, Name: map[bool]string{true: "Rashad"}[i == 0]}); leave != want {
+			t.Errorf("leave %d = %+v, want %+v", i+1, leave, want)
 		}
 	}
 	if n := r.countMembers(t, game, room.ConversationID); n != 1 {
@@ -357,7 +362,91 @@ func TestClanRoomsWithoutDatabase(t *testing.T) {
 	if _, _, err := r.LeaveClanRoom(ctx, "g", "c", "p"); !errors.Is(err, ErrNoDatabase) {
 		t.Errorf("LeaveClanRoom: %v", err)
 	}
+	if _, err := r.InsertMemberMessage(ctx, "g", "c", MemberMessage{}); !errors.Is(err, ErrNoDatabase) {
+		t.Errorf("InsertMemberMessage: %v", err)
+	}
 	if _, _, _, err := r.DeleteClanRoom(ctx, "g", "c"); !errors.Is(err, ErrNoDatabase) {
 		t.Errorf("DeleteClanRoom: %v", err)
+	}
+}
+
+// Member lines (a join, a leave, a kick) are stored with their kind and an empty body, come back with
+// it in the history and as the last message, and are never unread. A player who left can be the
+// subject of one, and the members returned are the ones still there.
+func TestMemberMessagesAreStoredButNeverUnread(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, clan := newUUID(t), newUUID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+
+	room, err := r.JoinClanRoom(ctx, game, clan, memberA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv := room.ConversationID
+	if _, err := r.JoinClanRoom(ctx, game, clan, memberB); err != nil {
+		t.Fatal(err)
+	}
+	members, err := r.InsertMemberMessage(ctx, game, conv, MemberMessage{ID: mid(1), Kind: "member_joined", PlayerID: memberB.PlayerID, PlayerName: "Rashad", CreatedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal(members, []string{memberA.PlayerID, memberB.PlayerID}) {
+		t.Errorf("members after the join line = %v, want both, in the order they joined", members)
+	}
+	r.addMessage(t, game, conv, mid(2), memberA.PlayerID, "Ali", "welcome")
+
+	if _, _, err := r.LeaveClanRoom(ctx, game, clan, memberB.PlayerID); err != nil {
+		t.Fatal(err)
+	}
+	// Rashad is not a member any more and is still the subject of the line.
+	members, err = r.InsertMemberMessage(ctx, game, conv, MemberMessage{ID: mid(3), Kind: "member_kicked", PlayerID: memberB.PlayerID, PlayerName: "Rashad", CreatedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal(members, []string{memberA.PlayerID}) {
+		t.Errorf("members after the kick line = %v, want only the owner", members)
+	}
+
+	msgs, _, err := r.ListMessages(ctx, game, memberA.PlayerID, conv, "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range msgs {
+		got = append(got, m.Kind+" "+m.SenderName+" "+m.Body)
+	}
+	if want := []string{"member_kicked Rashad ", "text Ali welcome", "member_joined Rashad "}; !equal(got, want) {
+		t.Errorf("history = %q, want %q", got, want)
+	}
+
+	// Ali has read nothing: the join and the kick lines are not unread, and Ali's own message never is.
+	list, err := r.ListConversations(ctx, game, memberA.PlayerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Unread != 0 || list[0].LastMessage == nil || list[0].LastMessage.Kind != "member_kicked" {
+		t.Errorf("list = %+v, want the room with the kick line last and nothing unread", list)
+	}
+	again, err := r.JoinClanRoom(ctx, game, clan, memberB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Unread[memberA.PlayerID] != 0 || again.LastMessage == nil || again.LastMessage.Kind != "member_kicked" {
+		t.Errorf("room = %+v, want no unread for Ali and the kick line last", again)
+	}
+
+	// Only the known kinds are stored.
+	if _, err := r.InsertMemberMessage(ctx, game, conv, MemberMessage{ID: mid(4), Kind: "shout", PlayerID: memberA.PlayerID, PlayerName: "Ali", CreatedAt: at}); err == nil {
+		t.Error("a message of an unknown kind was stored")
+	}
+	// A message a player sends is text.
+	if _, err := r.InsertMessage(ctx, game, conv, memberA.PlayerID, NewMessage{ID: mid(5), SenderName: "Ali", Body: "hi", CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	last, err := lastMessage(ctx, r.pool, game, conv)
+	if err != nil || last == nil || last.ID != mid(5) || last.Kind != "text" {
+		t.Errorf("last message = %+v (%v), want the sent one, as text", last, err)
 	}
 }
