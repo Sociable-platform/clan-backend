@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -147,7 +148,21 @@ func run() error {
 	} else {
 		log.Warn("PLATFORM_SMTP_HOST is not set: password reset emails are written to the log, not sent")
 	}
-	svc.WithPasswordReset(resetMailer{sender: sender, log: log}, config.String("PLATFORM_DASHBOARD_URL", "http://localhost:5173"))
+	dashboardURL := strings.TrimRight(config.String("PLATFORM_DASHBOARD_URL", "http://localhost:5173"), "/")
+	svc.WithPasswordReset(resetMailer{sender: sender, log: log}, dashboardURL)
+
+	// Email verification: with it on, registering creates the developer only after the 6-digit code
+	// from the email was entered. Off (the default), register creates the developer at once.
+	emailVerification, err := config.Bool("PLATFORM_EMAIL_VERIFICATION", false)
+	if err != nil {
+		return err
+	}
+	if emailVerification {
+		svc.WithEmailVerification(verificationMailer{sender: sender, log: log, dashboardURL: dashboardURL})
+		log.Info("email verification is on: a new developer confirms the email address with a code")
+	} else {
+		log.Warn("PLATFORM_EMAIL_VERIFICATION is off: developers register without confirming their email address")
+	}
 
 	// The /internal routes (for realtime) need a shared secret. Without one they answer 404.
 	internalToken := config.String("PLATFORM_INTERNAL_TOKEN", "")

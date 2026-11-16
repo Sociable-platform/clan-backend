@@ -23,6 +23,12 @@ type fakeService struct {
 	// ensureDeveloperActive decides whether a developer may write; nil means every developer may.
 	ensureDeveloperActive func(developerID string) error
 
+	// emailVerification switches registering with an emailed code on; the three calls below serve it.
+	emailVerification      bool
+	requestRegistration    func(in service.RegisterInput) error
+	verifyRegistration     func(in service.VerifyRegistrationInput) (service.Developer, error)
+	resendRegistrationCode func(email string) error
+
 	requestPasswordReset func(email string) error
 	resetPassword        func(in service.ResetPasswordInput) error
 
@@ -68,6 +74,20 @@ func (f fakeService) Ready(context.Context) error { return f.err }
 
 func (f fakeService) Register(_ context.Context, in service.RegisterInput) (service.Developer, error) {
 	return f.register(in)
+}
+
+func (f fakeService) EmailVerificationOn() bool { return f.emailVerification }
+
+func (f fakeService) RequestRegistration(_ context.Context, in service.RegisterInput) error {
+	return f.requestRegistration(in)
+}
+
+func (f fakeService) VerifyRegistration(_ context.Context, in service.VerifyRegistrationInput) (service.Developer, error) {
+	return f.verifyRegistration(in)
+}
+
+func (f fakeService) ResendRegistrationCode(_ context.Context, email string) error {
+	return f.resendRegistrationCode(email)
 }
 
 func (f fakeService) Login(_ context.Context, in service.LoginInput) (service.Session, error) {

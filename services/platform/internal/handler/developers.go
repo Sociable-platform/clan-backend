@@ -44,11 +44,17 @@ func toDeveloperResponse(d service.Developer) developerResponse {
 	}
 }
 
-// registerDeveloper handles POST /api/v1/developers/register.
+// registerDeveloper handles POST /api/v1/developers/register. With email verification off it
+// creates the developer and answers 201. With it on, it answers 202 and the developer is created
+// by register/verify, with the code that was emailed (registration.go).
 func (h *Handler) registerDeveloper(w http.ResponseWriter, r *http.Request) {
 	var req registerRequest
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
 		h.fail(w, r, err)
+		return
+	}
+	if h.svc.EmailVerificationOn() {
+		h.requestRegistration(w, r, req)
 		return
 	}
 	d, err := h.svc.Register(r.Context(), service.RegisterInput{Email: req.Email, Password: req.Password, Name: req.Name})

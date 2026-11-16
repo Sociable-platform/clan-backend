@@ -65,6 +65,74 @@ type fakeStore struct {
 	// refreshTokens holds the refresh tokens by their hash; refreshSessions counts the sessions started.
 	refreshTokens   map[string]fakeRefreshToken
 	refreshSessions int
+	// pendingRegs holds the pending registrations by email, like the real table.
+	pendingRegs map[string]repository.PendingRegistration
+}
+
+func (f *fakeStore) SavePendingRegistration(_ context.Context, p repository.PendingRegistration, now time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	for email, old := range f.pendingRegs {
+		if !old.ExpiresAt.After(now) {
+			delete(f.pendingRegs, email)
+		}
+	}
+	if f.pendingRegs == nil {
+		f.pendingRegs = map[string]repository.PendingRegistration{}
+	}
+	p.Attempts = 0
+	f.pendingRegs[p.Email] = p
+	return nil
+}
+
+func (f *fakeStore) PendingRegistrationByEmail(_ context.Context, email string, now time.Time) (repository.PendingRegistration, error) {
+	if f.err != nil {
+		return repository.PendingRegistration{}, f.err
+	}
+	p, ok := f.pendingRegs[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.PendingRegistration{}, repository.ErrNotFound
+	}
+	return p, nil
+}
+
+func (f *fakeStore) ReplacePendingRegistrationCode(_ context.Context, email, codeHash string, expiresAt, now time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	p, ok := f.pendingRegs[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.ErrNotFound
+	}
+	p.CodeHash, p.Attempts, p.ExpiresAt, p.LastSentAt = codeHash, 0, expiresAt, now
+	f.pendingRegs[email] = p
+	return nil
+}
+
+func (f *fakeStore) ConfirmPendingRegistration(ctx context.Context, email, codeHash string, now time.Time, maxAttempts int) (repository.Developer, error) {
+	if f.err != nil {
+		return repository.Developer{}, f.err
+	}
+	p, ok := f.pendingRegs[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.Developer{}, repository.ErrNotFound
+	}
+	if p.CodeHash != codeHash {
+		if p.Attempts+1 >= maxAttempts {
+			delete(f.pendingRegs, email)
+			return repository.Developer{}, repository.ErrTooManyAttempts
+		}
+		p.Attempts++
+		f.pendingRegs[email] = p
+		return repository.Developer{}, repository.ErrWrongCode
+	}
+	d, err := f.CreateDeveloper(ctx, p.Email, p.PasswordHash, p.Name)
+	if err != nil {
+		return repository.Developer{}, err
+	}
+	delete(f.pendingRegs, email)
+	return d, nil
 }
 
 // fakeRefreshToken is a row of the developer_refresh_tokens table.

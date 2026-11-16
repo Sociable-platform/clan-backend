@@ -235,6 +235,62 @@ type memStore struct {
 	// refreshTokens holds the refresh tokens by their hash; refreshSessions counts the sessions started.
 	refreshTokens   map[string]memRefreshToken
 	refreshSessions int
+	// pending holds the pending registrations by email.
+	pending map[string]repository.PendingRegistration
+}
+
+func (m *memStore) SavePendingRegistration(_ context.Context, p repository.PendingRegistration, now time.Time) error {
+	for email, old := range m.pending {
+		if !old.ExpiresAt.After(now) {
+			delete(m.pending, email)
+		}
+	}
+	if m.pending == nil {
+		m.pending = map[string]repository.PendingRegistration{}
+	}
+	p.Attempts = 0
+	m.pending[p.Email] = p
+	return nil
+}
+
+func (m *memStore) PendingRegistrationByEmail(_ context.Context, email string, now time.Time) (repository.PendingRegistration, error) {
+	p, ok := m.pending[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.PendingRegistration{}, repository.ErrNotFound
+	}
+	return p, nil
+}
+
+func (m *memStore) ReplacePendingRegistrationCode(_ context.Context, email, codeHash string, expiresAt, now time.Time) error {
+	p, ok := m.pending[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.ErrNotFound
+	}
+	p.CodeHash, p.Attempts, p.ExpiresAt, p.LastSentAt = codeHash, 0, expiresAt, now
+	m.pending[email] = p
+	return nil
+}
+
+func (m *memStore) ConfirmPendingRegistration(ctx context.Context, email, codeHash string, now time.Time, maxAttempts int) (repository.Developer, error) {
+	p, ok := m.pending[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.Developer{}, repository.ErrNotFound
+	}
+	if p.CodeHash != codeHash {
+		if p.Attempts+1 >= maxAttempts {
+			delete(m.pending, email)
+			return repository.Developer{}, repository.ErrTooManyAttempts
+		}
+		p.Attempts++
+		m.pending[email] = p
+		return repository.Developer{}, repository.ErrWrongCode
+	}
+	d, err := m.CreateDeveloper(ctx, p.Email, p.PasswordHash, p.Name)
+	if err != nil {
+		return repository.Developer{}, err
+	}
+	delete(m.pending, email)
+	return d, nil
 }
 
 // memRefreshToken is a row of the developer_refresh_tokens table.
