@@ -88,6 +88,16 @@ platform:
   corsOrigins: http://localhost:5173
   developerTokenTtl: 24h
   adminTokenTtl: 1h
+  # Where the dashboard (Studio) runs. A password reset email links to <dashboardUrl>/reset-password.
+  dashboardUrl: http://localhost:5173
+  # The SMTP server that sends the password reset emails (STARTTLS). Its password is
+  # secrets.smtpPassword. Empty host: nothing is sent, platform writes each email to its log.
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    # The sender, "noreply@example.com" or "Name <noreply@example.com>". Empty: the username.
+    from: ""
   resources:
     requests:
       cpu: 50m
@@ -137,6 +147,8 @@ secrets:
   jwtPublicKey: ""
   # The Datadog API key of the OpenTelemetry Collector. Required when telemetry.collector.enabled.
   datadogApiKey: ""
+  # Password of platform.smtp.username (for Gmail: an app password, not the account password).
+  smtpPassword: ""
   # A GitLab group deploy token with the read_registry scope. Empty: no pull secret is created.
   registryUsername: ""
   registryPassword: ""

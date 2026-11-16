@@ -27,6 +27,14 @@ telemetry:
 # (game.<domain>), plus the local dev servers so a local Studio or game can try the deployed backend.
 platform:
   corsOrigins: https://studio.130-61-158-79.sslip.io,http://localhost:5173
+  # Password reset emails: the link opens Studio, and the email is sent from the project's Gmail
+  # account. Its app password is secrets.smtpPassword in the secrets file, never here.
+  dashboardUrl: https://studio.130-61-158-79.sslip.io
+  smtp:
+    host: smtp.gmail.com
+    port: 587
+    username: sociable.noreply@gmail.com
+    from: Sociable <sociable.noreply@gmail.com>
 social:
   corsOrigins: https://game.130-61-158-79.sslip.io,http://localhost:5174
 realtime:
