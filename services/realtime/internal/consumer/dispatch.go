@@ -56,7 +56,7 @@ type Events interface {
 	PlayerUnblocked(ctx context.Context, gameID, blockerID, blockedID string) ([]service.Push, error)
 	ClanCreated(ctx context.Context, gameID, clanID string, owner service.Player) ([]service.Push, error)
 	ClanMemberJoined(ctx context.Context, gameID, clanID string, p service.Player) ([]service.Push, error)
-	ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool) ([]service.Push, error)
+	ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool, by *service.Player) ([]service.Push, error)
 	ClanDisbanded(ctx context.Context, gameID, clanID string) ([]service.Push, error)
 	// HandleOnce runs fn unless the event was handled before (handled is false), recording it in the
 	// same transaction as what fn stores. fn's error is returned as it is.
@@ -179,12 +179,13 @@ type clanMemberData struct {
 	Player playerData `json:"player"`
 }
 
-// clanMemberLeftData is the data of clan.member_left. kicked_by and new_owner are in the event too;
-// Realtime does not need them.
+// clanMemberLeftData is the data of clan.member_left. new_owner is in the event too; Realtime does not
+// need it. kicked_by is who removed the player: set with reason "kicked", otherwise null.
 type clanMemberLeftData struct {
-	Clan   clanRef    `json:"clan"`
-	Player playerData `json:"player"`
-	Reason string     `json:"reason"` // "left" or "kicked"
+	Clan     clanRef     `json:"clan"`
+	Player   playerData  `json:"player"`
+	Reason   string      `json:"reason"` // "left" or "kicked"
+	KickedBy *playerData `json:"kicked_by"`
 }
 
 // clanDisbandedData is the data of clan.disbanded.
@@ -332,7 +333,12 @@ func (d *Dispatcher) store(ctx context.Context, env events.Event) ([]service.Pus
 		if err := decode(env.Data, &data); err != nil {
 			return nil, err
 		}
-		return d.events.ClanMemberLeft(ctx, env.GameID, data.Clan.ID, data.Player.ID, data.Reason == reasonKicked)
+		var by *service.Player
+		if data.KickedBy != nil {
+			p := player(*data.KickedBy)
+			by = &p
+		}
+		return d.events.ClanMemberLeft(ctx, env.GameID, data.Clan.ID, data.Player.ID, data.Reason == reasonKicked, by)
 	case typeClanDisbanded:
 		var data clanDisbandedData
 		if err := decode(env.Data, &data); err != nil {

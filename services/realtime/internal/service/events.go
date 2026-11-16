@@ -86,6 +86,9 @@ type Message struct {
 	SenderName string    `json:"senderName"`
 	Body       string    `json:"body"` // empty for a member line: the widget writes the sentence
 	CreatedAt  time.Time `json:"createdAt"`
+	// KickedBy is who removed the player, on a MessageMemberKicked line when the event said who. Every
+	// other message has no kickedBy at all. The name is the one they had at the time, like SenderName.
+	KickedBy *playerRef `json:"kickedBy,omitempty"`
 }
 
 // The kinds of a Message (openapi/realtime.yaml). Players write MessageText; Realtime writes the

@@ -529,7 +529,8 @@
 When a player joins, Realtime stores a `member_joined` line and sends it to every member, the joiner included.
 When a player leaves or is kicked, the line is `member_left` or `member_kicked` and goes to the members who stay.
 `senderId` / `senderName` are the player who joined or left, and `body` is empty: the widget writes the sentence.
-A member line is never unread.
+A `member_kicked` line also has `kickedBy` (`{ id, name }`), the player who removed them, when the event says who
+(`kicked_by` of `clan.member_left`); no other message has the field. A member line is never unread.
 
 ```json
 {
@@ -546,6 +547,32 @@ A member line is never unread.
       "senderName": "Bob",
       "body": "",
       "createdAt": "2026-11-10T09:43:10.461Z"
+    }
+  }
+}
+```
+
+## message.new: a member_kicked line with who removed the player (clan.member_left with reason kicked)
+
+```json
+{
+  "event_id": "9e2a7d41-6c58-4b0e-a3f9-1d7c5b8e2f64",
+  "type": "message.new",
+  "occurred_at": "2026-11-10T09:50:02.118Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "conversationId": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
+    "message": {
+      "id": "0193a6c3-4444-7555-8666-777788889999",
+      "kind": "member_kicked",
+      "senderId": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "senderName": "Bob",
+      "body": "",
+      "createdAt": "2026-11-10T09:50:02.121Z",
+      "kickedBy": {
+        "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+        "name": "Alice"
+      }
     }
   }
 }

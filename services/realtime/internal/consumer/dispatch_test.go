@@ -97,12 +97,16 @@ func (f *fakeEvents) ClanMemberJoined(_ context.Context, gameID, clanID string, 
 	return f.record(gameID, "clan_joined "+clanID+" "+p.ID+"/"+p.Name)
 }
 
-func (f *fakeEvents) ClanMemberLeft(_ context.Context, gameID, clanID, playerID string, kicked bool) ([]service.Push, error) {
+func (f *fakeEvents) ClanMemberLeft(_ context.Context, gameID, clanID, playerID string, kicked bool, by *service.Player) ([]service.Push, error) {
 	how := "left"
 	if kicked {
 		how = "kicked"
 	}
-	return f.record(gameID, "clan_"+how+" "+clanID+" "+playerID)
+	call := "clan_" + how + " " + clanID + " " + playerID
+	if by != nil {
+		call += " by " + by.ID + "/" + by.Name
+	}
+	return f.record(gameID, call)
 }
 
 func (f *fakeEvents) ClanDisbanded(_ context.Context, gameID, clanID string) ([]service.Push, error) {
@@ -168,6 +172,9 @@ func TestDispatchRoutesEachEventToItsHandler(t *testing.T) {
 			"clan_left k-1 u-2"},
 		{"clan.member_left, reason kicked",
 			`{"event_id":"e9","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"},"reason":"kicked","kicked_by":{"id":"u-1","name":"Alice"},"new_owner":null}}`,
+			"clan_kicked k-1 u-2 by u-1/Alice"},
+		{"clan.member_left, reason kicked, an older event without kicked_by",
+			`{"event_id":"e9","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"},"reason":"kicked","new_owner":null}}`,
 			"clan_kicked k-1 u-2"},
 		{"clan.member_left, the owner left and someone else owns the clan now",
 			`{"event_id":"e9","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-1","name":"Alice"},"reason":"left","kicked_by":null,"new_owner":{"id":"u-2","name":"Bob"}}}`,
@@ -359,7 +366,7 @@ func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 			"clan_left k-1 u-2"},
 		{"clan.member_left (kicked)", events.New("clan.member_left", "g-1", map[string]any{
 			"clan": wolves, "player": bob, "reason": "kicked", "kicked_by": alice, "new_owner": nil}),
-			"clan_kicked k-1 u-2"},
+			"clan_kicked k-1 u-2 by u-1/Alice"},
 		{"clan.disbanded", events.New("clan.disbanded", "g-1", map[string]any{"clan": wolves}),
 			"clan_disbanded k-1"},
 	}

@@ -158,7 +158,16 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 		case "message.new":
 			wantKeys(t, data, jsonKeys(t, messageNewData{}), typ+" data")
 			msg := object(t, data["message"], "message")
-			wantKeys(t, msg, messageKeys, "message")
+			keys := append([]string(nil), messageKeys...)
+			if by, ok := msg["kickedBy"]; ok {
+				// Only a member_kicked line has kickedBy: who removed the player.
+				if msg["kind"] != service.MessageMemberKicked {
+					t.Errorf("a %v message has kickedBy, only member_kicked does", msg["kind"])
+				}
+				wantKeys(t, object(t, by, "kickedBy"), []string{"id", "name"}, "kickedBy")
+				keys = append(keys, "kickedBy")
+			}
+			wantKeys(t, msg, keys, "message")
 			switch msg["kind"] {
 			case service.MessageText:
 			case service.MessageMemberJoined, service.MessageMemberLeft, service.MessageMemberKicked:

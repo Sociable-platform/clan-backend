@@ -74,6 +74,7 @@ type MemberMessage struct {
 	PlayerID   string // the player who joined or left; stored as the sender
 	PlayerName string
 	CreatedAt  time.Time
+	KickedBy   *Member // who removed the player; only for member_kicked, and nil when the event did not say
 }
 
 // InsertMemberMessage stores a member line in the conversation, with an empty body, and returns the
@@ -90,10 +91,15 @@ func (r *Repository) InsertMemberMessage(ctx context.Context, gameID, conversati
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // does nothing after Commit
 
+	// kicked_by is NULL for every other line; the table's check refuses it on a line that is not member_kicked.
+	var byID, byName *string
+	if m.KickedBy != nil {
+		byID, byName = &m.KickedBy.PlayerID, &m.KickedBy.Name
+	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO messages (id, conversation_id, game_id, kind, sender_id, sender_name, body, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, '', $7)`,
-		m.ID, conversationID, gameID, m.Kind, m.PlayerID, m.PlayerName, m.CreatedAt)
+		INSERT INTO messages (id, conversation_id, game_id, kind, sender_id, sender_name, body, created_at, kicked_by_id, kicked_by_name)
+		VALUES ($1, $2, $3, $4, $5, $6, '', $7, $8, $9)`,
+		m.ID, conversationID, gameID, m.Kind, m.PlayerID, m.PlayerName, m.CreatedAt, byID, byName)
 	if err != nil {
 		return nil, fmt.Errorf("insert member message: %w", err)
 	}
