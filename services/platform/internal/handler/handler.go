@@ -18,6 +18,10 @@ import (
 type Service interface {
 	Ready(ctx context.Context) error
 	Register(ctx context.Context, in service.RegisterInput) (service.Developer, error)
+	EmailVerificationOn() bool
+	RequestRegistration(ctx context.Context, in service.RegisterInput) error
+	VerifyRegistration(ctx context.Context, in service.VerifyRegistrationInput) (service.Developer, error)
+	ResendRegistrationCode(ctx context.Context, email string) error
 	Login(ctx context.Context, in service.LoginInput) (service.Session, error)
 	AuthenticateDeveloper(ctx context.Context, token string) (developerID string, err error)
 	RequestPasswordReset(ctx context.Context, email string) error
@@ -67,6 +71,10 @@ type Handler struct {
 	// cookie for http://localhost (sessions.go).
 	sessionByIP     *ratelimit.Limiter
 	insecureCookies bool
+	// Limits of registering with email verification (registration.go).
+	registerByIP    *ratelimit.Limiter
+	registerByEmail *ratelimit.Limiter
+	verifyByIP      *ratelimit.Limiter
 }
 
 // New returns a Handler. name is the service name shown in /health.
@@ -74,10 +82,13 @@ type Handler struct {
 func New(name string, svc Service, log *slog.Logger) *Handler {
 	return &Handler{
 		name: name, svc: svc, log: log,
-		resetByIP:      ratelimit.New(resetPerIP, resetLimitWindow),
-		resetByEmail:   ratelimit.New(resetPerEmail, resetLimitWindow),
-		resetConfirmIP: ratelimit.New(resetConfirmPerIP, resetLimitWindow),
-		sessionByIP:    ratelimit.New(sessionPerIP, resetLimitWindow),
+		resetByIP:       ratelimit.New(resetPerIP, resetLimitWindow),
+		resetByEmail:    ratelimit.New(resetPerEmail, resetLimitWindow),
+		resetConfirmIP:  ratelimit.New(resetConfirmPerIP, resetLimitWindow),
+		sessionByIP:     ratelimit.New(sessionPerIP, resetLimitWindow),
+		registerByIP:    ratelimit.New(registerPerIP, resetLimitWindow),
+		registerByEmail: ratelimit.New(registerPerEmail, resetLimitWindow),
+		verifyByIP:      ratelimit.New(verifyPerIP, resetLimitWindow),
 	}
 }
 
@@ -135,6 +146,8 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/health", h.health},
 		{http.MethodGet, "/ready", h.ready},
 		{http.MethodPost, "/api/v1/developers/register", h.registerDeveloper},
+		{http.MethodPost, "/api/v1/developers/register/verify", h.verifyRegistration},
+		{http.MethodPost, "/api/v1/developers/register/resend", h.resendRegistrationCode},
 		{http.MethodPost, "/api/v1/developers/login", h.loginDeveloper},
 		{http.MethodPost, "/api/v1/developers/password-reset", h.requestPasswordReset},
 		{http.MethodPost, "/api/v1/developers/password-reset/confirm", h.confirmPasswordReset},

@@ -134,6 +134,8 @@ services:
       PLATFORM_INTERNAL_TOKEN: ${PLATFORM_INTERNAL_TOKEN:-}
       # Password reset: the link points at the dashboard; without an SMTP host the email is written to the log (README "Password reset")
       PLATFORM_DASHBOARD_URL: ${PLATFORM_DASHBOARD_URL:-http://localhost:5173}
+      # true: registering needs the 6-digit code from the email (README "Email verification at registration")
+      PLATFORM_EMAIL_VERIFICATION: ${PLATFORM_EMAIL_VERIFICATION:-false}
       PLATFORM_SMTP_HOST: ${PLATFORM_SMTP_HOST:-}
       PLATFORM_SMTP_PORT: ${PLATFORM_SMTP_PORT:-587}
       PLATFORM_SMTP_USERNAME: ${PLATFORM_SMTP_USERNAME:-}

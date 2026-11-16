@@ -93,6 +93,9 @@ platform:
   developerRefreshTtl: 168h
   # Where the dashboard (Studio) runs. A password reset email links to <dashboardUrl>/reset-password.
   dashboardUrl: http://localhost:5173
+  # true: a new developer must enter a 6-digit code from an email before the account is created.
+  # Needs smtp below, and a Studio version that has the "enter the code" page.
+  emailVerification: false
   # The SMTP server that sends the password reset emails (STARTTLS). Its password is
   # secrets.smtpPassword. Empty host: nothing is sent, platform writes each email to its log.
   smtp:

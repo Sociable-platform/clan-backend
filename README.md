@@ -133,6 +133,36 @@ go run ./tools/devtoken -ttl -1m                              # already expired:
 
 Send it as `Authorization: Bearer <token>`. `go run ./tools/devtoken -h` lists all options.
 
+### Email verification at registration
+
+With `PLATFORM_EMAIL_VERIFICATION=true`, registering does not create an account straight away:
+
+1. `POST /api/v1/developers/register` checks the form, stores the registration as **pending** and emails a 6-digit code
+   to the address. It answers 202. There is no developer row yet.
+2. The dashboard's "enter the code" page sends the email and the code to `POST /api/v1/developers/register/verify`.
+   With the right code the developer is created (201) and can log in.
+3. `POST /api/v1/developers/register/resend` emails a new code when the first one did not arrive.
+
+Rules: the code works **once** and for **15 minutes**; the **fifth wrong code** cancels the registration; a new code is
+sent at most once a minute; registering again with the same address replaces the pending registration. A registration
+nobody confirms simply expires (`pending_registrations`), so there are no unverified accounts and a mistyped address
+is free again after 15 minutes. Limits, counted in platform's memory: 5 code emails per address and 20 per IP address
+in 15 minutes, 60 verify calls per IP address.
+
+Registering an address that **already has an account** answers the same 202 and creates nothing; that address gets
+an email saying someone tried to register with it. So with verification on, registration no longer tells who has an
+account (without it, the 409 `email_taken` does).
+
+The emails go through the same SMTP settings as the password reset. Without `PLATFORM_SMTP_HOST` the code is written to
+platform's log (`email not sent: no mail server is configured`), which is how you try it on your own machine.
+
+**Off (the default)**, register creates the account at once and answers 201, as it always did, and the two extra
+routes answer 404. Tests and `tools/e2e` rely on that.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PLATFORM_EMAIL_VERIFICATION` | `false` | `true`: a new developer must enter the emailed code before the account is created. |
+
 ### Developer sessions (refresh tokens)
 
 A developer login gives two things:
@@ -696,7 +726,9 @@ Only the developer's own switch counts here: a game suspended on its own does no
 |---|---|---|
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
-| POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
+| POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken`. With email verification on: 202, nothing created yet, a code is emailed (see "Email verification at registration"); 429 `rate_limited` |
+| POST | `/api/v1/developers/register/verify` | Email verification only (else 404). 201 with the new developer for `{ email, code }`; 400 `invalid_verification_code` (wrong, expired, unknown) or `verification_attempts_exceeded` (fifth wrong code, registration cancelled); 409 `email_taken` |
+| POST | `/api/v1/developers/register/resend` | Email verification only (else 404). 202 always; emails a new code when a registration is waiting for `{ email }`. 429 `rate_limited` (also within a minute of the last code) |
 | POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
 | POST | `/api/v1/developers/token/refresh` | 200 `{ token, expiresIn }` and a new refresh cookie, for the `clan_refresh` cookie that login set; the old refresh token stops working. 401 `invalid_refresh_token` when the session is over (no cookie, expired, logged out, password reset, or a replaced token used again, which ends that session) |
 | POST | `/api/v1/developers/logout` | 204 always; ends the session of the refresh cookie and clears the cookie. Other logins of the developer stay |

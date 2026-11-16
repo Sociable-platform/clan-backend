@@ -30,6 +30,9 @@ platform:
   # Password reset emails: the link opens Studio, and the email is sent from the project's Gmail
   # account. Its app password is secrets.smtpPassword in the secrets file, never here.
   dashboardUrl: https://studio.130-61-158-79.sslip.io
+  # Email verification at registration. Still off here: switch it to true only when the deployed
+  # Studio has the "enter the code" page, or nobody can finish registering.
+  emailVerification: false
   smtp:
     host: smtp.gmail.com
     port: 587
