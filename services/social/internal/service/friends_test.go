@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -349,15 +350,24 @@ func TestListFriendRequestsAndFriendsEmptyAreNotNil(t *testing.T) {
 }
 
 func TestListFriends(t *testing.T) {
+	const clanID = "c1a2b3c4-0000-4000-8000-000000000001"
 	store := newFriendStore()
-	store.friends = []repository.Friend{{FriendPlayer: repository.FriendPlayer{ID: otherID, DisplayName: "Aysel"}, Since: when}}
+	store.friends = []repository.Friend{
+		{FriendPlayer: repository.FriendPlayer{ID: otherID, DisplayName: "Aysel"}, Since: when,
+			Clan: &repository.FriendClan{ID: clanID, Name: "Wolves"}},
+		{FriendPlayer: repository.FriendPlayer{ID: me, DisplayName: "Nobody"}, Since: when}, // in no clan
+	}
 	svc, _ := friendService(store)
 	got, err := svc.ListFriends(context.Background(), gameA, "u_1", "Ali")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.player != me || len(got) != 1 || got[0] != (Friend{FriendPlayer{otherID, "Aysel"}, when}) {
-		t.Errorf("friends = %+v (store player %q)", got, store.player)
+	want := []Friend{
+		{FriendPlayer: FriendPlayer{otherID, "Aysel"}, Since: when, Clan: &FriendClan{ID: clanID, Name: "Wolves"}},
+		{FriendPlayer: FriendPlayer{me, "Nobody"}, Since: when},
+	}
+	if store.player != me || !reflect.DeepEqual(got, want) {
+		t.Errorf("friends = %+v (store player %q), want %+v", got, store.player, want)
 	}
 }
 

@@ -976,6 +976,10 @@ paths:
       description: |
         Returns the caller's friends in their game, sorted by name (ignoring upper/lower case).
         An empty list when the caller has no friends yet.
+
+        Each friend carries `clan`: the clan they are in now in the same game (`id`, `name`),
+        or `null` when they are in none, including after they left, were kicked, or their clan
+        was disbanded. It comes from the same query as the list, so no request per friend is needed.
       security:
         - playerToken: []
       responses:
@@ -990,6 +994,13 @@ paths:
                   - id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
                     displayName: Aysel
                     since: "2026-11-10T08:00:00Z"
+                    clan:
+                      id: 5f1e2d3c-4b5a-4968-8778-6a5b4c3d2e1f
+                      name: Wolves
+                  - id: 8c7b6a59-4837-4261-9504-a3b2c1d0e9f8
+                    displayName: Omar
+                    since: "2026-11-12T17:30:00Z"
+                    clan: null
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1576,6 +1587,34 @@ components:
           type: string
           format: date-time
           description: When the two became friends.
+    ListedFriend:
+      description: |
+        A friend in `GET /api/v1/friends`: a `Friend` plus the clan they are in now.
+        Accepting a request (and a request sent back) returns a plain `Friend`, without `clan`.
+      type: object
+      required: [id, displayName, since, clan]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The friend's player ID in the social service.
+        displayName:
+          type: string
+        since:
+          type: string
+          format: date-time
+          description: When the two became friends.
+        clan:
+          description: The friend's clan in the same game, or null when they are in none.
+          type: object
+          nullable: true
+          required: [id, name]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
     FriendList:
       type: object
       required: [friends]
@@ -1583,7 +1622,7 @@ components:
         friends:
           type: array
           items:
-            $ref: "#/components/schemas/Friend"
+            $ref: "#/components/schemas/ListedFriend"
     BlockedPlayer:
       type: object
       required: [id, displayName, since]

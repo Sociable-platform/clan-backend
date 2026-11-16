@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -284,6 +285,87 @@ func TestListFriendsSortedByName(t *testing.T) {
 	}
 	if got := friendsOf(t, r, game, newPlayer(t, r, game, "lonely")); got == nil || len(got) != 0 {
 		t.Errorf("player without friends: %v, want an empty list", got)
+	}
+}
+
+// clansOfFriends maps each of playerID's friends (by name) to their clan name, "" for none.
+func clansOfFriends(t *testing.T, r *Repository, gameID, playerID string) map[string]string {
+	t.Helper()
+	friends, err := r.ListFriends(context.Background(), gameID, playerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, f := range friends {
+		out[f.DisplayName] = ""
+		if f.Clan != nil {
+			if f.Clan.ID == "" {
+				t.Errorf("%s's clan %q has no ID", f.DisplayName, f.Clan.Name)
+			}
+			out[f.DisplayName] = f.Clan.Name
+		}
+	}
+	return out
+}
+
+func TestListFriendsCarriesTheirClan(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, otherGame := newGameID(t), newGameID(t)
+	defer cleanup(game, otherGame)
+	ctx := context.Background()
+	me := newPlayer(t, r, game, "me")
+	wolves, bears := ownClan(t, r, game, "Wolves"), ownClan(t, r, game, "Bears")
+	ownClan(t, r, otherGame, "Elsewhere") // another game's clans never show up
+	owner := ownerOf(t, r, wolves)
+	inClan := joinAs(t, r, game, wolves, "inClan")
+	leaver := joinAs(t, r, game, wolves, "leaver")
+	kicked := joinAs(t, r, game, wolves, "kicked")
+	bearsOwner := ownerOf(t, r, bears)
+	none := newPlayer(t, r, game, "none")
+	for _, p := range []string{owner, inClan, leaver, kicked, bearsOwner, none} {
+		makeFriends(t, r, game, me, p)
+	}
+
+	want := map[string]string{"owner_Wolves": "Wolves", "inClan": "Wolves", "leaver": "Wolves", "kicked": "Wolves",
+		"owner_Bears": "Bears", "none": ""}
+	if got := clansOfFriends(t, r, game, me); !reflect.DeepEqual(got, want) {
+		t.Fatalf("clans = %v, want %v", got, want)
+	}
+	friends, err := r.ListFriends(ctx, game, me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range friends {
+		if f.DisplayName == "inClan" && (f.Clan == nil || f.Clan.ID != wolves) {
+			t.Errorf("inClan's clan = %+v, want ID %s", f.Clan, wolves)
+		}
+	}
+
+	// leaving, a kick and a disband (the last member leaves) all end in "no clan"
+	if _, err := r.LeaveClan(ctx, game, wolves, "leaver"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.KickMember(ctx, game, wolves, "owner_Wolves", kicked, ownerOnly); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.LeaveClan(ctx, game, bears, "owner_Bears"); err != nil {
+		t.Fatal(err)
+	}
+	if clanExists(t, r, bears) {
+		t.Fatal("Bears should be disbanded when its only member leaves")
+	}
+	want = map[string]string{"owner_Wolves": "Wolves", "inClan": "Wolves", "leaver": "", "kicked": "",
+		"owner_Bears": "", "none": ""}
+	if got := clansOfFriends(t, r, game, me); !reflect.DeepEqual(got, want) {
+		t.Fatalf("after leave, kick and disband: clans = %v, want %v", got, want)
+	}
+
+	// joining another clan shows the new one
+	if _, err := r.JoinClan(ctx, game, wolves, leaver, testMaxMembers, "member"); err != nil {
+		t.Fatal(err)
+	}
+	if got := clansOfFriends(t, r, game, me)["leaver"]; got != "Wolves" {
+		t.Errorf("leaver after joining again: clan %q, want Wolves", got)
 	}
 }
 

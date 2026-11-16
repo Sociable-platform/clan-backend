@@ -45,6 +45,13 @@ type FriendRequests struct {
 type Friend struct {
 	FriendPlayer
 	Since time.Time
+	Clan  *FriendClan // set only by ListFriends: the friend's clan now, nil when they are in none
+}
+
+// FriendClan is the clan a friend is in.
+type FriendClan struct {
+	ID   string
+	Name string
 }
 
 // SendFriendRequestResult tells what SendFriendRequest did. Exactly one field is set.
@@ -179,8 +186,8 @@ func (s *Service) ListFriendRequests(ctx context.Context, gameID, externalID, di
 	return out, nil
 }
 
-// ListFriends returns the calling player's friends, sorted by name. The list is empty, never
-// nil, when there are none.
+// ListFriends returns the calling player's friends, sorted by name, each with the clan they
+// are in now (nil when none). The list is empty, never nil, when there are none.
 func (s *Service) ListFriends(ctx context.Context, gameID, externalID, displayName string) ([]Friend, error) {
 	me, err := s.EnsurePlayer(ctx, gameID, externalID, displayName)
 	if err != nil {
@@ -192,7 +199,11 @@ func (s *Service) ListFriends(ctx context.Context, gameID, externalID, displayNa
 	}
 	friends := make([]Friend, 0, len(rows))
 	for _, f := range rows {
-		friends = append(friends, Friend{FriendPlayer: FriendPlayer(f.FriendPlayer), Since: f.Since})
+		friend := Friend{FriendPlayer: FriendPlayer(f.FriendPlayer), Since: f.Since}
+		if f.Clan != nil {
+			friend.Clan = &FriendClan{ID: f.Clan.ID, Name: f.Clan.Name}
+		}
+		friends = append(friends, friend)
 	}
 	return friends, nil
 }

@@ -228,10 +228,26 @@ func TestAcceptFriendRequestHandler(t *testing.T) {
 }
 
 func TestListFriendsHandler(t *testing.T) {
-	svc := &friendService{friends: []service.Friend{{FriendPlayer: service.FriendPlayer{ID: friendID, DisplayName: "Aysel"}, Since: friendTime}}}
+	const clanID = "c1a2b3c4-0000-4000-8000-000000000001"
+	svc := &friendService{friends: []service.Friend{
+		{FriendPlayer: service.FriendPlayer{ID: friendID, DisplayName: "Aysel"}, Since: friendTime,
+			Clan: &service.FriendClan{ID: clanID, Name: "Wolves"}},
+		{FriendPlayer: service.FriendPlayer{ID: friendID, DisplayName: "Nobody"}, Since: friendTime},
+	}}
 	rec := callFriends(t, svc, http.MethodGet, "/api/v1/friends", "", false)
-	checkBody(t, rec, http.StatusOK, `{"friends":[{"id":"`+friendID+`","displayName":"Aysel","since":"2026-11-10T08:00:00Z"}]}`)
+	checkBody(t, rec, http.StatusOK, `{"friends":[`+
+		`{"id":"`+friendID+`","displayName":"Aysel","since":"2026-11-10T08:00:00Z","clan":{"id":"`+clanID+`","name":"Wolves"}},`+
+		`{"id":"`+friendID+`","displayName":"Nobody","since":"2026-11-10T08:00:00Z","clan":null}]}`)
 	svc.checkCaller(t)
+}
+
+// The friend returned by accept (and by a request sent back) carries no clan: the field
+// belongs to the list only.
+func TestAcceptedFriendHasNoClanField(t *testing.T) {
+	svc := &friendService{friend: service.Friend{FriendPlayer: service.FriendPlayer{ID: friendID, DisplayName: "Aysel"}, Since: friendTime,
+		Clan: &service.FriendClan{ID: "c1", Name: "Wolves"}}}
+	rec := callFriends(t, svc, http.MethodPost, "/api/v1/friends/requests/req-1/accept", "", false)
+	checkBody(t, rec, http.StatusOK, `{"id":"`+friendID+`","displayName":"Aysel","since":"2026-11-10T08:00:00Z"}`)
 }
 
 func TestFriendListsEmptyAreEmptyArrays(t *testing.T) {
