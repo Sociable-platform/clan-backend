@@ -144,14 +144,14 @@ func TestMessagesEndpoint(t *testing.T) {
 	env := newWSEnv(t, nil)
 	env.chat.page = func() (service.MessagePage, error) {
 		return service.MessagePage{Messages: []service.Message{{
-			ID: "0193a6c0-1111-7222-8333-944455556666", SenderID: u42, SenderName: "Name of u_42", Body: "gg",
+			ID: "0193a6c0-1111-7222-8333-944455556666", Kind: "text", SenderID: u42, SenderName: "Name of u_42", Body: "gg",
 			CreatedAt: time.Date(2026, 11, 9, 18, 20, 0, 0, time.UTC)}}, HasMore: true}, nil
 	}
 	resp, body := env.get(t, "/api/v1/conversations/"+convID+"/messages?before=0193a6c0-2222-7222-8333-944455556666&limit=20", bearer(env.playerToken(t)), "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d: %s", resp.StatusCode, body)
 	}
-	want := `{"messages":[{"id":"0193a6c0-1111-7222-8333-944455556666","senderId":"` + u42 + `","senderName":"Name of u_42","body":"gg","createdAt":"2026-11-09T18:20:00Z"}],"hasMore":true}`
+	want := `{"messages":[{"id":"0193a6c0-1111-7222-8333-944455556666","kind":"text","senderId":"` + u42 + `","senderName":"Name of u_42","body":"gg","createdAt":"2026-11-09T18:20:00Z"}],"hasMore":true}`
 	if strings.TrimSpace(string(body)) != want {
 		t.Errorf("body =\n%s\nwant\n%s", body, want)
 	}

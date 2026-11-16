@@ -47,12 +47,20 @@ type memStore struct {
 	readCalls []string
 
 	// the clan rooms (clans_test.go)
-	room        repository.ClanRoom // what JoinClanRoom returns
-	roomID      string              // what LeaveClanRoom and DeleteClanRoom return
-	roomFound   bool
-	roomMembers []string // what DeleteClanRoom returns
-	clanCalls   []string // "join game|clan|player|name", "leave game|clan|player", "delete game|clan"
-	clanErr     error
+	room         repository.ClanRoom // what JoinClanRoom returns
+	roomID       string              // what LeaveClanRoom and DeleteClanRoom return
+	roomFound    bool
+	roomMembers  []string // what DeleteClanRoom returns
+	roomLeft     bool     // what LeaveClanRoom returns as Left, with roomLeftName as Name
+	roomLeftName string
+	clanCalls    []string // "join game|clan|player|name", "leave game|clan|player", "delete game|clan"
+	clanErr      error
+
+	// the member lines (clans_test.go)
+	lines       []repository.MemberMessage // every InsertMemberMessage call, with its conversation in lineConvs
+	lineConvs   []string
+	lineMembers []string // what InsertMemberMessage returns
+	lineErr     error
 
 	// the handled events (once_test.go)
 	handled       map[string]bool // "game|event" of the events RunOnce recorded
@@ -151,7 +159,7 @@ func TestFriendAcceptedBuildsConversationAndNotifications(t *testing.T) {
 	last := time.Date(2026, 11, 9, 18, 20, 0, 0, time.FixedZone("x", 4*3600))
 	store := &memStore{dm: repository.DM{
 		ConversationID: "c-1",
-		LastMessage:    &repository.Message{ID: "m-1", SenderID: rashad, SenderName: "Rashad", Body: "gg", CreatedAt: last},
+		LastMessage:    &repository.Message{ID: "m-1", Kind: "text", SenderID: rashad, SenderName: "Rashad", Body: "gg", CreatedAt: last},
 		Unread:         map[string]int{ali: 1, rashad: 0},
 	}}
 	svc := New(store, WithPresence(onlineSet{ali: true}))
@@ -189,7 +197,7 @@ func TestFriendAcceptedBuildsConversationAndNotifications(t *testing.T) {
 	// The conversation object each player gets has their own unread count.
 	wantAli := `{"conversation":{"id":"c-1","kind":"dm","clanId":null,"members":[` +
 		`{"id":"` + ali + `","name":"Ali","online":true},{"id":"` + rashad + `","name":"Rashad","online":false}],` +
-		`"lastMessage":{"id":"m-1","senderId":"` + rashad + `","senderName":"Rashad","body":"gg","createdAt":"2026-11-09T14:20:00Z"},"unread":1}}`
+		`"lastMessage":{"id":"m-1","kind":"text","senderId":"` + rashad + `","senderName":"Rashad","body":"gg","createdAt":"2026-11-09T14:20:00Z"},"unread":1}}`
 	if s := mustJSON(t, pushes[0].Data); s != wantAli {
 		t.Errorf("conversation.added for Ali =\n%s\nwant\n%s", s, wantAli)
 	}
@@ -354,7 +362,7 @@ func TestFriendRemoved(t *testing.T) {
 	t.Run("both keep the DM, read-only, and get it again with presence hidden", func(t *testing.T) {
 		store := &memStore{readOnlyChanged: true, dm: repository.DM{
 			ConversationID: "c-1",
-			LastMessage:    &repository.Message{ID: "m-1", SenderID: rashad, SenderName: "Rashad", Body: "gg", CreatedAt: last},
+			LastMessage:    &repository.Message{ID: "m-1", Kind: "text", SenderID: rashad, SenderName: "Rashad", Body: "gg", CreatedAt: last},
 			Unread:         map[string]int{ali: 2, rashad: 0},
 		}}
 		// Both are online, but a read-only DM is not a friendship: nobody sees the other online.
@@ -375,7 +383,7 @@ func TestFriendRemoved(t *testing.T) {
 			}
 			want := `{"conversation":{"id":"c-1","kind":"dm","clanId":null,"members":[` +
 				`{"id":"` + rashad + `","name":"Rashad","online":false},{"id":"` + ali + `","name":"Ali","online":false}],` +
-				`"lastMessage":{"id":"m-1","senderId":"` + rashad + `","senderName":"Rashad","body":"gg","createdAt":"2026-11-09T18:20:00Z"},` +
+				`"lastMessage":{"id":"m-1","kind":"text","senderId":"` + rashad + `","senderName":"Rashad","body":"gg","createdAt":"2026-11-09T18:20:00Z"},` +
 				`"unread":` + p.unread + `,"readOnly":true}}`
 			if s := mustJSON(t, pushes[i].Data); s != want {
 				t.Errorf("push %d data =\n%s\nwant\n%s", i, s, want)
