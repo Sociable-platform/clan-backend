@@ -132,6 +132,20 @@ func TestBlocked(t *testing.T) {
 	}
 }
 
+func TestReadOnlyDMRefusesEverySend(t *testing.T) {
+	// A block ended the friendship (TEAM-283): nobody can send, whoever blocked whom, and the answer
+	// is not_friends for both, before the block check.
+	readOnly := &repository.ConversationInfo{Kind: "dm", Members: []string{ali, rashad}, ReadOnly: true}
+	store := &memStore{conv: readOnly, blocked: map[string]bool{rashad + "|" + ali: true}, members: []string{ali, rashad}}
+	_, err := chatWith(store, nil, newClock()).SendMessage(context.Background(), sender, convA, "hi")
+	if se := sendErr(t, err); se.Code != CodeNotFriends || se.Message == "" {
+		t.Fatalf("error = %+v, want not_friends", se)
+	}
+	if len(store.inserts) != 0 {
+		t.Error("stored in a read-only DM")
+	}
+}
+
 func TestMaxLength(t *testing.T) {
 	tests := []struct {
 		name   string

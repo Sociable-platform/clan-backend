@@ -370,6 +370,66 @@ func TestConversationsWithoutDatabase(t *testing.T) {
 	}
 }
 
+// The two stopped being friends, by a removal or a block (TEAM-283): the DM and both members stay, read-only;
+// it is not a friendship for presence or for sending, and becoming friends again opens it with the read positions kept.
+func TestMakeDMReadOnlyKeepsTheDMUntilFriendsAgain(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game := newUUID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	dm, err := r.UpsertDM(ctx, game, testKey, memberA, memberB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.addMessage(t, game, dm.ConversationID, "00000000-0000-7000-8000-000000000001", memberB.PlayerID, "Rashad", "gg")
+	if err := r.MarkRead(ctx, game, memberA.PlayerID, dm.ConversationID, "00000000-0000-7000-8000-000000000001"); err != nil {
+		t.Fatal(err)
+	}
+	r.addMessage(t, game, dm.ConversationID, "00000000-0000-7000-8000-000000000002", memberB.PlayerID, "Rashad", "still there?")
+
+	ro, changed, err := r.MakeDMReadOnly(ctx, game, testKey)
+	if err != nil || !changed || ro.ConversationID != dm.ConversationID || !ro.ReadOnly {
+		t.Fatalf("MakeDMReadOnly = %+v, %v, %v, want the conversation, read-only", ro, changed, err)
+	}
+	if ro.LastMessage == nil || ro.LastMessage.Body != "still there?" || ro.Unread[memberA.PlayerID] != 1 || ro.Unread[memberB.PlayerID] != 0 {
+		t.Fatalf("last %+v, unread %v", ro.LastMessage, ro.Unread)
+	}
+	// A redelivered friend.removed changes nothing and has nothing to tell.
+	if _, changed, err := r.MakeDMReadOnly(ctx, game, testKey); err != nil || changed {
+		t.Fatalf("second run = %v, %v, want unchanged", changed, err)
+	}
+	if n := r.countMembers(t, game, dm.ConversationID); n != 2 {
+		t.Fatalf("members = %d, want both kept", n)
+	}
+	if friends, err := r.FriendsOf(ctx, game, memberA.PlayerID); err != nil || len(friends) != 0 {
+		t.Errorf("FriendsOf = %v, %v, want none: a read-only DM is not a friendship", friends, err)
+	}
+	info, err := r.ConversationOf(ctx, game, dm.ConversationID, memberA.PlayerID)
+	if err != nil || !info.ReadOnly || info.Kind != "dm" {
+		t.Errorf("ConversationOf = %+v, %v, want a read-only dm", info, err)
+	}
+	list, err := r.ListConversations(ctx, game, memberB.PlayerID)
+	if err != nil || len(list) != 1 || !list[0].ReadOnly || len(list[0].Members) != 2 {
+		t.Errorf("ListConversations = %+v, %v, want the read-only DM with both members", list, err)
+	}
+	if _, changed, err := r.MakeDMReadOnly(ctx, game, memberA.PlayerID+":cccccccc-cccc-4ccc-8ccc-cccccccccccc"); err != nil || changed {
+		t.Errorf("unknown pair = %v, %v, want unchanged", changed, err)
+	}
+
+	// Friends again: the same conversation opens, the read position is kept (one unread, not two).
+	back, err := r.UpsertDM(ctx, game, testKey, memberA, memberB)
+	if err != nil || back.ConversationID != dm.ConversationID || back.ReadOnly || back.Unread[memberA.PlayerID] != 1 {
+		t.Fatalf("UpsertDM = %+v, %v, want the same conversation open with 1 unread for A", back, err)
+	}
+	if info, err := r.ConversationOf(ctx, game, dm.ConversationID, memberA.PlayerID); err != nil || info.ReadOnly {
+		t.Errorf("after friends again: %+v, %v, want not read-only", info, err)
+	}
+	if friends, err := r.FriendsOf(ctx, game, memberA.PlayerID); err != nil || len(friends) != 1 {
+		t.Errorf("after friends again: FriendsOf = %v, %v, want B", friends, err)
+	}
+}
+
 func TestFriendsOfListsOnlyDMPartnersOfThatGame(t *testing.T) {
 	r, cleanup := testRepo(t)
 	game, otherGame := newUUID(t), newUUID(t)

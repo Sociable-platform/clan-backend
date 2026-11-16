@@ -73,8 +73,8 @@ func (f *fakeEvents) FriendAccepted(_ context.Context, gameID, requestID string,
 	return f.record(gameID, "accepted "+requestID+" "+a.ID+"/"+a.Name+" "+b.ID+"/"+b.Name)
 }
 
-func (f *fakeEvents) FriendRemoved(_ context.Context, gameID, aID, bID, removedBy string) ([]service.Push, error) {
-	return f.record(gameID, "removed "+aID+" "+bID+" by "+removedBy)
+func (f *fakeEvents) FriendRemoved(_ context.Context, gameID string, a, b service.Player, removedBy string) ([]service.Push, error) {
+	return f.record(gameID, "removed "+a.ID+"/"+a.Name+" "+b.ID+"/"+b.Name+" by "+removedBy)
 }
 
 func (f *fakeEvents) PlayerRenamed(_ context.Context, gameID string, p service.Player) ([]service.Push, error) {
@@ -147,7 +147,7 @@ func TestDispatchRoutesEachEventToItsHandler(t *testing.T) {
 			"accepted  u-1/Emma u-2/Oliver"},
 		{"friend.removed",
 			`{"event_id":"e3","type":"friend.removed","game_id":"g-1","data":{"players":[{"id":"u-1","name":"Emma"},{"id":"u-2","name":"Oliver"}],"removed_by":"u-2"}}`,
-			"removed u-1 u-2 by u-2"},
+			"removed u-1/Emma u-2/Oliver by u-2"},
 		{"player.renamed",
 			`{"event_id":"e4","type":"player.renamed","game_id":"g-1","data":{"player":{"id":"u-1","name":"Alice Brown"}}}`,
 			"renamed u-1/Alice Brown"},
@@ -348,7 +348,7 @@ func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 		{"friend.accepted", events.New("friend.accepted", "g-1", map[string]any{"request_id": "r-1", "players": []map[string]any{alice, bob}}),
 			"accepted r-1 u-1/Alice u-2/Bob"},
 		{"friend.removed", events.New("friend.removed", "g-1", map[string]any{"players": []map[string]any{alice, bob}, "removed_by": "u-1"}),
-			"removed u-1 u-2 by u-1"},
+			"removed u-1/Alice u-2/Bob by u-1"},
 		// services/social/internal/service/clans.go
 		{"clan.created", events.New("clan.created", "g-1", map[string]any{"clan": wolves, "player": alice}),
 			"clan_created k-1 u-1/Alice"},
@@ -407,7 +407,7 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 		"friend.request_cancelled": "request_cancelled " + req + " " + alice + "/Alice -> " + bob,
 		"friend.request_declined":  "request_declined " + req + " " + alice + "/Alice -> " + bob,
 		"friend.accepted":          "accepted " + req + " " + emma + "/Emma " + oliver + "/Oliver",
-		"friend.removed":           "removed " + emma + " " + oliver + " by " + emma,
+		"friend.removed":           "removed " + emma + "/Emma " + oliver + "/Oliver by " + emma,
 		"player.renamed":           "renamed " + alice + "/Alice Brown",
 		"clan.created":             "clan_created " + wolves + " " + alice + "/Alice",
 		"clan.member_joined":       "clan_joined " + wolves + " " + bob + "/Bob",

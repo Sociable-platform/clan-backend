@@ -75,6 +75,23 @@ func TestConversationsBuildsTheListForTheReader(t *testing.T) {
 	}
 }
 
+func TestConversationsReadOnlyDMHidesPresence(t *testing.T) {
+	// A block ended the friendship (TEAM-283): the DM is listed with readOnly, and nobody shows as online.
+	store := &memStore{convs: []repository.PlayerConversation{
+		{ID: conv1, Kind: "dm", Members: []repository.Member{{PlayerID: ali, Name: "Ali"}, {PlayerID: rashad, Name: "Rashad"}}, ReadOnly: true},
+	}}
+	got, err := New(store, WithPresence(onlineSet{ali: true, rashad: true})).Conversations(context.Background(), reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"id":"` + conv1 + `","kind":"dm","clanId":null,"members":[` +
+		`{"id":"` + ali + `","name":"Ali","online":false},{"id":"` + rashad + `","name":"Rashad","online":false}],` +
+		`"lastMessage":null,"unread":0,"readOnly":true}]`
+	if s := mustJSON(t, got); s != want {
+		t.Errorf("conversations =\n%s\nwant\n%s", s, want)
+	}
+}
+
 func TestConversationsWithNoneIsAnEmptyListNotNull(t *testing.T) {
 	got, err := New(&memStore{}).Conversations(context.Background(), reader)
 	if err != nil || got == nil || mustJSON(t, got) != "[]" {

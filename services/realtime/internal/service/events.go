@@ -34,6 +34,7 @@ const (
 	frameNotification        = "notification"
 	frameConversationAdded   = "conversation.added"
 	frameConversationRemoved = "conversation.removed"
+	frameConversationUpdated = "conversation.updated"
 	framePresenceUpdate      = "presence.update"
 
 	kindDM   = "dm"
@@ -66,6 +67,7 @@ type Conversation struct {
 	Members     []ConversationMember `json:"members"`
 	LastMessage *Message             `json:"lastMessage"`
 	Unread      int                  `json:"unread"`
+	ReadOnly    bool                 `json:"readOnly,omitempty"` // only on a DM whose two players are not friends any more: nobody can send
 }
 
 // ConversationMember is one member of a Conversation.
@@ -208,43 +210,49 @@ func (s *Service) FriendAccepted(ctx context.Context, gameID, requestID string, 
 	return pushes, nil
 }
 
-// FriendRemoved handles friend.removed: both players stop being members of their DM
-// conversation and get conversation.removed. The messages stay. When the game has no DM for the
-// pair (the accept was never seen) there is nothing to do.
-// removedBy is the player who removed the other; it must be one of the two. Nobody is told who it
-// was: the conversation just disappears from both lists.
-func (s *Service) FriendRemoved(ctx context.Context, gameID, aID, bID, removedBy string) ([]Push, error) {
+// FriendRemoved handles friend.removed: the two players stopped being friends, because one removed
+// or blocked the other (TEAM-283). Both keep their DM and its history, read-only: nobody can send in
+// it (not_friends), and it is not a friendship any more, so no presence goes either way. Each player
+// gets conversation.updated with the conversation, readOnly set and both members offline. Nobody is
+// told who ended it, and there is no notification. friend.accepted opens it again.
+// removedBy is the player who removed the other; it must be one of the two. Without a DM for the pair
+// (the accept was never seen), or for a redelivered event, there is nothing to send.
+func (s *Service) FriendRemoved(ctx context.Context, gameID string, a, b Player, removedBy string) ([]Push, error) {
 	gameID, err := cleanID("game_id", gameID)
 	if err != nil {
 		return nil, err
 	}
-	if aID, err = cleanID("players[0].id", aID); err != nil {
+	if a, err = cleanPlayer("players[0]", a); err != nil {
 		return nil, err
 	}
-	if bID, err = cleanID("players[1].id", bID); err != nil {
+	if b, err = cleanPlayer("players[1]", b); err != nil {
 		return nil, err
 	}
-	if aID == bID {
+	if a.ID == b.ID {
 		return nil, invalid("a player cannot be a friend of themselves")
 	}
 	if removedBy, err = cleanID("removed_by", removedBy); err != nil {
 		return nil, err
 	}
-	if removedBy != aID && removedBy != bID {
+	if removedBy != a.ID && removedBy != b.ID {
 		return nil, invalid("removed_by is not one of the two players")
 	}
 
-	id, found, err := s.store.RemoveDMMembers(ctx, gameID, dmKey(aID, bID))
+	dm, changed, err := s.store.MakeDMReadOnly(ctx, gameID, dmKey(a.ID, b.ID))
 	if err != nil {
 		return nil, fmt.Errorf("friend removed: %w", err)
 	}
-	if !found {
+	if !changed {
 		return nil, nil
 	}
-	return []Push{{
-		GameID: gameID, PlayerIDs: []string{aID, bID}, Type: frameConversationRemoved,
-		Data: map[string]any{"conversationId": id},
-	}}, nil
+	pushes := make([]Push, 0, 2)
+	for _, p := range []Player{a, b} {
+		pushes = append(pushes, Push{
+			GameID: gameID, PlayerIDs: []string{p.ID}, Type: frameConversationUpdated,
+			Data: map[string]any{"conversation": s.dmConversation(gameID, dm, a, b, dm.Unread[p.ID])},
+		})
+	}
+	return pushes, nil
 }
 
 // PlayerRenamed handles player.renamed: the new name replaces the one stored with the player's
@@ -310,14 +318,17 @@ func cleanBlock(gameID, blockerID, blockedID string) (string, string, string, er
 
 // dmConversation builds the conversation object for a freshly upserted DM.
 func (s *Service) dmConversation(gameID string, dm repository.DM, a, b Player, unread int) Conversation {
+	// A read-only DM is not a friendship: its members' presence is not shown (always offline).
+	online := func(id string) bool { return !dm.ReadOnly && s.online(gameID, id) }
 	c := Conversation{
 		ID:   dm.ConversationID,
 		Kind: kindDM,
 		Members: []ConversationMember{
-			{ID: a.ID, Name: a.Name, Online: s.online(gameID, a.ID)},
-			{ID: b.ID, Name: b.Name, Online: s.online(gameID, b.ID)},
+			{ID: a.ID, Name: a.Name, Online: online(a.ID)},
+			{ID: b.ID, Name: b.Name, Online: online(b.ID)},
 		},
-		Unread: unread,
+		Unread:   unread,
+		ReadOnly: dm.ReadOnly,
 	}
 	if m := dm.LastMessage; m != nil {
 		c.LastMessage = &Message{ID: m.ID, SenderID: m.SenderID, SenderName: m.SenderName, Body: m.Body, CreatedAt: m.CreatedAt.UTC()}

@@ -18,8 +18,9 @@ type Store interface {
 	Ping(ctx context.Context) error
 	// UpsertDM makes the DM conversation of the pair and both memberships; safe to repeat.
 	UpsertDM(ctx context.Context, gameID, dmKey string, a, b repository.Member) (repository.DM, error)
-	// RemoveDMMembers deletes both memberships; safe to repeat. found is false without such a conversation.
-	RemoveDMMembers(ctx context.Context, gameID, dmKey string) (conversationID string, found bool, err error)
+	// MakeDMReadOnly keeps both memberships and marks the DM read-only (the two are not friends any more).
+	// changed is false without such a conversation or when it already was read-only. UpsertDM opens it again.
+	MakeDMReadOnly(ctx context.Context, gameID, dmKey string) (dm repository.DM, changed bool, err error)
 	// JoinClanRoom makes the clan's conversation and the player's membership; safe to repeat.
 	JoinClanRoom(ctx context.Context, gameID, clanID string, m repository.Member) (repository.ClanRoom, error)
 	// LeaveClanRoom deletes the player's membership; safe to repeat. found is false without a room for the clan.
