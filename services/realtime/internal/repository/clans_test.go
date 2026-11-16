@@ -450,3 +450,84 @@ func TestMemberMessagesAreStoredButNeverUnread(t *testing.T) {
 		t.Errorf("last message = %+v (%v), want the sent one, as text", last, err)
 	}
 }
+
+// A member_kicked line keeps who removed the player: in the history, as the last message of the
+// conversation list and of a room, and nowhere else. The table refuses kicked_by on any other message.
+func TestMemberKickedLineKeepsWhoRemovedThePlayer(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, clan := newUUID(t), newUUID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+
+	room, err := r.JoinClanRoom(ctx, game, clan, memberA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv := room.ConversationID
+	if _, err := r.JoinClanRoom(ctx, game, clan, memberB); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.LeaveClanRoom(ctx, game, clan, memberB.PlayerID); err != nil {
+		t.Fatal(err)
+	}
+
+	byAli := &Member{PlayerID: memberA.PlayerID, Name: "Ali"}
+	if _, err := r.InsertMemberMessage(ctx, game, conv, MemberMessage{ID: mid(1), Kind: "member_kicked", PlayerID: memberB.PlayerID, PlayerName: "Rashad", CreatedAt: at, KickedBy: byAli}); err != nil {
+		t.Fatal(err)
+	}
+	// An event that did not name the kicker: the line has none.
+	if _, err := r.InsertMemberMessage(ctx, game, conv, MemberMessage{ID: mid(2), Kind: "member_kicked", PlayerID: memberC.PlayerID, PlayerName: "Emma", CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.InsertMemberMessage(ctx, game, conv, MemberMessage{ID: mid(3), Kind: "member_left", PlayerID: memberC.PlayerID, PlayerName: "Emma", CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, _, err := r.ListMessages(ctx, game, memberA.PlayerID, conv, "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("history has %d messages, want 3", len(msgs))
+	}
+	// Newest first: member_left, kicked without a kicker, kicked by Ali.
+	if msgs[0].KickedBy != nil || msgs[1].KickedBy != nil {
+		t.Errorf("kickedBy = %+v, %+v; want none on a leave and on a kick the event did not explain", msgs[0].KickedBy, msgs[1].KickedBy)
+	}
+	if k := msgs[2].KickedBy; k == nil || *k != *byAli || msgs[2].Kind != "member_kicked" {
+		t.Errorf("the kick = %+v kickedBy %+v, want member_kicked by Ali", msgs[2], k)
+	}
+
+	// The last message of the conversation list and of the room carries it too.
+	if _, err := r.InsertMemberMessage(ctx, game, conv, MemberMessage{ID: mid(4), Kind: "member_kicked", PlayerID: memberB.PlayerID, PlayerName: "Rashad", CreatedAt: at, KickedBy: byAli}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := r.ListConversations(ctx, game, memberA.PlayerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].LastMessage == nil || list[0].LastMessage.KickedBy == nil || *list[0].LastMessage.KickedBy != *byAli {
+		t.Errorf("list = %+v, want the kick as the last message, by Ali", list)
+	}
+	again, err := r.JoinClanRoom(ctx, game, clan, memberA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.LastMessage == nil || again.LastMessage.KickedBy == nil || *again.LastMessage.KickedBy != *byAli {
+		t.Errorf("room last message = %+v, want the kick, by Ali", again.LastMessage)
+	}
+
+	// The table keeps it honest: only a member_kicked has a kicker, and id and name come together.
+	if _, err := r.InsertMemberMessage(ctx, game, conv, MemberMessage{ID: mid(5), Kind: "member_left", PlayerID: memberB.PlayerID, PlayerName: "Rashad", CreatedAt: at, KickedBy: byAli}); err == nil {
+		t.Error("a member_left with a kicker was stored")
+	}
+	if _, err := r.pool.Exec(ctx, `insert into messages (id, conversation_id, game_id, kind, sender_id, sender_name, body, kicked_by_id)
+		values ($1, $2, $3, 'member_kicked', $4, 'Rashad', '', $5)`, mid(6), conv, game, memberB.PlayerID, memberA.PlayerID); err == nil {
+		t.Error("a kicker id without a name was stored")
+	}
+	if _, err := r.pool.Exec(ctx, `insert into messages (id, conversation_id, game_id, kind, sender_id, sender_name, body, kicked_by_id, kicked_by_name)
+		values ($1, $2, $3, 'text', $4, 'Ali', 'hi', $4, 'Ali')`, mid(7), conv, game, memberA.PlayerID); err == nil {
+		t.Error("a text message with a kicker was stored")
+	}
+}

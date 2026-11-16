@@ -51,7 +51,7 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 		return err
 	}
 	start = time.Now()
-	joined1, err := s.expectMemberLine(start, room.ID, "member_joined", b, a, b)
+	joined1, err := s.expectMemberLine(start, room.ID, "member_joined", b, nil, a, b)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	if _, err := b.ws.expect(start.Add(s.cfg.deadline), "conversation.removed", ofConversationRemoved(room.ID)); err != nil {
 		return err
 	}
-	left, err := s.expectMemberLine(start, room.ID, "member_left", b, a)
+	left, err := s.expectMemberLine(start, room.ID, "member_left", b, nil, a)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	if err != nil {
 		return err
 	}
-	joined2, err := s.expectMemberLine(start, room.ID, "member_joined", b, a, b)
+	joined2, err := s.expectMemberLine(start, room.ID, "member_joined", b, nil, a, b)
 	if err != nil {
 		return err
 	}
@@ -145,10 +145,10 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	if _, err := b.ws.expect(start.Add(s.cfg.deadline), "clan_kicked notification", ofClanNotification("clan_kicked", clan.ID)); err != nil {
 		return err
 	}
-	if _, err := s.expectMemberLine(start, room.ID, "member_kicked", b, a); err != nil {
+	if _, err := s.expectMemberLine(start, room.ID, "member_kicked", b, a, a); err != nil {
 		return err
 	}
-	pass(b.name+" was kicked: conversation.removed and clan_kicked, and "+a.name+" got the member_kicked line", time.Since(start))
+	pass(b.name+" was kicked: conversation.removed and clan_kicked, and "+a.name+" got the member_kicked line, kickedBy "+a.name, time.Since(start))
 
 	// a, the last member, leaves: the clan is disbanded.
 	start = time.Now()
@@ -166,8 +166,10 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 }
 
 // expectMemberLine waits until every player in to got the message.new member line of kind about
-// subject in the room, checks it (subject as sender, empty body) and returns its ID.
-func (s *scenario) expectMemberLine(start time.Time, roomID, kind string, subject *player, to ...*player) (string, error) {
+// subject in the room, checks it (subject as sender, empty body) and returns its ID. by is who removed
+// subject, for a member_kicked line: the line must name them as kickedBy. For any other line by is nil
+// and the line must have no kickedBy.
+func (s *scenario) expectMemberLine(start time.Time, roomID, kind string, subject, by *player, to ...*player) (string, error) {
 	var id string
 	for _, p := range to {
 		f, err := p.ws.expect(start.Add(s.cfg.deadline), kind+" line", ofMemberLine(roomID, kind))
@@ -179,10 +181,20 @@ func (s *scenario) expectMemberLine(start time.Time, roomID, kind string, subjec
 				ID       string `json:"id"`
 				SenderID string `json:"senderId"`
 				Body     string `json:"body"`
+				KickedBy *struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"kickedBy"`
 			} `json:"message"`
 		}
 		if err := json.Unmarshal(f.Data, &line); err != nil {
 			return "", fmt.Errorf("%s: read the %s line: %w", p.name, kind, err)
+		}
+		switch k := line.Message.KickedBy; {
+		case by == nil && k != nil:
+			return "", fmt.Errorf("%s: the %s line has kickedBy %+v, want none", p.name, kind, *k)
+		case by != nil && (k == nil || k.ID != by.socialID || k.Name != by.name):
+			return "", fmt.Errorf("%s: the %s line has kickedBy %+v, want %s (%s)", p.name, kind, k, by.name, by.socialID)
 		}
 		if line.Message.SenderID != subject.socialID || line.Message.Body != "" {
 			return "", fmt.Errorf("%s: the %s line is %+v, want %s as the sender and an empty body", p.name, kind, line.Message, subject.name)

@@ -190,43 +190,64 @@ func TestClanMemberJoinedWritesOneJoinedLine(t *testing.T) {
 func TestClanMemberLeft(t *testing.T) {
 	removed := `{"conversationId":"c-9"}`
 	kickedNote := `{"kind":"clan_kicked","payload":{"clanId":"` + wolves + `"}}`
-	line := func(kind string) string {
+	// line is the message.new data of a member line about Rashad; byAli adds who removed him.
+	line := func(kind string, byAli bool) string {
+		by := ""
+		if byAli {
+			by = `,"kickedBy":{"id":"` + ali + `","name":"Ali"}`
+		}
 		return `{"conversationId":"c-9","message":{"id":"` + lineID + `","kind":"` + kind + `","senderId":"` + rashad +
-			`","senderName":"Rashad","body":"","createdAt":"2026-11-10T08:00:00Z"}}`
+			`","senderName":"Rashad","body":"","createdAt":"2026-11-10T08:00:00Z"` + by + `}}`
 	}
+	aliRef := &Player{ID: ali, Name: "Ali"}
 	tests := []struct {
 		name      string
 		found     bool
 		left      bool     // the player was a member
 		stay      []string // the members after the leave
 		kicked    bool
+		by        *Player  // kicked_by of the event
 		want      []string // "type to data"
 		wantLines []string // kinds of the stored member lines
+		wantBy    *Player  // who the stored line says removed the player
 	}{
-		{"left", true, true, []string{ali, emma}, false, []string{
+		{name: "left", found: true, left: true, stay: []string{ali, emma}, want: []string{
 			"conversation.removed " + rashad + " " + removed,
-			"message.new " + ali + "," + emma + " " + line("member_left"),
-		}, []string{"member_left"}},
-		{"kicked", true, true, []string{ali}, true, []string{
+			"message.new " + ali + "," + emma + " " + line("member_left", false),
+		}, wantLines: []string{"member_left"}},
+		{name: "kicked by Ali", found: true, left: true, stay: []string{ali}, kicked: true, by: aliRef, want: []string{
 			"conversation.removed " + rashad + " " + removed,
 			"notification " + rashad + " " + kickedNote,
-			"message.new " + ali + " " + line("member_kicked"),
-		}, []string{"member_kicked"}},
-		{"left again: not a member any more, no second line", true, false, []string{ali}, false, []string{
+			"message.new " + ali + " " + line("member_kicked", true),
+		}, wantLines: []string{"member_kicked"}, wantBy: aliRef},
+		{name: "kicked by nobody the event names: the line has no kickedBy", found: true, left: true, stay: []string{ali}, kicked: true, want: []string{
 			"conversation.removed " + rashad + " " + removed,
-		}, nil},
-		{"left with nobody staying: the line is stored, nobody to tell", true, true, nil, false, []string{
-			"conversation.removed " + rashad + " " + removed,
-		}, []string{"member_left"}},
-		{"left a clan realtime has no room for", false, false, nil, false, nil, nil},
-		{"kicked from a clan realtime has no room for still hears it", false, false, nil, true, []string{
 			"notification " + rashad + " " + kickedNote,
-		}, nil},
+			"message.new " + ali + " " + line("member_kicked", false),
+		}, wantLines: []string{"member_kicked"}},
+		{name: "a leave never names a kicker, even if the event carries one", found: true, left: true, stay: []string{ali}, by: aliRef, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+			"message.new " + ali + " " + line("member_left", false),
+		}, wantLines: []string{"member_left"}},
+		{name: "left again: not a member any more, no second line", found: true, stay: []string{ali}, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+		}},
+		{name: "kicked again: not a member any more, no second line", found: true, stay: []string{ali}, kicked: true, by: aliRef, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+			"notification " + rashad + " " + kickedNote,
+		}},
+		{name: "left with nobody staying: the line is stored, nobody to tell", found: true, left: true, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+		}, wantLines: []string{"member_left"}},
+		{name: "left a clan realtime has no room for"},
+		{name: "kicked from a clan realtime has no room for still hears it", kicked: true, by: aliRef, want: []string{
+			"notification " + rashad + " " + kickedNote,
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &memStore{roomID: "c-9", roomFound: tt.found, roomLeft: tt.left, roomLeftName: "Rashad", lineMembers: tt.stay}
-			pushes, err := New(store, WithIDs(fixedIDs{id: lineID, at: testNow})).ClanMemberLeft(context.Background(), game, wolves, rashad, tt.kicked)
+			pushes, err := New(store, WithIDs(fixedIDs{id: lineID, at: testNow})).ClanMemberLeft(context.Background(), game, wolves, rashad, tt.kicked, tt.by)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -238,6 +259,12 @@ func TestClanMemberLeft(t *testing.T) {
 				// The name is the one the player had in the room.
 				if l.PlayerID != rashad || l.PlayerName != "Rashad" || store.lineConvs[i] != game+"|c-9" {
 					t.Errorf("member line = %+v in %s, want Rashad's in c-9", l, store.lineConvs[i])
+				}
+				switch {
+				case tt.wantBy == nil && l.KickedBy != nil:
+					t.Errorf("the line says %+v removed the player, want nobody", *l.KickedBy)
+				case tt.wantBy != nil && (l.KickedBy == nil || l.KickedBy.PlayerID != tt.wantBy.ID || l.KickedBy.Name != tt.wantBy.Name):
+					t.Errorf("the line says %+v removed the player, want %+v", l.KickedBy, *tt.wantBy)
 				}
 				kinds = append(kinds, l.Kind)
 			}
@@ -266,7 +293,7 @@ func TestClanMemberLinesPassStoreErrorsOn(t *testing.T) {
 			return s.ClanMemberJoined(context.Background(), game, wolves, Player{ID: rashad, Name: "Rashad"})
 		},
 		"left": func(s *Service) ([]Push, error) {
-			return s.ClanMemberLeft(context.Background(), game, wolves, rashad, false)
+			return s.ClanMemberLeft(context.Background(), game, wolves, rashad, false, nil)
 		},
 	}
 	for name, call := range calls {
@@ -340,10 +367,16 @@ func TestClanEventsRefuseBadData(t *testing.T) {
 		}},
 		{"joined: clan missing", func(s *Service) ([]Push, error) { return s.ClanMemberJoined(context.Background(), game, "", ok) }},
 		{"left: player is not a UUID", func(s *Service) ([]Push, error) {
-			return s.ClanMemberLeft(context.Background(), game, wolves, "", false)
+			return s.ClanMemberLeft(context.Background(), game, wolves, "", false, nil)
 		}},
 		{"left: clan is not a UUID", func(s *Service) ([]Push, error) {
-			return s.ClanMemberLeft(context.Background(), game, "x", ali, true)
+			return s.ClanMemberLeft(context.Background(), game, "x", ali, true, nil)
+		}},
+		{"left: kicked_by is not a player", func(s *Service) ([]Push, error) {
+			return s.ClanMemberLeft(context.Background(), game, wolves, ali, true, &Player{ID: "u-1", Name: "Emma"})
+		}},
+		{"left: kicked_by has no name", func(s *Service) ([]Push, error) {
+			return s.ClanMemberLeft(context.Background(), game, wolves, ali, true, &Player{ID: emma, Name: " "})
 		}},
 		{"disbanded: clan is not a UUID", func(s *Service) ([]Push, error) { return s.ClanDisbanded(context.Background(), game, "x") }},
 		{"disbanded: game is not a UUID", func(s *Service) ([]Push, error) { return s.ClanDisbanded(context.Background(), "", wolves) }},
@@ -370,7 +403,7 @@ func TestClanEventsPassStoreErrorsOn(t *testing.T) {
 		"created": func(s *Service) ([]Push, error) { return s.ClanCreated(context.Background(), game, wolves, p) },
 		"joined":  func(s *Service) ([]Push, error) { return s.ClanMemberJoined(context.Background(), game, wolves, p) },
 		"left": func(s *Service) ([]Push, error) {
-			return s.ClanMemberLeft(context.Background(), game, wolves, ali, true)
+			return s.ClanMemberLeft(context.Background(), game, wolves, ali, true, nil)
 		},
 		"disbanded": func(s *Service) ([]Push, error) { return s.ClanDisbanded(context.Background(), game, wolves) },
 	}

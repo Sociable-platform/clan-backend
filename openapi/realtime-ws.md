@@ -331,6 +331,9 @@ translate it.
   `lastMessage`. Only a new membership writes one: a repeated `clan.member_joined` writes no second line.
 - `member_left` (`member_kicked` when the reason is `kicked`) goes to the members who stay. The player who left gets
   `conversation.removed` as before, not the line.
+- A `member_kicked` line also has `kickedBy: { id, name }`: the player who removed them (the name they had at the
+  time), so the widget can write "Bob was removed by Alice". It is there when Social's event said who; every other
+  message, `member_left` included, has no `kickedBy` field at all. An SDK that does not know it ignores it.
 - The clan owner's room (`clan.created`) starts without a line.
 - Member lines are never unread: `unread` counts `text` messages only, and a member line gives nobody a badge.
 - Players cannot send them: `message.send` always stores `text`.
@@ -348,6 +351,12 @@ An SDK that does not know a `kind` should skip the message rather than show it a
     "message": { "id": "0193a6bd-...", "kind": "member_left", "senderId": "5a2b3c4d-...", "senderName": "Rashad", "body": "", "createdAt": "2026-11-09T18:22:10.006Z" }
   }
 }
+```
+
+A kick has the same shape with `kind` `member_kicked` and the kicker:
+
+```json
+"message": { "id": "0193a6c3-...", "kind": "member_kicked", "senderId": "5a2b3c4d-...", "senderName": "Rashad", "body": "", "createdAt": "2026-11-09T18:22:10.006Z", "kickedBy": { "id": "7f1e0c2a-...", "name": "Ali" } }
 ```
 
 ### `config.updated`

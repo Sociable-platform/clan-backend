@@ -49,7 +49,7 @@ func (s *Service) ClanMemberJoined(ctx context.Context, gameID, clanID string, p
 	}
 	var line *Push
 	if room.Joined {
-		msg, push, err := s.memberLine(ctx, gameID, room.ConversationID, MessageMemberJoined, p)
+		msg, push, err := s.memberLine(ctx, gameID, room.ConversationID, MessageMemberJoined, p, nil)
 		if err != nil {
 			return nil, fmt.Errorf("clan member joined: %w", err)
 		}
@@ -84,15 +84,24 @@ func (s *Service) ClanMemberJoined(ctx context.Context, gameID, clanID string, p
 // for the clan, because the player was removed from the clan all the same.
 //
 // When the player was a member, a member_left line (member_kicked when kicked) with the name they had
-// in the room is stored, and the members who stay get it as message.new. Running it again finds no
-// membership, so it writes no second line.
-func (s *Service) ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool) ([]Push, error) {
+// in the room is stored, and the members who stay get it as message.new. A member_kicked line also
+// names who removed the player (kickedBy) when by is not nil; by is ignored when kicked is false.
+// Running it again finds no membership, so it writes no second line.
+func (s *Service) ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool, by *Player) ([]Push, error) {
 	gameID, clanID, err := cleanClan(gameID, clanID)
 	if err != nil {
 		return nil, err
 	}
 	if playerID, err = cleanID("player.id", playerID); err != nil {
 		return nil, err
+	}
+	var kickedBy *Player
+	if kicked && by != nil {
+		p, err := cleanPlayer("kicked_by", *by)
+		if err != nil {
+			return nil, err
+		}
+		kickedBy = &p
 	}
 	leave, found, err := s.store.LeaveClanRoom(ctx, gameID, clanID, playerID)
 	if err != nil {
@@ -104,7 +113,7 @@ func (s *Service) ClanMemberLeft(ctx context.Context, gameID, clanID, playerID s
 		if kicked {
 			kind = MessageMemberKicked
 		}
-		_, line, err = s.memberLine(ctx, gameID, leave.ConversationID, kind, Player{ID: playerID, Name: leave.Name})
+		_, line, err = s.memberLine(ctx, gameID, leave.ConversationID, kind, Player{ID: playerID, Name: leave.Name}, kickedBy)
 		if err != nil {
 			return nil, fmt.Errorf("clan member left: %w", err)
 		}
@@ -178,16 +187,21 @@ func (s *Service) clanRoomAdded(gameID, clanID string, room repository.ClanRoom,
 }
 
 // memberLine stores a member line of kind about p in the clan room, and returns it as stored and the
-// message.new frame for the room's members now. The push is nil when nobody is left to tell.
-func (s *Service) memberLine(ctx context.Context, gameID, conversationID, kind string, p Player) (*repository.Message, *Push, error) {
+// message.new frame for the room's members now. The push is nil when nobody is left to tell. kickedBy
+// is who removed p, for a member_kicked line; nil for every other.
+func (s *Service) memberLine(ctx context.Context, gameID, conversationID, kind string, p Player, kickedBy *Player) (*repository.Message, *Push, error) {
 	id, at := s.ids.New()
+	var by *repository.Member
+	if kickedBy != nil {
+		by = &repository.Member{PlayerID: kickedBy.ID, Name: kickedBy.Name}
+	}
 	members, err := s.store.InsertMemberMessage(ctx, gameID, conversationID, repository.MemberMessage{
-		ID: id, Kind: kind, PlayerID: p.ID, PlayerName: p.Name, CreatedAt: at,
+		ID: id, Kind: kind, PlayerID: p.ID, PlayerName: p.Name, CreatedAt: at, KickedBy: by,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	stored := &repository.Message{ID: id, Kind: kind, SenderID: p.ID, SenderName: p.Name, CreatedAt: at}
+	stored := &repository.Message{ID: id, Kind: kind, SenderID: p.ID, SenderName: p.Name, CreatedAt: at, KickedBy: by}
 	if len(members) == 0 {
 		return stored, nil, nil
 	}

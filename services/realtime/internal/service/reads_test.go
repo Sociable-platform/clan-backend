@@ -231,3 +231,37 @@ func TestMarkRead(t *testing.T) {
 		}
 	})
 }
+
+// kickedBy is on a member_kicked message that has it, and nowhere else: not as null, not at all.
+func TestMessagesNameWhoRemovedThePlayerOnlyOnAKick(t *testing.T) {
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	kicked := repository.Message{ID: "m-3", Kind: "member_kicked", SenderID: rashad, SenderName: "Rashad", CreatedAt: at,
+		KickedBy: &repository.Member{PlayerID: ali, Name: "Ali"}}
+	kickedUnknown := repository.Message{ID: "m-2", Kind: "member_kicked", SenderID: rashad, SenderName: "Rashad", CreatedAt: at}
+	text := repository.Message{ID: "m-1", Kind: "text", SenderID: ali, SenderName: "Ali", Body: "gg", CreatedAt: at}
+
+	for name, tt := range map[string]struct {
+		in   repository.Message
+		want string
+	}{
+		"a kick that names who": {kicked, `{"id":"m-3","kind":"member_kicked","senderId":"` + rashad + `","senderName":"Rashad","body":"","createdAt":"2026-11-17T09:00:00Z","kickedBy":{"id":"` + ali + `","name":"Ali"}}`},
+		"a kick that does not":  {kickedUnknown, `{"id":"m-2","kind":"member_kicked","senderId":"` + rashad + `","senderName":"Rashad","body":"","createdAt":"2026-11-17T09:00:00Z"}`},
+		"a text":                {text, `{"id":"m-1","kind":"text","senderId":"` + ali + `","senderName":"Ali","body":"gg","createdAt":"2026-11-17T09:00:00Z"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := mustJSON(t, toMessage(&tt.in)); got != tt.want {
+				t.Errorf("message = %s\nwant      %s", got, tt.want)
+			}
+		})
+	}
+
+	// The same through the history page.
+	store := &memStore{msgs: []repository.Message{kicked, text}}
+	page, err := New(store).Messages(context.Background(), reader, conv1, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(t, page); !strings.Contains(got, `"kickedBy":{"id":"`+ali+`","name":"Ali"}`) || strings.Count(got, "kickedBy") != 1 {
+		t.Errorf("history = %s, want kickedBy on the kick only", got)
+	}
+}

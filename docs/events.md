@@ -444,7 +444,8 @@ Cancel and decline are two event types because they have different recipients; a
   - `clan.member_left`: deletes the player's membership (the messages stay) and sends `conversation.removed` to that player;
     when `reason` is `kicked`, also a `clan_kicked` notification (even if Realtime never had the room). When the player was a
     member, a `member_left` line (`member_kicked` for a kick) with the name they had in the room is stored and sent as
-    `message.new` to the members who stay. `kicked_by` and `new_owner` are not needed.
+    `message.new` to the members who stay. A `member_kicked` line also keeps `kicked_by` of the event as `kickedBy`
+    (`{ id, name }`; absent when the event has none, and never on a `member_left`). `new_owner` is not needed.
   - Member lines are messages with a `kind` other than `text` and an empty body (the widget writes the sentence). They are
     in the history like any message and never count as unread (`openapi/realtime-ws.md`, "Member lines").
   - `clan.disbanded`: deletes the room with its members and messages and sends `conversation.removed` and a `clan_disbanded`

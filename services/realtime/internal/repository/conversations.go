@@ -23,6 +23,7 @@ type Message struct {
 	SenderName string
 	Body       string // empty for a member line
 	CreatedAt  time.Time
+	KickedBy   *Member // on a member_kicked line, who removed the player; nil when the event did not say
 }
 
 // DM is a direct-message conversation after UpsertDM or MakeDMReadOnly.
@@ -215,19 +216,29 @@ type queryer interface {
 
 func lastMessage(ctx context.Context, q queryer, gameID, conversationID string) (*Message, error) {
 	var m Message
+	var byID, byName *string
 	err := q.QueryRow(ctx, `
-		SELECT id, kind, sender_id, sender_name, body, created_at
+		SELECT id, kind, sender_id, sender_name, body, created_at, kicked_by_id, kicked_by_name
 		FROM messages
 		WHERE game_id = $1 AND conversation_id = $2
 		ORDER BY id DESC
-		LIMIT 1`, gameID, conversationID).Scan(&m.ID, &m.Kind, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt)
+		LIMIT 1`, gameID, conversationID).Scan(&m.ID, &m.Kind, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt, &byID, &byName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load last message: %w", err)
 	}
+	m.KickedBy = kickedBy(byID, byName)
 	return &m, nil
+}
+
+// kickedBy builds Message.KickedBy from the two nullable columns; they are NULL together.
+func kickedBy(id, name *string) *Member {
+	if id == nil || name == nil {
+		return nil
+	}
+	return &Member{PlayerID: *id, Name: *name}
 }
 
 // unreadCounts returns, for every member, how many messages from other players come after the

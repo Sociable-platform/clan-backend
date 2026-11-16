@@ -333,6 +333,19 @@ components:
         body:
           type: string
           description: Plain text, after the game's profanity filter if it is on. Empty for a member line.
+        kickedBy:
+          type: object
+          description: |
+            Only on a `member_kicked` line, and only when Social's event said who removed the player: that
+            player (`id`, and the `name` they had at the time, like `senderName`). Every other message has no
+            `kickedBy` at all, not even as null. The widget can write "Ali was removed by Emma".
+          required: [id, name]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
         createdAt:
           type: string
           format: date-time
