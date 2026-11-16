@@ -82,7 +82,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PLATFORM_JWT_PRIVATE_KEY_FILE` | none (required) | Path to the PEM file. Docker Compose sets it to the mounted `secrets/platform_jwt_private.pem`. |
-| `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
+| `PLATFORM_DEVELOPER_TOKEN_TTL` | `15m` | How long a developer token is valid (Go duration such as `30m`). Short on purpose: it cannot be taken back, and the dashboard renews it with the refresh cookie (see "Developer sessions"). |
 | `PLATFORM_ADMIN_TOKEN_TTL` | `1h` | How long an admin token (admin panel) is valid. Keep it short. |
 | `PLATFORM_INTERNAL_TOKEN` | none | Shared secret of platform's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops platform at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |

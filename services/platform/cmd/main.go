@@ -44,7 +44,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	tokenTTL, err := config.Duration("PLATFORM_DEVELOPER_TOKEN_TTL", 24*time.Hour)
+	tokenTTL, err := config.Duration("PLATFORM_DEVELOPER_TOKEN_TTL", 15*time.Minute)
 	if err != nil {
 		return err
 	}

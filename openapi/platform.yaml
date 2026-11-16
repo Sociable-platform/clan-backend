@@ -207,7 +207,7 @@ paths:
                 $ref: "#/components/schemas/LoginResponse"
               example:
                 token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
-                expiresIn: 86400
+                expiresIn: 900
         "400":
           description: The body is not valid JSON (`invalid_json`).
           content:
@@ -350,7 +350,7 @@ paths:
                 $ref: "#/components/schemas/LoginResponse"
               example:
                 token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
-                expiresIn: 86400
+                expiresIn: 900
         "401":
           description: The session is over (`invalid_refresh_token`). The cookie is cleared.
           content:

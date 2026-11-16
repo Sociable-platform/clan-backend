@@ -86,7 +86,8 @@ telemetry:
 platform:
   replicas: 1
   corsOrigins: http://localhost:5173
-  developerTokenTtl: 24h
+  # Short on purpose: a developer token cannot be taken back; the dashboard renews it with the refresh cookie.
+  developerTokenTtl: 15m
   adminTokenTtl: 1h
   # How long a developer stays logged in without using the dashboard (the refresh cookie's lifetime).
   developerRefreshTtl: 168h
