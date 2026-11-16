@@ -67,8 +67,58 @@ func TestJoinClanRoomMakesOneRoomAndIsRepeatable(t *testing.T) {
 	}
 }
 
+// A player who joins a clan whose room has messages gets them as history, not as unread: their read
+// position starts at the newest message. Messages written after they joined count as usual.
+func TestJoinClanRoomStartsANewMemberWithNothingUnread(t *testing.T) {
+	r, cleanup := testRepo(t)
+	game, clan := newUUID(t), newUUID(t)
+	defer cleanup(game)
+	ctx := context.Background()
+
+	room, err := r.JoinClanRoom(ctx, game, clan, memberA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv := room.ConversationID
+	r.addMessage(t, game, conv, mid(1), memberA.PlayerID, "Ali", "welcome")
+	r.addMessage(t, game, conv, mid(2), memberA.PlayerID, "Ali", "anyone?")
+
+	joined, err := r.JoinClanRoom(ctx, game, clan, memberB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := joined.Unread[memberB.PlayerID]; n != 0 {
+		t.Errorf("unread for the new member = %d, want 0", n)
+	}
+	list, err := r.ListConversations(ctx, game, memberB.PlayerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Unread != 0 || list[0].LastMessage == nil || list[0].LastMessage.ID != mid(2) {
+		t.Fatalf("list = %+v, want the room with its last message and nothing unread", list)
+	}
+
+	// The same join event again does not move the read position.
+	r.addMessage(t, game, conv, mid(3), memberA.PlayerID, "Ali", "hi Rashad")
+	again, err := r.JoinClanRoom(ctx, game, clan, memberB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := again.Unread[memberB.PlayerID]; n != 1 {
+		t.Errorf("unread after a message and a repeated join = %d, want 1", n)
+	}
+
+	msgs, _, err := r.ListMessages(ctx, game, memberB.PlayerID, conv, "", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(msgs); !equal(got, []string{mid(3), mid(2), mid(1)}) {
+		t.Errorf("history = %v, want all three messages, newest first", got)
+	}
+}
+
 // A player who leaves and joins again gets the whole history: what was written before and while
-// they were away. Their read position went with their membership.
+// they were away. Like any new member, they start with nothing unread.
 func TestJoinClanRoomGivesARejoinerTheWholeHistory(t *testing.T) {
 	r, cleanup := testRepo(t)
 	game, clan := newUUID(t), newUUID(t)
@@ -105,9 +155,8 @@ func TestJoinClanRoomGivesARejoinerTheWholeHistory(t *testing.T) {
 	if back.LastMessage == nil || back.LastMessage.ID != mid(4) {
 		t.Errorf("last message = %+v, want the one written while away", back.LastMessage)
 	}
-	// Everything the others wrote counts as unread again (their own message does not).
-	if n := back.Unread[memberB.PlayerID]; n != 3 {
-		t.Errorf("unread for the rejoiner = %d, want 3", n)
+	if n := back.Unread[memberB.PlayerID]; n != 0 {
+		t.Errorf("unread for the rejoiner = %d, want 0", n)
 	}
 	// The joiner is the last one now.
 	if got := memberIDs(back.Members); !equal(got, []string{memberA.PlayerID, memberB.PlayerID}) {

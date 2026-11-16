@@ -22,8 +22,9 @@ type ClanRoom struct {
 //
 // It can run any number of times for the same player: the second run changes nothing (except a
 // renamed player's name). The messages of the room stay as long as the clan does, so a player who
-// left and joins again gets the whole history back, also what was written while they were away;
-// their read position went with their membership, so the messages of the others count as unread.
+// joins (or left and joins again) gets the whole history, also what was written while they were
+// away. A new member starts with the newest message as their read position: what was written before
+// they joined is history, not unread, so the SDK shows no "New messages" line and no unread count.
 func (r *Repository) JoinClanRoom(ctx context.Context, gameID, clanID string, m Member) (ClanRoom, error) {
 	if r.pool == nil {
 		return ClanRoom{}, ErrNoDatabase
@@ -45,10 +46,11 @@ func (r *Repository) JoinClanRoom(ctx context.Context, gameID, clanID string, m 
 		return ClanRoom{}, fmt.Errorf("upsert clan conversation: %w", err)
 	}
 
-	// A member who is there already keeps their joined_at and read position.
+	// A new member has read up to the newest message (NULL in an empty room). A member who is there
+	// already keeps their joined_at and read position.
 	_, err = tx.Exec(ctx, `
-		INSERT INTO conversation_members (conversation_id, game_id, player_id, display_name)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO conversation_members (conversation_id, game_id, player_id, display_name, last_read_message_id)
+		VALUES ($1, $2, $3, $4, (SELECT id FROM messages WHERE game_id = $2 AND conversation_id = $1 ORDER BY id DESC LIMIT 1))
 		ON CONFLICT (conversation_id, player_id) DO UPDATE SET display_name = EXCLUDED.display_name`,
 		room.ConversationID, gameID, m.PlayerID, m.Name)
 	if err != nil {
