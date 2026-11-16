@@ -86,8 +86,11 @@ type GameSuspension interface {
 
 // Presence is what the WebSocket endpoint needs from the presence tracker. presence.Tracker implements it.
 type Presence interface {
-	// Connected is called after the player's connection was added to the hub.
-	Connected(gameID, playerID string)
+	// Connected is called after the player's connection was added to the hub; first is what
+	// hub.Register reported. It returns whether the player came online, so friends are told.
+	Connected(gameID, playerID string, first bool) (cameOnline bool)
+	// AnnounceOnline sends presence.update "online" for the player to the given online friends.
+	AnnounceOnline(gameID, playerID string, friends []string)
 	// Disconnected is called after the player's last connection was removed from the hub.
 	Disconnected(gameID, playerID string)
 	// OnlineFriends returns the IDs of the player's friends who are online now.
@@ -191,10 +194,11 @@ func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 		cancel()
 	}
 
-	h.hub.Register(conn)
+	first := h.hub.Register(conn)
 	// The game may have been suspended while this connection was being set up: the event closed the
 	// connections it knew of, and this one was not among them yet. The status is in memory by now.
-	if h.gameSuspended(r.Context(), player.GameID) {
+	suspended := h.gameSuspended(r.Context(), player.GameID)
+	if suspended {
 		conn.Close(hub.CloseGameSuspendedCode, hub.GameSuspendedReason)
 	}
 	defer func() {
@@ -203,13 +207,20 @@ func (h *Handler) ws(w http.ResponseWriter, r *http.Request) {
 			h.wsOpts.Presence.Disconnected(player.GameID, sp.ID)
 		}
 	}()
+	cameOnline := false
 	if h.wsOpts.Presence != nil {
-		// A player who comes back within the grace period was never offline: nobody is told.
-		h.wsOpts.Presence.Connected(player.GameID, sp.ID)
+		// A player who comes back within the grace period was never offline, and another tab is no
+		// news: only the first connection of a player who was offline makes them come online.
+		cameOnline = h.wsOpts.Presence.Connected(player.GameID, sp.ID, first)
 	}
 	log.Info("websocket connected")
 
-	h.enqueue(conn, serverFrame{Type: frameTypeHello, Data: helloData{PlayerID: sp.ID, ConfigVersion: configVersion, OnlineFriends: h.onlineFriends(r.Context(), log, player.GameID, sp.ID)}})
+	onlineFriends := h.onlineFriends(r.Context(), log, player.GameID, sp.ID)
+	h.enqueue(conn, serverFrame{Type: frameTypeHello, Data: helloData{PlayerID: sp.ID, ConfigVersion: configVersion, OnlineFriends: onlineFriends}})
+	if cameOnline && !suspended {
+		// The friends who are online right now (the list hello just got) see the player come online.
+		h.wsOpts.Presence.AnnounceOnline(player.GameID, sp.ID, onlineFriends)
+	}
 
 	// One limiter per connection: only the goroutine that reads the connection's frames uses it.
 	state := newConnState(h.wsOpts.RateLimit)

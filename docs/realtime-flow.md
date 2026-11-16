@@ -520,7 +520,7 @@ sequenceDiagram
     alt Ali connects again before the timer ends (page refresh)
         SDK->>RT: new connection
         RT->>Hub: register
-        RT->>Pres: Connected(game, Ali)
+        RT->>Pres: Connected(game, Ali, first)
         Pres->>Pres: cancel the timer, nobody is told anything
     else 10 s pass
         Pres->>DB: friends of Ali (other members of Ali's DM conversations, this game)
@@ -531,6 +531,11 @@ sequenceDiagram
         Hub-->>F: frame (only friends who are connected)
     end
 ```
+
+Coming online is the other half (TEAM-274). When a connection is registered, the hub reports whether it is the player's first one, and the handler
+passes that to `Connected`. If no grace period was running (the player was really offline) and it is the first connection, `Connected` answers that
+the player came online. The handler sends `hello`, then `AnnounceOnline` sends `presence.update { playerId: Ali, status: online }` to the friends in
+`hello.onlineFriends` (looked up once, for both), and only the connected ones get it. A second tab, or a reconnect within the 10 s, sends nothing.
 
 A new friendship between two online players (`friend.accepted`, diagram 3) also sends each of them `presence.update` `online` for the other, right
 after `conversation.added`. The timers are in the memory of the process: they are stopped when the service shuts down (nobody is told then), and lost
@@ -552,6 +557,7 @@ with a restart.
 | `notification` `friend_accepted` | both players | `friend.accepted` | queue event |
 | `conversation.removed` | both players | `friend.removed` | queue event |
 | `config.updated` | every connection of the game | `config.published` | queue event, after the config is fetched |
+| `presence.update` `online` | the connected friends of the player | the player's first connection opens and they were offline (not a second tab, not a return within 10 s) | WebSocket handler + presence tracker, right after the player's `hello` |
 | `presence.update` `online` | each of two online players, about the other | `friend.accepted` | queue event, right after `conversation.added` |
 | `presence.update` `offline` | the connected friends of the player | 10 s after the player's last connection closed, if they did not come back | presence tracker (no event) |
 

@@ -732,6 +732,15 @@ type fakePresence struct {
 	err          error
 	hub          *hub.Hub
 	connectedHub []bool // whether the hub already had the player when Connected ran
+	firsts       []bool // the first flag of each Connected call
+	inGrace      bool   // Connected answers false, like for a player back within the grace period
+	announced    []announcement
+}
+
+// announcement is one AnnounceOnline call.
+type announcement struct {
+	gameID, playerID string
+	friends          []string
 }
 
 func (f *fakePresence) watch(h *hub.Hub) {
@@ -740,13 +749,33 @@ func (f *fakePresence) watch(h *hub.Hub) {
 	f.hub = h
 }
 
-func (f *fakePresence) Connected(g, p string) {
+func (f *fakePresence) Connected(g, p string, first bool) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "connected "+g+" "+p)
+	f.firsts = append(f.firsts, first)
 	if f.hub != nil {
 		f.connectedHub = append(f.connectedHub, f.hub.Online(g, p))
 	}
+	return first && !f.inGrace
+}
+
+func (f *fakePresence) AnnounceOnline(g, p string, friends []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.announced = append(f.announced, announcement{g, p, append([]string(nil), friends...)})
+}
+
+func (f *fakePresence) announcements() []announcement {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]announcement(nil), f.announced...)
+}
+
+func (f *fakePresence) firstFlags() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool(nil), f.firsts...)
 }
 
 func (f *fakePresence) Disconnected(g, p string) {
@@ -831,6 +860,39 @@ func TestPresenceIsToldWhenTheFirstTabOpensAndTheLastTabCloses(t *testing.T) {
 		if !online {
 			t.Error("Connected ran before the connection was in the hub")
 		}
+	}
+}
+
+// TEAM-274: the first tab of a player who was offline tells their online friends; a second tab does not.
+func TestTheFirstTabAnnouncesThePlayerOnlineToTheFriendsInHello(t *testing.T) {
+	friend := "5a2b3c4d-0000-4000-8000-000000000001"
+	alice := socialIDFor(testGameID + "/alice")
+	pres := &fakePresence{friends: map[string][]string{alice: {friend}}}
+	env := newWSEnv(t, func(o *WSOptions, _ *httptest.Server) { o.Presence = pres })
+	tok := env.tokenFor(t, "alice")
+
+	env.connect(t, tok)
+	env.connect(t, tok)
+	waitFor(t, "two Connected calls", func() bool { return len(pres.firstFlags()) == 2 })
+
+	if got := pres.firstFlags(); !reflect.DeepEqual(got, []bool{true, false}) {
+		t.Fatalf("first flags = %v, want [true false]: only the first tab is first in the hub", got)
+	}
+	want := []announcement{{testGameID, alice, []string{friend}}}
+	if got := pres.announcements(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("announced %+v, want %+v: one, to the friends hello listed", got, want)
+	}
+}
+
+func TestComingBackWithinTheGracePeriodAnnouncesNothing(t *testing.T) {
+	alice := socialIDFor(testGameID + "/alice")
+	pres := &fakePresence{inGrace: true, friends: map[string][]string{alice: {"5a2b3c4d-0000-4000-8000-000000000001"}}}
+	env := newWSEnv(t, func(o *WSOptions, _ *httptest.Server) { o.Presence = pres })
+
+	env.connect(t, env.tokenFor(t, "alice"))
+	waitFor(t, "the Connected call", func() bool { return len(pres.firstFlags()) == 1 })
+	if got := pres.announcements(); len(got) != 0 {
+		t.Fatalf("announced %+v for a player back within the grace period, want nothing", got)
 	}
 }
 

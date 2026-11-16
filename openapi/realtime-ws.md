@@ -12,7 +12,7 @@ WebSocket. The two REST reads (conversation list and history) are in [`realtime.
   `feature_disabled`, `blocked`, `empty`, `too_long`, `slow_mode`, `bad_frame` or `internal`.
   In `hello`, `configVersion` is the version of the game's published config (`0` when the game has none or Platform did not answer within a second)
   and `onlineFriends` lists the friends who are online. `config.updated` is sent when the game publishes a new config.
-  `presence.update` tells a friend went offline (after a 10 second grace period) or, for a new friendship, that the other one is online.
+  `presence.update` tells a friend came online, went offline (after a 10 second grace period) or, for a new friendship, that the other one is online.
   Clan rooms: `conversation.added` and `conversation.removed` for a clan's chat room, and the `clan_joined`, `clan_kicked`
   and `clan_disbanded` notifications, made from Social's clan events.
   Not built yet: the 5-connections-per-player limit, and `4003`.
@@ -238,13 +238,16 @@ Members who are offline get the message from history the next time they load it.
 
 ### `presence.update`
 
-A friend went offline, or a new friend is online. `status` is `online` or `offline`.
+A friend came online, went offline, or a new friend is online. `status` is `online` or `offline`.
 
 - **Offline:** a player counts as offline only after a 10 second grace period with no open connection, so a page refresh does not flash them
   offline. It is sent to the player's friends who are connected. A player who connects again within the 10 seconds was never offline: nothing is sent.
-- **Online:** only when a new friendship starts and both players are online: each gets a `presence.update` `online` for the other, right after
-  `conversation.added`. Connecting sends nothing to friends, so a friend who comes online later is not announced: read `onlineFriends` in `hello` after a
-  (re)connect, and treat a friend as online from `hello` or from this frame until an `offline` arrives.
+- **Online, coming online** (TEAM-274): when a player's first connection opens and they were offline, their friends who are connected get
+  `online` for them, right after the player's own `hello`. Only the first connection counts: another tab of a player who is already connected
+  sends nothing, and neither does coming back within the 10 second grace period (a page refresh), since the player never went offline.
+- **Online, new friend:** when a new friendship starts and both players are online, each gets `online` for the other, right after
+  `conversation.added`.
+- Treat a friend as online from `hello.onlineFriends` or from an `online` frame until an `offline` arrives.
 - Frames can be lost while the SDK is disconnected, so after every reconnect take the state from the new `hello`, not from the old frames.
 
 ```json

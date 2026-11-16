@@ -164,10 +164,12 @@ func (e *env) closeLast(g, p string) {
 	e.tr.Disconnected(g, p)
 }
 
-// open is what the handler does for a new tab.
-func (e *env) open(g, p string) {
+// open is what the handler does for a new tab: the hub reports whether it is the player's first one.
+// It returns what Connected answered: whether the player came online.
+func (e *env) open(g, p string) bool {
+	first := !e.conns.Online(g, p)
 	e.conns.set(g, p, true)
-	e.tr.Connected(g, p)
+	return e.tr.Connected(g, p, first)
 }
 
 func decode(t *testing.T, b []byte) map[string]any {
@@ -298,7 +300,7 @@ func TestNothingIsSentWhenTheHubSaysTheyAreBack(t *testing.T) {
 
 func TestPlayerWhoComesBackWhileFriendsAreLookedUpIsNotAnnouncedOffline(t *testing.T) {
 	e := newEnv(t)
-	e.friends.onAsk = func() { e.tr.Connected(game, ali) } // the player is back during the lookup
+	e.friends.onAsk = func() { e.tr.Connected(game, ali, true) } // the player is back during the lookup
 	e.closeLast(game, ali)
 	e.clock.fire()
 	if got := e.out.all(); len(got) != 0 {
@@ -438,7 +440,9 @@ func TestConcurrentUse(t *testing.T) {
 		wg.Go(func() {
 			for range 200 {
 				conns.set(game, ali, true)
-				tr.Connected(game, ali)
+				if tr.Connected(game, ali, true) {
+					tr.AnnounceOnline(game, ali, []string{vusal})
+				}
 				conns.set(game, ali, false)
 				tr.Disconnected(game, ali)
 				tr.Online(game, ali)
@@ -449,4 +453,82 @@ func TestConcurrentUse(t *testing.T) {
 	wg.Wait()
 	time.Sleep(20 * time.Millisecond)
 	tr.Close()
+}
+
+// TEAM-274: a player's first connection makes them come online, and their online friends are told.
+func TestFirstConnectionIsAnnouncedOnline(t *testing.T) {
+	e := newEnv(t)
+	if !e.open(game, ali) {
+		t.Fatal("Connected = false for the first connection of an offline player, want true")
+	}
+	e.tr.AnnounceOnline(game, ali, []string{vusal})
+
+	got := e.out.all()
+	if len(got) != 1 || got[0].gameID != game || !slices.Equal(got[0].to, []string{vusal}) {
+		t.Fatalf("sent %+v, want one frame to vusal in %s", got, game)
+	}
+	f := decode(t, got[0].frame)
+	data, _ := f["data"].(map[string]any)
+	if f["type"] != "presence.update" || len(data) != 2 || data["playerId"] != ali || data["status"] != "online" {
+		t.Errorf("frame %v, want presence.update with exactly {playerId: ali, status: online}", f)
+	}
+	if f["occurred_at"] != "2026-11-10T12:00:00.123Z" {
+		t.Errorf("occurred_at = %v, want the time the player came online", f["occurred_at"])
+	}
+}
+
+func TestComingOnlineWithoutOnlineFriendsSendsNothing(t *testing.T) {
+	e := newEnv(t)
+	e.open(game, ali)
+	e.tr.AnnounceOnline(game, ali, nil)
+	e.tr.AnnounceOnline(game, ali, []string{})
+	if got := e.out.all(); len(got) != 0 {
+		t.Fatalf("%d frames sent with nobody to tell", len(got))
+	}
+}
+
+// Several tabs: only the first one in the hub makes the player come online.
+func TestAnotherTabIsNotNews(t *testing.T) {
+	e := newEnv(t)
+	if !e.open(game, ali) {
+		t.Fatal("the first tab did not make the player come online")
+	}
+	if e.open(game, ali) {
+		t.Fatal("a second tab made the player come online again")
+	}
+}
+
+// A page refresh: the player comes back within the grace period, so friends hear neither
+// "offline" nor "online".
+func TestComingBackWithinTheGracePeriodIsNotAnnounced(t *testing.T) {
+	e := newEnv(t)
+	e.open(game, ali)
+	e.closeLast(game, ali)
+	if e.open(game, ali) {
+		t.Fatal("Connected = true for a player who came back within the grace period, want false")
+	}
+	e.clock.fire()
+	if got := e.out.all(); len(got) != 0 {
+		t.Fatalf("%d frames after a refresh, want none", len(got))
+	}
+}
+
+// After the grace period ended (friends were told "offline"), coming back is coming online again.
+func TestComingBackAfterGoingOfflineIsAnnounced(t *testing.T) {
+	e := newEnv(t)
+	e.open(game, ali)
+	e.closeLast(game, ali)
+	e.clock.fire() // "offline" to the friends
+	if !e.open(game, ali) {
+		t.Fatal("Connected = false for a player who was offline, want true")
+	}
+}
+
+// While the service shuts down nobody comes online.
+func TestNobodyComesOnlineAfterClose(t *testing.T) {
+	e := newEnv(t)
+	e.tr.Close()
+	if e.open(game, ali) {
+		t.Fatal("Connected = true after Close, want false")
+	}
 }
