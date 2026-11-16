@@ -23,6 +23,15 @@ type Store interface {
 	DeveloperByEmail(ctx context.Context, email string) (repository.Developer, error)
 	DeveloperByID(ctx context.Context, id string) (repository.Developer, error)
 	DeveloperStatusOf(ctx context.Context, id string) (string, error)
+	CreatePasswordResetToken(ctx context.Context, developerID, tokenHash string, expiresAt, now time.Time) error
+	ResetPassword(ctx context.Context, tokenHash, passwordHash string, now time.Time) (developerID string, err error)
+	CreateRefreshSession(ctx context.Context, developerID, tokenHash string, expiresAt, now time.Time) error
+	RotateRefreshToken(ctx context.Context, oldHash, newHash string, newExpiresAt, now time.Time, grace time.Duration) (developerID string, err error)
+	DeleteRefreshSession(ctx context.Context, tokenHash string) error
+	SavePendingRegistration(ctx context.Context, p repository.PendingRegistration, now time.Time) error
+	PendingRegistrationByEmail(ctx context.Context, email string, now time.Time) (repository.PendingRegistration, error)
+	ReplacePendingRegistrationCode(ctx context.Context, email, codeHash string, expiresAt, now time.Time) error
+	ConfirmPendingRegistration(ctx context.Context, email, codeHash string, now time.Time, maxAttempts int) (repository.Developer, error)
 	AdminByEmail(ctx context.Context, email string) (repository.Admin, error)
 	AdminByID(ctx context.Context, id string) (repository.Admin, error)
 	ListDevelopers(ctx context.Context, f repository.DeveloperFilter) ([]repository.DeveloperSummary, error)
@@ -60,6 +69,8 @@ type Service struct {
 	key      ed25519.PrivateKey
 	pub      ed25519.PublicKey
 	tokenTTL time.Duration
+	// refreshTokenTTL is how long a developer's refresh token stays valid (WithRefreshTokenTTL).
+	refreshTokenTTL time.Duration
 	// adminTokenTTL is how long an admin token stays valid; admin sessions are short on purpose.
 	adminTokenTTL time.Duration
 	bcryptCost    int
@@ -67,10 +78,20 @@ type Service struct {
 	// "no such developer" and "wrong password" take about the same time.
 	dummyHash []byte
 	now       func() time.Time
+	// resetSender delivers password reset links, which point at dashboardURL (WithPasswordReset).
+	resetSender  ResetSender
+	dashboardURL string
+	// verification delivers the codes of registrations with email verification. nil: verification
+	// is off and Register creates the account at once (WithEmailVerification).
+	verification VerificationSender
 }
 
 // defaultAdminTokenTTL is used until WithAdminTokenTTL is called.
 const defaultAdminTokenTTL = time.Hour
+
+// defaultDashboardURL is where reset links point until WithPasswordReset is called: the
+// dashboard's dev server.
+const defaultDashboardURL = "http://localhost:5173"
 
 // New returns a Service. key signs developer tokens (and its public half verifies them);
 // tokenTTL is how long a developer token stays valid.
@@ -93,7 +114,8 @@ func newService(store Store, key ed25519.PrivateKey, tokenTTL time.Duration, cos
 	}
 	return &Service{
 		store: store, key: key, pub: pub, tokenTTL: tokenTTL, adminTokenTTL: defaultAdminTokenTTL,
-		bcryptCost: cost, dummyHash: dummy, now: time.Now,
+		bcryptCost: cost, dummyHash: dummy, now: time.Now, refreshTokenTTL: defaultRefreshTokenTTL,
+		resetSender: noResetSender{}, dashboardURL: defaultDashboardURL,
 	}, nil
 }
 

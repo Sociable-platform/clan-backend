@@ -19,6 +19,7 @@ const (
 	CodeNotMember       = "not_member"
 	CodeFeatureDisabled = "feature_disabled"
 	CodeBlocked         = "blocked"
+	CodeNotFriends      = "not_friends"
 	CodeEmpty           = "empty"
 	CodeTooLong         = "too_long"
 	CodeSlowMode        = "slow_mode"
@@ -85,9 +86,10 @@ func WithClock(now func() time.Time) Option {
 //  1. the body, trimmed, is not empty and has no NUL character (empty, bad_frame)
 //  2. the sender is a member (not_member; the same for an unknown conversation or another game's)
 //  3. the game has this kind of chat turned on (feature_disabled)
-//  4. in a DM, neither player blocked the other (blocked)
-//  5. the body is at most the game's max_message_length characters (too_long)
-//  6. the sender is not in slow mode, counted across all their tabs and conversations (slow_mode)
+//  4. a DM is not read-only: the friendship ended through a block (not_friends; TEAM-283)
+//  5. in a DM, neither player blocked the other (blocked)
+//  6. the body is at most the game's max_message_length characters (too_long)
+//  7. the sender is not in slow mode, counted across all their tabs and conversations (slow_mode)
 //
 // and then, if the game turned the profanity filter on, banned words become ***. The rate limit of
 // the connection comes before all of this, in the WebSocket handler.
@@ -118,6 +120,9 @@ func (s *Service) SendMessage(ctx context.Context, from Sender, conversationID, 
 	rules := s.chatRules(ctx, from.GameID)
 	if err := featureEnabled(rules, conv.Kind); err != nil {
 		return Sent{}, err
+	}
+	if conv.Kind == kindDM && conv.ReadOnly {
+		return Sent{}, &SendError{Code: CodeNotFriends, Message: "You can only message friends"}
 	}
 	if conv.Kind == kindDM {
 		if err := s.checkNotBlocked(ctx, from, conv.Members); err != nil {

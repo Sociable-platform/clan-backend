@@ -82,7 +82,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PLATFORM_JWT_PRIVATE_KEY_FILE` | none (required) | Path to the PEM file. Docker Compose sets it to the mounted `secrets/platform_jwt_private.pem`. |
-| `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
+| `PLATFORM_DEVELOPER_TOKEN_TTL` | `15m` | How long a developer token is valid (Go duration such as `30m`). Short on purpose: it cannot be taken back, and the dashboard renews it with the refresh cookie (see "Developer sessions"). |
 | `PLATFORM_ADMIN_TOKEN_TTL` | `1h` | How long an admin token (admin panel) is valid. Keep it short. |
 | `PLATFORM_INTERNAL_TOKEN` | none | Shared secret of platform's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops platform at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
@@ -133,6 +133,99 @@ go run ./tools/devtoken -ttl -1m                              # already expired:
 
 Send it as `Authorization: Bearer <token>`. `go run ./tools/devtoken -h` lists all options.
 
+### Email verification at registration
+
+With `PLATFORM_EMAIL_VERIFICATION=true`, registering does not create an account straight away:
+
+1. `POST /api/v1/developers/register` checks the form, stores the registration as **pending** and emails a 6-digit code
+   to the address. It answers 202. There is no developer row yet.
+2. The dashboard's "enter the code" page sends the email and the code to `POST /api/v1/developers/register/verify`.
+   With the right code the developer is created (201) and can log in.
+3. `POST /api/v1/developers/register/resend` emails a new code when the first one did not arrive.
+
+Rules: the code works **once** and for **15 minutes**; the **fifth wrong code** cancels the registration; a new code is
+sent at most once a minute; registering again with the same address replaces the pending registration. A registration
+nobody confirms simply expires (`pending_registrations`), so there are no unverified accounts and a mistyped address
+is free again after 15 minutes. Limits, counted in platform's memory: 5 code emails per address and 20 per IP address
+in 15 minutes, 60 verify calls per IP address.
+
+Registering an address that **already has an account** answers the same 202 and creates nothing; that address gets
+an email saying someone tried to register with it. So with verification on, registration no longer tells who has an
+account (without it, the 409 `email_taken` does).
+
+The emails go through the same SMTP settings as the password reset. Without `PLATFORM_SMTP_HOST` the code is written to
+platform's log (`email not sent: no mail server is configured`), which is how you try it on your own machine.
+
+**Off (the default)**, register creates the account at once and answers 201, as it always did, and the two extra
+routes answer 404. Tests and `tools/e2e` rely on that.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PLATFORM_EMAIL_VERIFICATION` | `false` | `true`: a new developer must enter the emailed code before the account is created. |
+
+### Developer sessions (refresh tokens)
+
+A developer login gives two things:
+
+- a **developer token** (JWT) in the answer's body, valid for `PLATFORM_DEVELOPER_TOKEN_TTL`. The dashboard keeps it in
+  memory and sends it as `Authorization: Bearer <token>`;
+- a **refresh token** in the cookie `clan_refresh` (HttpOnly, Secure, SameSite=Lax, path `/api/v1/developers`), valid
+  for `PLATFORM_DEVELOPER_REFRESH_TTL`. JavaScript cannot read it. It is a random value, not a JWT, and the database
+  keeps only its SHA-256 hash (`developer_refresh_tokens`).
+
+When the developer token has expired, or after a page reload, the dashboard calls `POST /api/v1/developers/token/refresh`.
+The cookie is the credential. The answer is a new developer token and a new refresh token; the old refresh token stops
+working (**rotation**) and the new one runs for the full lifetime again, so a developer who keeps using the dashboard
+stays logged in.
+
+A **session** is one login. Its refresh tokens share a `session_id`, which is what makes these possible:
+
+- **Logout** (`POST /api/v1/developers/logout`) deletes that session's tokens. Other logins of the developer stay.
+- **A replaced token used again** means two parties hold the same token, so that session is ended and both must log in.
+  A token replaced less than 10 seconds ago is still accepted: that is the same refresh arriving twice (a lost answer,
+  two tabs starting together), not a copy.
+- **A password reset** deletes every session of the developer.
+
+The developer token itself cannot be taken back; it simply expires. That is why it should be short once the dashboard
+refreshes it.
+
+The dashboard runs on another origin than platform, so platform's CORS answers allowed origins with
+`Access-Control-Allow-Credentials: true`, and the dashboard sends these requests with `credentials: "include"`.
+A page on any other origin is refused (403 `origin_not_allowed`), so it cannot refresh or log out for someone.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PLATFORM_DEVELOPER_REFRESH_TTL` | `168h` | Lifetime of a refresh token: how long a developer stays logged in without using the dashboard. |
+| `PLATFORM_COOKIE_SECURE` | `true` | `false` lets the refresh cookie travel over plain http. For `http://localhost` only; docker compose sets `false`. |
+
+### Password reset (developers)
+
+A developer who forgot the password asks for a link on the dashboard's login page:
+
+1. `POST /api/v1/developers/password-reset` with the email. The answer is always 202, so nobody can use it to
+   find out who is registered. If the email belongs to an account, platform emails a link:
+   `<PLATFORM_DASHBOARD_URL>/reset-password#token=<token>`.
+2. The dashboard's reset page sends the token and the new password to `POST /api/v1/developers/password-reset/confirm`.
+
+Rules: the link works **once** and for **30 minutes**; asking again replaces the earlier link; the database keeps only a
+SHA-256 hash of the token (`password_reset_tokens`); the new password follows the rules of registration; after a reset,
+every developer token issued before it is refused, so sessions that used the old password are logged out
+(`developers.password_changed_at`). Limits, counted in platform's memory: 3 requests per email and 20 per IP address
+in 15 minutes, then 429 `rate_limited`.
+
+The email goes through an SMTP server with STARTTLS (`pkg/mailer`). **Without `PLATFORM_SMTP_HOST` nothing is sent**:
+platform writes the email, with the link, to its log (`email not sent: no mail server is configured`), which is how
+you try the flow on your own machine. Never run a public server that way.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PLATFORM_DASHBOARD_URL` | `http://localhost:5173` | Where the dashboard runs; the start of the reset link. |
+| `PLATFORM_SMTP_HOST` | none | SMTP server, for example `smtp.gmail.com`. Empty: emails are logged, not sent. |
+| `PLATFORM_SMTP_PORT` | `587` | The STARTTLS port. Port 465 (TLS from the first byte) is not supported. |
+| `PLATFORM_SMTP_USERNAME` | none | Login of the SMTP server; for Gmail the full address. |
+| `PLATFORM_SMTP_PASSWORD` | none | Its password; for Gmail an **app password** (the account needs 2-Step Verification). Never logged. |
+| `PLATFORM_SMTP_FROM` | the username | The sender: `noreply@example.com` or `Name <noreply@example.com>`. |
+
 ### Admin accounts (admin panel)
 
 Admins are distributor staff, kept in their own `admins` table and signed in with their own token type (`typ: admin`),
@@ -160,6 +253,12 @@ config v1 contract (JSON Schema 2020-12, owned by the frontend team: `docs/confi
 `clan-frontend`). The schema is copied to `services/platform/internal/widgetconfig/` together with the
 shared fixtures in `testdata/examples/`; when the contract changes, copy the new files over and run
 `go test ./services/platform/...`.
+
+`clan.tags` is gone (TEAM-276): clans have no tags. A config that still sends it gets `400 invalid_widget_config`
+(`/clan`, `additionalProperties`, "has the unknown field \"tags\""). Migration `000011_remove_clan_tags` removed it from
+every stored draft and published version first, so they can still be published and rolled back; that is the only time a
+published version was changed, and nothing else in it (or its version number) moved. Studio must stop sending the field
+before this is deployed, and the copies in `clan-frontend` `docs/config-v1` change in the same release.
 
 A config over 64 KB, text that is not JSON, or a config that breaks the contract gets
 `400 invalid_widget_config`. `error.details` lists every problem as `{ path, rule, message }`
@@ -333,10 +432,10 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `friend.request_cancelled` | sends a `friend_request_cancelled` notification to the `receiver` (all open tabs) so the SDK removes the `friend_request` with the same `requestId`. `request_id` is required. The sender is not told. |
 | `friend.request_declined` | sends a `friend_request_declined` notification to the `receiver` only (their other tabs drop the `friend_request`). `request_id` is required. The sender is **not** told. |
 | `friend.accepted` | creates the DM conversation of the two `players` and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both. Exactly two players are required. The notification carries `requestId` (`null` when the event has no `request_id`). |
-| `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both, with no notification. Exactly two `players` are required and `removed_by` must be one of them. |
+| `friend.removed` | keeps the pair's DM with both memberships and its history, and makes it read-only (TEAM-283): each player gets `conversation.updated` with `readOnly: true` and both members offline, with no notification. Nobody can send in it (`not_friends`) and no presence goes either way until a `friend.accepted` opens it again. The same for a removal and a block. Exactly two `players` are required and `removed_by` must be one of them. |
 | `player.renamed` | stores the new name with the player's memberships in that game. No frame is sent; messages keep the name their sender had when writing them. |
 | `clan.created` | creates the clan's chat room (a conversation of `kind` `clan` with the clan's `clanId`) with the owner (`player`) as its first member, and sends `conversation.added` to the owner. |
-| `clan.member_joined` | adds the `player` to the clan's room (and creates the room if `clan.created` was never seen), sends `conversation.added` with the room to the player and a `clan_joined` notification to the other members. The room comes with its **whole history**, also the messages written before the player joined or while they were away; their unread count starts from the start of the history. |
+| `clan.member_joined` | adds the `player` to the clan's room (and creates the room if `clan.created` was never seen), sends `conversation.added` with the room to the player and a `clan_joined` notification to the other members. The room comes with its **whole history**, also the messages written before the player joined or while they were away; their read position starts at the newest message, so that history is not unread (no "New messages" line, no unread count); only messages written after they joined count. |
 | `clan.member_left` | removes the `player` from the room (the messages stay for the others, and for the player if they join again) and sends `conversation.removed` to that player; when `reason` is `kicked`, also a `clan_kicked` notification. The members who stay are not told. |
 | `clan.disbanded` | deletes the room with its members and messages, and sends `conversation.removed` and a `clan_disbanded` notification to everybody who was still in it (Social publishes only this event when the last member leaves). |
 
@@ -627,8 +726,14 @@ Only the developer's own switch counts here: a game suspended on its own does no
 |---|---|---|
 | GET | `/health` | 200 while the process runs |
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
-| POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
+| POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken`. With email verification on: 202, nothing created yet, a code is emailed (see "Email verification at registration"); 429 `rate_limited` |
+| POST | `/api/v1/developers/register/verify` | Email verification only (else 404). 201 with the new developer for `{ email, code }`; 400 `invalid_verification_code` (wrong, expired, unknown) or `verification_attempts_exceeded` (fifth wrong code, registration cancelled); 409 `email_taken` |
+| POST | `/api/v1/developers/register/resend` | Email verification only (else 404). 202 always; emails a new code when a registration is waiting for `{ email }`. 429 `rate_limited` (also within a minute of the last code) |
 | POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
+| POST | `/api/v1/developers/token/refresh` | 200 `{ token, expiresIn }` and a new refresh cookie, for the `clan_refresh` cookie that login set; the old refresh token stops working. 401 `invalid_refresh_token` when the session is over (no cookie, expired, logged out, password reset, or a replaced token used again, which ends that session) |
+| POST | `/api/v1/developers/logout` | 204 always; ends the session of the refresh cookie and clears the cookie. Other logins of the developer stay |
+| POST | `/api/v1/developers/password-reset` | 202 always, for a known and an unknown email alike; emails a reset link to a known one (see "Password reset"). 400 `invalid_email`; 429 `rate_limited` |
+| POST | `/api/v1/developers/password-reset/confirm` | 204 and the password is changed, with `{ token, password }`; 400 `invalid_reset_token` (unknown, used or expired) or `invalid_password`; 429 `rate_limited` |
 | GET | `/api/v1/developers/me` | 200 with the developer, including `status` (`active` / `suspended`) and `statusReason` (`non_payment` / `abuse` / `other`, else `null`) so the dashboard can explain a suspension; never the admin's internal note. 401 unless `Authorization: Bearer <developer token>` |
 | POST | `/api/v1/admin/login` | 200 `{ token, expiresIn }` with an **admin** token; 401 `invalid_credentials` for an unknown email, a wrong password and a disabled admin alike |
 | GET | `/api/v1/admin/me` | 200 with the admin; 401 unless `Authorization: Bearer <admin token>` of an admin who is not disabled (developer and player tokens get 401) |
@@ -681,7 +786,7 @@ be asked, the request goes on (fail open) and fails on its own.
 | POST | `/api/v1/players/{playerID}/block` | no body. 204: the caller blocked that player (see "Blocks" below); blocking again changes nothing (204, no event). 400 `cannot_block_self`; 404 `player_not_found` (also for another game's player). Publishes `player.blocked` |
 | DELETE | `/api/v1/players/{playerID}/block` | 204: the block is removed; a friendship or request it ended does not come back. Not blocked: 204, no event. 400 `cannot_block_self`; 404 `player_not_found`. Publishes `player.unblocked` |
 | GET | `/api/v1/clans?q=&limit=&sort=&hasSpace=` | 200 `{ clans: [...] }` of the caller's game, by default sorted by name, at most 100. `q` keeps clans whose name contains it (ignoring upper/lower case, over 50 characters gives 400 `invalid_query`) and searches **all** clans, full ones too. `limit` 1 to 100 (400 `invalid_limit`); `sort` `name` or `members`, biggest first (400 `invalid_sort`); `hasSpace=true` leaves out full clans (400 `invalid_has_space`). Featured clans = `?hasSpace=true&sort=members&limit=3` |
-| POST | `/api/v1/clans` | body `{ "name": "Wolves" }`. 201 with the new clan, the caller becomes its owner. 400 `invalid_json` / `invalid_clan_name` (3 to 20 characters); 409 `clan_name_taken` / `already_in_clan` |
+| POST | `/api/v1/clans` | body `{ "name": "Wolves" }`. 201 with the new clan, the caller becomes its owner. 400 `invalid_json` / `invalid_clan_name` (3 to 20 characters); 409 `clan_name_taken` / `already_in_clan`. Clans have no tags (TEAM-277): a `tag` in the body, which older SDKs send, is ignored, and no clan answer has one |
 | PATCH | `/api/v1/clans/{clanID}` | body `{ "name": "Grey Wolves" }`. 200 with the clan. Only the **owner**; the name is checked like on create. The same name changes nothing (200, no event); a change of upper/lower case only is a rename. 400 `invalid_json` / `invalid_clan_name`; 403 `not_clan_owner`; 404 `clan_not_found`; 409 `clan_name_taken`. Publishes `clan.renamed` |
 | POST | `/api/v1/clans/{clanID}/join` | no body. 200 with the clan and its new `memberCount`, the caller joins as a member. 404 `clan_not_found` (also for another game's clan); 409 `already_in_clan` / `clan_full`: the clan has as many members as the game allows (`clan.maxMembers` from the published config, 10 before the first publish). Lowering the limit removes nobody; a clan over it just takes no one new |
 | POST | `/api/v1/clans/{clanID}/leave` | no body. 204: the caller left the clan and can join another one. A normal member is just removed. If the **owner** leaves and others remain, the member who joined first becomes the owner; if the owner is the only member, the clan is deleted. 404 `clan_not_found` (also for another game's clan); 409 `not_in_clan` (the caller is not a member of this clan) |
@@ -689,7 +794,7 @@ be asked, the request goes on (fail open) and fails on its own.
 | DELETE | `/api/v1/clans/{clanID}/members/{playerID}` | no body. 204: the caller removed that member (`playerId` from the member list): their role needs `canKick` and the member must have a lower role (the owner may remove anyone). The player can join a clan again at once. 403 `not_allowed`; 400 `cannot_kick_self` (leave instead); 404 `clan_not_found` / `member_not_found`. Publishes `clan.member_left` with `reason` `kicked` |
 | POST | `/api/v1/clans/{clanID}/members/{playerID}/promote` | no body. 200 `{ playerId, displayName, role }`: the member is one role up. The caller's role needs `canPromote`, the member must be lower, and the new role stays below the caller's own (nobody becomes owner). 403 `not_allowed`; 404 `clan_not_found` / `member_not_found`. Publishes `clan.member_role_changed` |
 | POST | `/api/v1/clans/{clanID}/members/{playerID}/demote` | no body. 200 `{ playerId, displayName, role }`: one role down, same rules. 409 `already_lowest_role`; 403 `not_allowed`; 404 `clan_not_found` / `member_not_found`. Publishes `clan.member_role_changed` |
-| GET | `/api/v1/friends` | 200 `{ friends: [...] }` with `id`, `displayName`, `since`, sorted by name |
+| GET | `/api/v1/friends` | 200 `{ friends: [...] }` with `id`, `displayName`, `since` and `clan`, sorted by name. `clan` is the friend's clan in the same game now (`{ id, name }`), or `null` when they are in none (also after leaving, a kick or a disband); it comes from the same query, so there is no request per friend. Accept and a request sent back return the friend without `clan` |
 | GET | `/api/v1/friends/requests` | 200 `{ incoming: [...], outgoing: [...] }`, newest first; each has `id`, `player` (the other player: `id`, `displayName`) and `createdAt` |
 | POST | `/api/v1/friends/requests` | body `{ "playerId": "<social player ID>" }`. 201 with the new request. If that player had already asked the caller, it is accepted instead: 200 with the new friend. 400 `invalid_json` / `invalid_player_id` / `cannot_friend_yourself`; 404 `player_not_found` (also for another game's player, or a player who blocked the caller); 409 `already_friends` / `friend_request_exists` / `player_blocked` (the caller blocked that player). Publishes `friend.request_sent` or `friend.accepted` |
 | POST | `/api/v1/friends/requests/{requestID}/decline` | no body. 204: the request sent to the caller is deleted. 403 `not_request_receiver` (the caller sent it; cancel instead); 404 `friend_request_not_found`. Publishes `friend.request_declined` |
@@ -717,7 +822,8 @@ one-way and the blocked player is not told:
 - The blocked player's friend requests to the blocker answer 404 `player_not_found`, and the blocker is left out of
   their search, so the block stays hidden. The blocker's own request answers 409 `player_blocked` until they unblock.
 - Realtime keeps its own copy of the blocks from the two events and refuses direct messages between the pair.
-- Unblocking brings nothing back: the two have to become friends again.
+- Unblocking brings nothing back: the two have to become friends again. Their DM stays read-only for both until then
+  (as after any ended friendship, TEAM-283), and opens again with its history when they do.
 
 **Internal endpoints** are for other services, not for the SDK. They need `X-Internal-Token: <SOCIAL_INTERNAL_TOKEN>`
 (401 `invalid_internal_token` otherwise; a player token is not accepted). They are the only routes that
@@ -794,7 +900,7 @@ Errors come back as `error` frames with `replyTo` and nothing is stored or sent:
 `rate_limited`, `feature_disabled`, `blocked`, `empty`, `too_long`, `slow_mode` (with `retryAfterMs`), `bad_frame` (missing or wrong-type field),
 `internal` (for example the database is down).
 **Message rules.** `message.send` is checked in this order, and the first failure answers (full table in `openapi/realtime-ws.md`): rate limit of the connection (5 in 5 s; three refused in a row close it with `1008`), not empty, member, the game's chat switches (`chat.enabled`, `directMessages`, `clanChat`), not blocked (DMs), `chat.maxMessageLength` in characters, slow mode (`chat.slowModeSeconds` per player across all tabs), then the profanity filter (`chat.profanityFilter`, whole words, replaced with `***`; the list is `services/realtime/internal/profanity/words.txt`). The game's rules come from its published config (kept in memory, updated on `config.published`); a game without a published config has the permissive defaults. Blocks come from the `player.blocked` and `player.unblocked` events into Realtime's own `blocks` table (Social publishes them on block and unblock).
-Presence: a player is online while one of their WebSockets is open. When the last one closes, realtime waits 10 s; if the player did not connect again, the friends who are connected get `presence.update { playerId, status: "offline" }`, so a page refresh never shows as offline. Connecting sends friends nothing (they read `hello.onlineFriends`), and a new friendship between two online players gives each a `presence.update` `online` for the other. The 10 s timers are in memory of the one process: if realtime restarts during them, nobody is told that player went offline.
+Presence: a player is online while one of their WebSockets is open. When the last one closes, realtime waits 10 s; if the player did not connect again, the friends who are connected get `presence.update { playerId, status: "offline" }`, so a page refresh never shows as offline. A player's first connection, when they were offline, sends their connected friends `presence.update { playerId, status: "online" }` (TEAM-274); another tab, or coming back within the 10 s (a refresh), sends nothing. A new friendship between two online players gives each a `presence.update` `online` for the other. The 10 s timers are in memory of the one process: if realtime restarts during them, nobody is told that player went offline.
 Slow mode and the rate limit live in the memory of the one Realtime process (a restart forgets them).
 
 **Clan chat.** Realtime makes each clan's chat room from Social's clan events, so creating or joining a clan with a player token

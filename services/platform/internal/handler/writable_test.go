@@ -33,10 +33,17 @@ func suspendedDeveloper() fakeService {
 // exemptFromTheWriteGuard lists the routes that are not GET, are not under /api/v1/admin/ and are
 // not guarded by requireWritable, with the reason. Everything else that changes data must be.
 var exemptFromTheWriteGuard = map[string]string{
-	"POST /api/v1/developers/register": "before login: there is no account yet",
-	"POST /api/v1/developers/login":    "a suspended developer must be able to log in and see why",
-	"POST /api/v1/players/auth":        "guarded by the game's status instead (EnsureGameServed)",
-	"DELETE /api/v1/api-keys/{keyID}":  "revoking only takes access away; a developer must be able to kill a leaked key",
+	"POST /api/v1/developers/register":        "before login: there is no account yet",
+	"POST /api/v1/developers/register/verify": "before login: it creates the account",
+	"POST /api/v1/developers/register/resend": "before login: there is no account yet",
+	"POST /api/v1/developers/login":           "a suspended developer must be able to log in and see why",
+	"POST /api/v1/players/auth":               "guarded by the game's status instead (EnsureGameServed)",
+	"DELETE /api/v1/api-keys/{keyID}":         "revoking only takes access away; a developer must be able to kill a leaked key",
+	// Before login, like the two above: a suspended developer who forgot the password must still get in.
+	"POST /api/v1/developers/password-reset":         "before login: the developer forgot the password",
+	"POST /api/v1/developers/password-reset/confirm": "before login: the reset link is the proof",
+	"POST /api/v1/developers/token/refresh":          "a suspended developer stays logged in, read-only",
+	"POST /api/v1/developers/logout":                 "logging out only takes access away",
 }
 
 // TestWritesRefuseASuspendedDeveloper walks Routes(): every route that changes something for a

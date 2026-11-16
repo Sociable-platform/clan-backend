@@ -60,6 +60,13 @@ type Friendship struct {
 type Friend struct {
 	FriendPlayer
 	Since time.Time
+	Clan  *FriendClan // the friend's clan in the same game; nil when they are in none
+}
+
+// FriendClan is the clan a friend is in, as the friends list shows it.
+type FriendClan struct {
+	ID   string
+	Name string
 }
 
 // SendFriendRequestResult tells what SendFriendRequest did. Exactly one field is set.
@@ -351,15 +358,21 @@ func (r *Repository) ListFriendRequests(ctx context.Context, gameID, playerID st
 }
 
 // ListFriends returns playerID's friends in gameID, sorted by name ignoring upper/lower case
-// (ties: by ID).
+// (ties: by ID), each with the clan they are in now (nil when none).
+//
+// The clan comes from the same query: a player is in at most one clan per game, and leaving,
+// a kick or a disband deletes the membership row (a disband through the clan's cascade), so
+// the left joins find nothing and Clan stays nil.
 func (r *Repository) ListFriends(ctx context.Context, gameID, playerID string) ([]Friend, error) {
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
 	rows, err := r.db(ctx).Query(ctx,
-		`select p.id::text, p.display_name, f.created_at
+		`select p.id::text, p.display_name, f.created_at, c.id::text, c.name
 		 from friendships f
 		 join players p on p.id = case when f.player_a_id = $2 then f.player_b_id else f.player_a_id end
+		 left join clan_members m on m.game_id = f.game_id and m.player_id = p.id
+		 left join clans c on c.id = m.clan_id and c.game_id = m.game_id
 		 where f.game_id = $1 and (f.player_a_id = $2 or f.player_b_id = $2)
 		 order by lower(p.display_name), p.id`,
 		gameID, playerID)
@@ -371,8 +384,12 @@ func (r *Repository) ListFriends(ctx context.Context, gameID, playerID string) (
 	friends := make([]Friend, 0)
 	for rows.Next() {
 		var f Friend
-		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Since); err != nil {
+		var clanID, clanName *string
+		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Since, &clanID, &clanName); err != nil {
 			return nil, fmt.Errorf("list friends: %w", err)
+		}
+		if clanID != nil && clanName != nil {
+			f.Clan = &FriendClan{ID: *clanID, Name: *clanName}
 		}
 		friends = append(friends, f)
 	}

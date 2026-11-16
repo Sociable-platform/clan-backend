@@ -20,6 +20,7 @@ type PlayerConversation struct {
 	Members     []Member
 	LastMessage *Message // the newest message; nil while nobody has written
 	Unread      int      // messages of other players after the player's read position, at most 99
+	ReadOnly    bool     // a DM whose two players are not friends any more: nobody can send (TEAM-283)
 }
 
 // ListConversations returns every conversation playerID is a member of in the game, most recently
@@ -32,7 +33,7 @@ func (r *Repository) ListConversations(ctx context.Context, gameID, playerID str
 	// One query for the conversations with their last message and the player's own unread count, and
 	// one for the members of those conversations. Both filter by game_id.
 	rows, err := r.db(ctx).Query(ctx, `
-		SELECT c.id, c.kind, c.clan_id,
+		SELECT c.id, c.kind, c.clan_id, c.read_only_since IS NOT NULL,
 		       lm.id, lm.sender_id, lm.sender_name, lm.body, lm.created_at,
 		       (SELECT count(*) FROM (
 		            SELECT 1 FROM messages m
@@ -64,7 +65,7 @@ func (r *Repository) ListConversations(ctx context.Context, gameID, playerID str
 			msgID, msgSender, msgName, msgBody *string
 			msgAt                              *time.Time
 		)
-		if err := rows.Scan(&c.ID, &c.Kind, &c.ClanID, &msgID, &msgSender, &msgName, &msgBody, &msgAt, &c.Unread); err != nil {
+		if err := rows.Scan(&c.ID, &c.Kind, &c.ClanID, &c.ReadOnly, &msgID, &msgSender, &msgName, &msgBody, &msgAt, &c.Unread); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
 		if msgID != nil {

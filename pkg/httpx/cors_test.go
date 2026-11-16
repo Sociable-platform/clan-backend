@@ -190,3 +190,48 @@ func TestCORSRejectsBadPublicPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestCORSWithCredentials(t *testing.T) {
+	mw, err := CORSWithCredentials([]string{"http://localhost:5173"}, "/api/v1/public/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}))
+	const credentials = "Access-Control-Allow-Credentials"
+
+	// An allowed origin may send and receive the cookie, on a request and on its preflight.
+	for _, preflight := range []bool{false, true} {
+		method := http.MethodPost
+		if preflight {
+			method = http.MethodOptions
+		}
+		rec := do(h, method, "http://localhost:5173", preflight)
+		if rec.Header().Get(credentials) != "true" || rec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:5173" {
+			t.Fatalf("preflight %v: headers %v", preflight, rec.Header())
+		}
+	}
+
+	// Another origin is refused as before and gets no such header.
+	rec := do(h, http.MethodPost, "https://evil.example", false)
+	if rec.Code != http.StatusForbidden || rec.Header().Get(credentials) != "" {
+		t.Fatalf("blocked origin: %d, headers %v", rec.Code, rec.Header())
+	}
+
+	// A public path stays open to everyone, without credentials.
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/public/games/g1/widget-config", nil)
+	r.Header.Set("Origin", "https://some-game.example")
+	pub := httptest.NewRecorder()
+	h.ServeHTTP(pub, r)
+	if pub.Header().Get("Access-Control-Allow-Origin") != "*" || pub.Header().Get(credentials) != "" {
+		t.Fatalf("public path: headers %v", pub.Header())
+	}
+}
+
+func TestCORSWithoutCredentialsSendsNoCredentialsHeader(t *testing.T) {
+	rec := do(corsServer(t), http.MethodGet, "http://localhost:5173", false)
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("Access-Control-Allow-Credentials %q, want none", got)
+	}
+}

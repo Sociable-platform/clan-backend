@@ -1,10 +1,11 @@
-// Package presence tells friends when a player went offline, and who is online.
+// Package presence tells friends when a player comes online or goes offline, and who is online.
 //
-// A player is online while at least one of their WebSockets is open. When the last one closes
+// A player is online while at least one of their WebSockets is open. When their first one opens,
+// their connected friends get presence.update "online" (TEAM-274). When the last one closes
 // they are not declared offline at once: a page refresh closes the socket and opens a new one a
 // moment later, and friends must not see that as a flash of "offline". The tracker waits a grace
 // period (10 s), looks again, and only then sends presence.update "offline" to the player's friends.
-// A player in the grace period still counts as online.
+// A player in the grace period still counts as online, so coming back within it announces nothing.
 //
 // Friends are the other members of the player's DM conversations (the people they have a DM with).
 // Pending timers live in memory of this one process: when it restarts during a grace period, the
@@ -26,8 +27,14 @@ const DefaultGrace = 10 * time.Second
 // friendsTimeout limits the lookup of a player's friends when the grace period ends.
 const friendsTimeout = 5 * time.Second
 
-// frameType is the frame friends get when a player goes offline (openapi/realtime-ws.md).
+// frameType is the frame friends get when a player comes online or goes offline (openapi/realtime-ws.md).
 const frameType = "presence.update"
+
+// The status of a presence.update frame.
+const (
+	statusOnline  = "online"
+	statusOffline = "offline"
+)
 
 // Connections tells whether a player has an open connection. The hub implements it.
 type Connections interface {
@@ -103,16 +110,36 @@ func New(conns Connections, friends Friends, send Sender, opts Options) *Tracker
 	}
 }
 
-// Connected is called after a connection of the player was added to the hub. A player who came
-// back within the grace period was never offline: the timer is cancelled and nobody is told anything.
-func (t *Tracker) Connected(gameID, playerID string) {
+// Connected is called after a connection of the player was added to the hub; first is whether it
+// is the player's only one (hub.Register). It reports whether the player came online, so their
+// friends should be told (AnnounceOnline):
+//
+//   - a player who came back within the grace period was never offline: the timer is cancelled and
+//     the answer is false (a page refresh tells nobody anything);
+//   - another tab of a player who is already connected is not news either: false;
+//   - otherwise, their first connection: true. Several tabs opening at once give one true, because
+//     only one of them is the first in the hub.
+func (t *Tracker) Connected(gameID, playerID string, first bool) (cameOnline bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	k := key{gameID, playerID}
 	if p := t.pending[k]; p != nil {
 		p.stop()
 		delete(t.pending, k)
+		return false
 	}
+	return first && !t.closed
+}
+
+// AnnounceOnline sends presence.update "online" for the player to friends: the IDs of their friends
+// who are online, as OnlineFriends lists them for the hello frame (the caller passes that list, so the
+// friends are looked up once). Only friends with an open connection get it. Call it only when
+// Connected reported that the player came online. Sending never blocks.
+func (t *Tracker) AnnounceOnline(gameID, playerID string, friends []string) {
+	if len(friends) == 0 {
+		return
+	}
+	t.sendStatus(gameID, playerID, statusOnline, friends)
 }
 
 // Disconnected is called after the player's last connection was removed from the hub. It starts the
@@ -200,12 +227,17 @@ func (t *Tracker) expire(k key, p *offline) {
 	if len(friends) == 0 {
 		return
 	}
-	b, err := frame.Encode(k.gameID, frameType, t.now(), map[string]string{"playerId": k.playerID, "status": "offline"})
+	// Sending never blocks, so it is safe to do while the lock is held; that keeps Connected from
+	// slipping in between the check above and the frames.
+	t.sendStatus(k.gameID, k.playerID, statusOffline, friends)
+}
+
+// sendStatus sends presence.update { playerId, status } for the player to the friends who are connected.
+func (t *Tracker) sendStatus(gameID, playerID, status string, friends []string) {
+	b, err := frame.Encode(gameID, frameType, t.now(), map[string]string{"playerId": playerID, "status": status})
 	if err != nil {
 		t.log.Error("encode presence frame", "error", err)
 		return
 	}
-	// Sending never blocks, so it is safe to do while the lock is held; that keeps Connected from
-	// slipping in between the check above and the frames.
-	t.send.SendToPlayers(k.gameID, friends, b)
+	t.send.SendToPlayers(gameID, friends, b)
 }

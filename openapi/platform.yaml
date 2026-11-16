@@ -59,7 +59,6 @@ x-valid-widget-config: &validConfig
   clan:
     enabled: false
     maxMembers: 10
-    tags: false
     descriptionMax: 140
     badges: { source: developer, allowed: [] }
     screens:
@@ -125,6 +124,12 @@ paths:
         The email is trimmed and lowercased; two accounts cannot share an email.
         Password: 8 to 72 characters (bcrypt limit). Name: 1 to 100 characters.
         Registering does not log the developer in; call login next.
+
+        **With email verification on** (`PLATFORM_EMAIL_VERIFICATION`) this does not create the account.
+        It answers 202, emails a 6-digit code to the address, and the account is created by
+        `register/verify` with that code. The 202 is the same when the email already has an account
+        (that address is told by email instead), so there is no 409 then. Limited to 5 requests per
+        email and 20 per IP address in 15 minutes.
       requestBody:
         required: true
         content:
@@ -137,7 +142,7 @@ paths:
               name: Dev One
       responses:
         "201":
-          description: Account created.
+          description: Account created (email verification off).
           content:
             application/json:
               schema:
@@ -149,6 +154,16 @@ paths:
                 createdAt: "2026-11-06T10:00:00Z"
                 status: active
                 statusReason: null
+        "202":
+          description: Email verification is on. Nothing is created yet; a code was emailed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+              example:
+                message: We sent a code to this email address. Enter it to finish registering.
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "400":
           description: |
             Invalid input. `code` is `invalid_email`, `invalid_password`, `invalid_name`
@@ -173,6 +188,135 @@ paths:
                 error:
                   code: email_taken
                   message: An account with this email already exists
+  /api/v1/developers/register/verify:
+    post:
+      tags: [developers]
+      operationId: verifyRegistration
+      summary: Finish registering with the code from the email
+      description: |
+        Only with email verification on (`PLATFORM_EMAIL_VERIFICATION`); otherwise 404.
+
+        `code` is the 6-digit code that `register` emailed to `email`. With the right code the
+        developer is created and returned, exactly like `register` does without verification; call
+        login next. The code works once and for 15 minutes.
+
+        A wrong code, an expired one and an email nobody registered all answer 400
+        `invalid_verification_code`. The fifth wrong code cancels the registration
+        (`verification_attempts_exceeded`); the developer registers again for a new code.
+        Limited to 60 requests per IP address in 15 minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyRegistrationRequest"
+            example:
+              email: dev@example.com
+              code: "482913"
+      responses:
+        "201":
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Developer"
+              example:
+                id: 6f1c1d1e-8a43-4d0e-9d57-0c2f0b1f6a10
+                email: dev@example.com
+                name: Dev One
+                createdAt: "2026-11-06T10:00:00Z"
+                status: active
+                statusReason: null
+        "400":
+          description: |
+            The body is not valid JSON (`invalid_json`), the code is wrong or expired
+            (`invalid_verification_code`), or it was wrong too often and the registration is
+            cancelled (`verification_attempts_exceeded`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_verification_code
+                  message: The code is wrong or has expired.
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: Email verification is off (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_found
+                  message: Route not found
+        "409":
+          description: An account with this email was created in the meantime (`email_taken`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: email_taken
+                  message: An account with this email already exists
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/v1/developers/register/resend:
+    post:
+      tags: [developers]
+      operationId: resendRegistrationCode
+      summary: Email a new code for a registration that is waiting
+      description: |
+        Only with email verification on (`PLATFORM_EMAIL_VERIFICATION`); otherwise 404.
+
+        Sends a new 6-digit code; the earlier code stops working and the count of wrong codes starts
+        again. The answer is the same 202 whether or not a registration is waiting for this email.
+        At most one email a minute per registration, and 5 per email (together with `register`) and
+        20 per IP address in 15 minutes; over that it answers 429.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequest"
+            example:
+              email: dev@example.com
+      responses:
+        "202":
+          description: Accepted. If a registration is waiting for the email, a new code is on its way.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+              example:
+                message: If a registration is waiting for this email address, a new code has been sent to it.
+        "400":
+          description: The body is not valid JSON (`invalid_json`) or the email is not an email address (`invalid_email`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_email
+                  message: Email address is not valid
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: Email verification is off (`not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: not_found
+                  message: Route not found
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/v1/developers/login:
     post:
       tags: [developers]
@@ -181,6 +325,10 @@ paths:
       description: |
         Send the token as `Authorization: Bearer <token>` on developer endpoints.
         An unknown email and a wrong password give the same 401.
+
+        Login also starts a session: the answer sets the `clan_refresh` cookie (HttpOnly, 7 days) with
+        the session's refresh token. When the developer token has expired, `token/refresh` gives a new
+        one for that cookie, and `logout` ends the session.
       requestBody:
         required: true
         content:
@@ -192,14 +340,19 @@ paths:
               password: correct horse
       responses:
         "200":
-          description: Logged in. The response is not cacheable.
+          description: Logged in. The refresh token is in `Set-Cookie`. The response is not cacheable.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: "`clan_refresh=<token>; Path=/api/v1/developers; Max-Age=604800; HttpOnly; Secure; SameSite=Lax`"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/LoginResponse"
               example:
                 token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
-                expiresIn: 86400
+                expiresIn: 900
         "400":
           description: The body is not valid JSON (`invalid_json`).
           content:
@@ -222,6 +375,163 @@ paths:
                   message: Email or password is wrong
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/developers/password-reset:
+    post:
+      tags: [developers]
+      operationId: requestPasswordReset
+      summary: Ask for a link to reset a forgotten password
+      description: |
+        Emails a link to the dashboard's reset page (`<dashboard>/reset-password#token=<token>`) to the
+        developer with this email. The link works once and for 30 minutes; asking again replaces it.
+
+        The answer is the same 202 whether or not an account with this email exists, so this endpoint
+        does not tell who is registered. Limited to 3 requests per email and 20 per IP address in
+        15 minutes; over that it answers 429 with `Retry-After`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequest"
+            example:
+              email: dev@example.com
+      responses:
+        "202":
+          description: Accepted. If the email belongs to an account, the link is on its way.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+              example:
+                message: If an account with this email exists, a link to reset the password has been sent to it.
+        "400":
+          description: The body is not valid JSON (`invalid_json`) or the email is not an email address (`invalid_email`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_email
+                  message: Email address is not valid
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/v1/developers/password-reset/confirm:
+    post:
+      tags: [developers]
+      operationId: confirmPasswordReset
+      summary: Set a new password with the token from the reset link
+      description: |
+        `token` is the part after `#token=` in the emailed link. On success the password is changed,
+        the link stops working, and every developer token issued before is refused (401), so whoever
+        was logged in with the old password is logged out. The developer then logs in as usual.
+
+        The new password follows the rules of registration. A password that breaks them does not use
+        the link up. Limited to 20 requests per IP address in 15 minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetConfirmRequest"
+            example:
+              token: 3q2-7wEjYc0Vq8nG5sX1uZk4hTtB9aLmRrPdOoWfN6I
+              password: a brand new one
+      responses:
+        "204":
+          description: The password is changed.
+        "400":
+          description: |
+            The body is not valid JSON (`invalid_json`), the password is too short or too long
+            (`invalid_password`), or the token is unknown, already used or expired (`invalid_reset_token`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_reset_token
+                  message: This reset link is not valid or has expired. Ask for a new one.
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/v1/developers/token/refresh:
+    post:
+      tags: [developers]
+      operationId: refreshDeveloperToken
+      summary: Get a new developer token with the refresh cookie
+      description: |
+        The request has no body and no `Authorization` header: the `clan_refresh` cookie, set by login,
+        is the credential. A browser must send it (`credentials: "include"`).
+
+        The answer is a new developer token and a new cookie. The refresh token that was sent stops
+        working (rotation), and the new one is valid for 7 days again, so a developer who keeps using
+        the dashboard stays logged in.
+
+        401 `invalid_refresh_token` means the session is over and the developer must log in: no cookie,
+        an unknown or expired token, a session that was logged out or ended by a password reset, or a
+        token that had already been replaced. In that last case someone is using a copy, so the whole
+        session is ended. (A token replaced within the last 10 seconds is still accepted: the same
+        refresh arriving twice.) The 401 also clears the cookie.
+
+        Works while the account is suspended. Limited to 300 requests per IP address in 15 minutes,
+        together with logout.
+      security:
+        - refreshCookie: []
+      responses:
+        "200":
+          description: A new developer token; the new refresh token is in `Set-Cookie`. Not cacheable.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: "`clan_refresh=<token>; Path=/api/v1/developers; Max-Age=604800; HttpOnly; Secure; SameSite=Lax`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+              example:
+                token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+                expiresIn: 900
+        "401":
+          description: The session is over (`invalid_refresh_token`). The cookie is cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_refresh_token
+                  message: Your session has ended. Log in again.
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/v1/developers/logout:
+    post:
+      tags: [developers]
+      operationId: logoutDeveloper
+      summary: End the session of the refresh cookie
+      description: |
+        Deletes every refresh token of the session the `clan_refresh` cookie belongs to and clears the
+        cookie, so no new developer token can be had for that login. Other logins of the same developer
+        (another browser, another computer) are not touched.
+
+        The developer token already issued stays valid until it expires; the dashboard forgets it.
+        Answers 204 with or without a session, so logging out twice is fine.
+      security:
+        - refreshCookie: []
+        - {}
+      responses:
+        "204":
+          description: Logged out. The cookie is cleared.
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/v1/developers/me:
     get:
       tags: [developers]
@@ -1433,6 +1743,13 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Developer token (typ "developer") returned by login. Used by the dashboard.
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: clan_refresh
+      description: |
+        Refresh token of a developer session, set by login as an HttpOnly cookie for the path
+        `/api/v1/developers`. Only `token/refresh` and `logout` read it. JavaScript cannot read it.
     adminToken:
       type: http
       scheme: bearer
@@ -1476,6 +1793,47 @@ components:
           type: string
           minLength: 1
           maxLength: 100
+    PasswordResetRequest:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+    PasswordResetConfirmRequest:
+      type: object
+      required: [token, password]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          description: The token from the reset link (the part after `#token=`).
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+    Message:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+    VerifyRegistrationRequest:
+      type: object
+      required: [email, code]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        code:
+          type: string
+          pattern: "^[0-9]{6}$"
+          description: The 6-digit code from the email.
     LoginRequest:
       type: object
       required: [email, password]
@@ -1951,8 +2309,23 @@ components:
             error:
               code: widget_version_not_found
               message: Widget version not found
+    RateLimited:
+      description: Too many attempts. `Retry-After` says how many seconds to wait.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until the limit starts again.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: rate_limited
+              message: Too many attempts. Try again in a few minutes.
     Unauthorized:
-      description: The developer token is missing, malformed, expired, of the wrong type, or its account no longer exists.
+      description: The developer token is missing, malformed, expired, of the wrong type, issued before the password was last reset, or its account no longer exists.
       content:
         application/json:
           schema:

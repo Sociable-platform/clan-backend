@@ -24,11 +24,12 @@ type Message struct {
 	CreatedAt  time.Time
 }
 
-// DM is a direct-message conversation after UpsertDM.
+// DM is a direct-message conversation after UpsertDM or MakeDMReadOnly.
 type DM struct {
 	ConversationID string
 	LastMessage    *Message       // the newest message; nil while nobody has written
 	Unread         map[string]int // player ID -> unread messages (at most 99), for both members
+	ReadOnly       bool           // the two are not friends any more: nobody can send (TEAM-283)
 }
 
 // maxUnread is the highest unread count anybody sees ("99+" in the SDK).
@@ -40,7 +41,8 @@ const maxUnread = 99
 //
 // A conversation that already exists is reused with its messages, so players who become
 // friends again get their history back. Their read position is gone with their membership:
-// the messages of the other player count as unread again.
+// the messages of the other player count as unread again. A read-only DM (see MakeDMReadOnly)
+// opens again: the players are friends now, and they kept their membership and read position.
 func (r *Repository) UpsertDM(ctx context.Context, gameID, dmKey string, a, b Member) (DM, error) {
 	if r.pool == nil {
 		return DM{}, ErrNoDatabase
@@ -56,7 +58,7 @@ func (r *Repository) UpsertDM(ctx context.Context, gameID, dmKey string, a, b Me
 	err = tx.QueryRow(ctx, `
 		INSERT INTO conversations (game_id, kind, dm_key)
 		VALUES ($1, 'dm', $2)
-		ON CONFLICT (game_id, dm_key) DO UPDATE SET dm_key = EXCLUDED.dm_key
+		ON CONFLICT (game_id, dm_key) DO UPDATE SET dm_key = EXCLUDED.dm_key, read_only_since = NULL
 		RETURNING id`, gameID, dmKey).Scan(&dm.ConversationID)
 	if err != nil {
 		return DM{}, fmt.Errorf("upsert dm conversation: %w", err)
@@ -87,8 +89,50 @@ func (r *Repository) UpsertDM(ctx context.Context, gameID, dmKey string, a, b Me
 	return dm, nil
 }
 
+// MakeDMReadOnly keeps the DM conversation with this dmKey and its members, and marks it read-only:
+// the two players stopped being friends, by a removal or a block (TEAM-283). Both keep the history;
+// nobody can send, and it does not count as a friendship (FriendsOf leaves it out). UpsertDM opens
+// it again when they become friends again.
+//
+// changed is true when this call made it read-only; then dm has its last message and both members'
+// unread counts. It is false when the game has no such conversation or it already was read-only
+// (a redelivered friend.removed), and there is nothing to tell anybody.
+func (r *Repository) MakeDMReadOnly(ctx context.Context, gameID, dmKey string) (dm DM, changed bool, err error) {
+	if r.pool == nil {
+		return DM{}, false, ErrNoDatabase
+	}
+	tx, err := r.db(ctx).Begin(ctx)
+	if err != nil {
+		return DM{}, false, fmt.Errorf("begin read-only dm: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // does nothing after Commit
+
+	err = tx.QueryRow(ctx, `
+		UPDATE conversations SET read_only_since = now()
+		WHERE game_id = $1 AND dm_key = $2 AND kind = 'dm' AND read_only_since IS NULL
+		RETURNING id`, gameID, dmKey).Scan(&dm.ConversationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DM{}, false, nil
+	}
+	if err != nil {
+		return DM{}, false, fmt.Errorf("read-only dm: %w", err)
+	}
+	dm.ReadOnly = true
+	if dm.LastMessage, err = lastMessage(ctx, tx, gameID, dm.ConversationID); err != nil {
+		return DM{}, false, err
+	}
+	if dm.Unread, err = unreadCounts(ctx, tx, gameID, dm.ConversationID); err != nil {
+		return DM{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return DM{}, false, fmt.Errorf("commit read-only dm: %w", err)
+	}
+	return dm, true, nil
+}
+
 // RemoveDMMembers deletes both members of the DM conversation with this dmKey. The conversation
-// and its messages stay, so the history is there if the players become friends again.
+// and its messages stay, so the history is there if the players become friends again. An ended
+// friendship no longer does this (MakeDMReadOnly keeps the DM); tests use it to leave a DM.
 // It returns the conversation's ID, or found = false when the game has no such conversation.
 // Running it again after it worked deletes nothing and returns the same ID.
 func (r *Repository) RemoveDMMembers(ctx context.Context, gameID, dmKey string) (conversationID string, found bool, err error) {
@@ -114,8 +158,8 @@ func (r *Repository) RemoveDMMembers(ctx context.Context, gameID, dmKey string) 
 }
 
 // FriendsOf returns the IDs of the players who share a DM conversation with the player in the game,
-// ordered by ID (a pair has one DM, so nobody is listed twice). Players who were removed as friends
-// are not members any more, so they are not listed.
+// ordered by ID (a pair has one DM, so nobody is listed twice). A read-only DM (the two stopped
+// being friends) is not a friendship, so its other member is not listed.
 func (r *Repository) FriendsOf(ctx context.Context, gameID, playerID string) ([]string, error) {
 	if r.pool == nil {
 		return nil, ErrNoDatabase
@@ -124,6 +168,7 @@ func (r *Repository) FriendsOf(ctx context.Context, gameID, playerID string) ([]
 		SELECT other.player_id
 		FROM conversation_members me
 		JOIN conversations c ON c.id = me.conversation_id AND c.game_id = me.game_id AND c.kind = 'dm'
+		                    AND c.read_only_since IS NULL
 		JOIN conversation_members other
 		  ON other.conversation_id = me.conversation_id AND other.game_id = me.game_id AND other.player_id <> me.player_id
 		WHERE me.game_id = $1 AND me.player_id = $2

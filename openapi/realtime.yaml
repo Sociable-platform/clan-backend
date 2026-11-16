@@ -257,7 +257,7 @@ components:
         kind:
           type: string
           enum: [dm, clan]
-          description: "`dm` is a conversation between two friends, `clan` is the chat of a clan."
+          description: "`dm` is a conversation between two friends (read-only once they are not friends any more, see `readOnly`), `clan` is the chat of a clan."
         clanId:
           type: string
           format: uuid
@@ -277,6 +277,12 @@ components:
           minimum: 0
           maximum: 99
           description: Messages from other players after the caller's last read message. Capped at 99.
+        readOnly:
+          type: boolean
+          description: |
+            Only on a DM, and only when true: the two players are not friends any more, because one removed or
+            blocked the other (TEAM-283). Both keep it with its history, but nobody can send (`not_friends`), and
+            its members are always shown offline. It opens again when the two become friends again. Absent otherwise.
     ConversationMember:
       type: object
       required: [id, name, online]

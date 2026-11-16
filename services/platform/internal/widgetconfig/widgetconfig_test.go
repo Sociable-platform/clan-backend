@@ -291,6 +291,23 @@ func TestRejectsTheWrongTypeOfValue(t *testing.T) {
 	}
 }
 
+// clan.tags is gone (TEAM-276 step 2): clans have no tags, and migration 000011 removed it from
+// every stored config, so a config that still sends it is refused like any unknown field.
+func TestRejectsClanTags(t *testing.T) {
+	if _, ok := obj(arena(t), "clan")["tags"]; ok {
+		t.Fatal("the examples should no longer have clan.tags; update this test")
+	}
+	for _, v := range []bool{true, false} {
+		m := arena(t)
+		obj(m, "clan")["tags"] = v
+		issues := issuesOf(t, m)
+		wantIssue(t, issues, "/clan", "additionalProperties")
+		if len(issues) != 1 || !strings.Contains(issues[0].Message, "tags") {
+			t.Fatalf("with clan.tags %v: %+v, want one problem that names tags", v, issues)
+		}
+	}
+}
+
 // A whole number written as 30.0 or 3e1 is still a whole number (as in the SDK's validator).
 func TestAcceptsWholeNumbersWrittenInOtherWays(t *testing.T) {
 	for _, text := range []string{"30.0", "3e1", "30.00", "0.3e2"} {

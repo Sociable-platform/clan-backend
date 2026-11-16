@@ -59,6 +59,191 @@ type fakeStore struct {
 	pending   []events.Event  // events of the open transaction
 	depth     int             // InTx calls in progress
 	addErr    error           // what AddEvents returns, when set
+
+	// resetTokens holds the password reset tokens by their hash, like the real table.
+	resetTokens map[string]fakeResetToken
+	// refreshTokens holds the refresh tokens by their hash; refreshSessions counts the sessions started.
+	refreshTokens   map[string]fakeRefreshToken
+	refreshSessions int
+	// pendingRegs holds the pending registrations by email, like the real table.
+	pendingRegs map[string]repository.PendingRegistration
+}
+
+func (f *fakeStore) SavePendingRegistration(_ context.Context, p repository.PendingRegistration, now time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	for email, old := range f.pendingRegs {
+		if !old.ExpiresAt.After(now) {
+			delete(f.pendingRegs, email)
+		}
+	}
+	if f.pendingRegs == nil {
+		f.pendingRegs = map[string]repository.PendingRegistration{}
+	}
+	p.Attempts = 0
+	f.pendingRegs[p.Email] = p
+	return nil
+}
+
+func (f *fakeStore) PendingRegistrationByEmail(_ context.Context, email string, now time.Time) (repository.PendingRegistration, error) {
+	if f.err != nil {
+		return repository.PendingRegistration{}, f.err
+	}
+	p, ok := f.pendingRegs[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.PendingRegistration{}, repository.ErrNotFound
+	}
+	return p, nil
+}
+
+func (f *fakeStore) ReplacePendingRegistrationCode(_ context.Context, email, codeHash string, expiresAt, now time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	p, ok := f.pendingRegs[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.ErrNotFound
+	}
+	p.CodeHash, p.Attempts, p.ExpiresAt, p.LastSentAt = codeHash, 0, expiresAt, now
+	f.pendingRegs[email] = p
+	return nil
+}
+
+func (f *fakeStore) ConfirmPendingRegistration(ctx context.Context, email, codeHash string, now time.Time, maxAttempts int) (repository.Developer, error) {
+	if f.err != nil {
+		return repository.Developer{}, f.err
+	}
+	p, ok := f.pendingRegs[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.Developer{}, repository.ErrNotFound
+	}
+	if p.CodeHash != codeHash {
+		if p.Attempts+1 >= maxAttempts {
+			delete(f.pendingRegs, email)
+			return repository.Developer{}, repository.ErrTooManyAttempts
+		}
+		p.Attempts++
+		f.pendingRegs[email] = p
+		return repository.Developer{}, repository.ErrWrongCode
+	}
+	d, err := f.CreateDeveloper(ctx, p.Email, p.PasswordHash, p.Name)
+	if err != nil {
+		return repository.Developer{}, err
+	}
+	delete(f.pendingRegs, email)
+	return d, nil
+}
+
+// fakeRefreshToken is a row of the developer_refresh_tokens table.
+type fakeRefreshToken struct {
+	developerID string
+	sessionID   string
+	expiresAt   time.Time
+	replacedAt  *time.Time
+}
+
+func (f *fakeStore) CreateRefreshSession(_ context.Context, developerID, tokenHash string, expiresAt, now time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	for hash, tok := range f.refreshTokens {
+		if tok.developerID == developerID && !tok.expiresAt.After(now) {
+			delete(f.refreshTokens, hash)
+		}
+	}
+	if f.refreshTokens == nil {
+		f.refreshTokens = map[string]fakeRefreshToken{}
+	}
+	f.refreshSessions++
+	f.refreshTokens[tokenHash] = fakeRefreshToken{
+		developerID: developerID, sessionID: "session-" + strconv.Itoa(f.refreshSessions), expiresAt: expiresAt,
+	}
+	return nil
+}
+
+func (f *fakeStore) RotateRefreshToken(_ context.Context, oldHash, newHash string, newExpiresAt, now time.Time, grace time.Duration) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	old, ok := f.refreshTokens[oldHash]
+	if !ok || !old.expiresAt.After(now) {
+		return "", repository.ErrNotFound
+	}
+	switch {
+	case old.replacedAt == nil:
+		old.replacedAt = &now
+		f.refreshTokens[oldHash] = old
+	case now.Sub(*old.replacedAt) > grace:
+		for hash, tok := range f.refreshTokens {
+			if tok.sessionID == old.sessionID {
+				delete(f.refreshTokens, hash)
+			}
+		}
+		return "", repository.ErrRefreshTokenReused
+	}
+	f.refreshTokens[newHash] = fakeRefreshToken{developerID: old.developerID, sessionID: old.sessionID, expiresAt: newExpiresAt}
+	return old.developerID, nil
+}
+
+func (f *fakeStore) DeleteRefreshSession(_ context.Context, tokenHash string) error {
+	if f.err != nil {
+		return f.err
+	}
+	found, ok := f.refreshTokens[tokenHash]
+	if !ok {
+		return nil
+	}
+	for hash, tok := range f.refreshTokens {
+		if tok.sessionID == found.sessionID {
+			delete(f.refreshTokens, hash)
+		}
+	}
+	return nil
+}
+
+type fakeResetToken struct {
+	developerID string
+	expiresAt   time.Time
+}
+
+func (f *fakeStore) CreatePasswordResetToken(_ context.Context, developerID, tokenHash string, expiresAt, now time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	for hash, tok := range f.resetTokens {
+		if tok.developerID == developerID || !tok.expiresAt.After(now) {
+			delete(f.resetTokens, hash)
+		}
+	}
+	if f.resetTokens == nil {
+		f.resetTokens = map[string]fakeResetToken{}
+	}
+	f.resetTokens[tokenHash] = fakeResetToken{developerID: developerID, expiresAt: expiresAt}
+	return nil
+}
+
+func (f *fakeStore) ResetPassword(_ context.Context, tokenHash, passwordHash string, now time.Time) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	tok, ok := f.resetTokens[tokenHash]
+	if !ok || !tok.expiresAt.After(now) {
+		return "", repository.ErrNotFound
+	}
+	delete(f.resetTokens, tokenHash)
+	for hash, rt := range f.refreshTokens {
+		if rt.developerID == tok.developerID {
+			delete(f.refreshTokens, hash)
+		}
+	}
+	for email, d := range f.byEmail {
+		if d.ID == tok.developerID {
+			d.PasswordHash, d.PasswordChangedAt = passwordHash, &now
+			f.byEmail[email] = d
+		}
+	}
+	return tok.developerID, nil
 }
 
 func (f *fakeStore) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
@@ -356,7 +541,7 @@ func TestAuthenticateDeveloper(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, err := svc.AuthenticateDeveloper(tt.token)
+			id, err := svc.AuthenticateDeveloper(context.Background(), tt.token)
 			if tt.want {
 				if err != nil || id != dev.ID {
 					t.Fatalf("want id %q, got %q, %v", dev.ID, id, err)

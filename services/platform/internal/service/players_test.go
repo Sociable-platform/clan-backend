@@ -69,7 +69,7 @@ func TestIssuePlayerToken_ValidKey(t *testing.T) {
 		t.Fatalf("token should be expired after 1 hour, got %v", err)
 	}
 	// A player token is never accepted where a developer token is needed.
-	if _, err := svc.AuthenticateDeveloper(tok.Token); err == nil {
+	if _, err := svc.AuthenticateDeveloper(context.Background(), tok.Token); err == nil {
 		t.Fatal("a player token must not authenticate a developer")
 	}
 }

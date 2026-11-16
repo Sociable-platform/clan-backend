@@ -451,7 +451,6 @@ paths:
               name: Wolves
               description: Casual farmers. Everyone welcome.
               badge: wolf
-              tag: WOLF
       responses:
         "201":
           description: The new clan.
@@ -464,16 +463,14 @@ paths:
                 name: Wolves
                 description: Casual farmers. Everyone welcome.
                 badge: wolf
-                tag: WOLF
                 memberCount: 1
                 maxMembers: 10
         "400":
           description: |
             The body is not valid JSON (invalid_json), the name is not 3 to 20 visible
             characters (invalid_clan_name), the description is too long or has invisible
-            characters (invalid_clan_description), the badge id has a character it cannot
-            have (invalid_clan_badge), or the tag is not 1 to 8 letters or digits
-            (invalid_clan_tag).
+            characters (invalid_clan_description), or the badge id has a character it cannot
+            have (invalid_clan_badge).
           content:
             application/json:
               schema:
@@ -979,6 +976,10 @@ paths:
       description: |
         Returns the caller's friends in their game, sorted by name (ignoring upper/lower case).
         An empty list when the caller has no friends yet.
+
+        Each friend carries `clan`: the clan they are in now in the same game (`id`, `name`),
+        or `null` when they are in none, including after they left, were kicked, or their clan
+        was disbanded. It comes from the same query as the list, so no request per friend is needed.
       security:
         - playerToken: []
       responses:
@@ -993,6 +994,13 @@ paths:
                   - id: 3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69
                     displayName: Aysel
                     since: "2026-11-10T08:00:00Z"
+                    clan:
+                      id: 5f1e2d3c-4b5a-4968-8778-6a5b4c3d2e1f
+                      name: Wolves
+                  - id: 8c7b6a59-4837-4261-9504-a3b2c1d0e9f8
+                    displayName: Omar
+                    since: "2026-11-12T17:30:00Z"
+                    clan: null
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1445,13 +1453,6 @@ components:
             stores only the id: the picture belongs to the game, which lists its badges in
             Studio and ships the same assets with the game itself. Left out when the clan
             has no badge.
-        tag:
-          type: string
-          maxLength: 8
-          description: |
-            The clan's short tag, shown above its members' names, such as `WOLF`. Left out
-            when the clan has none, which is every clan of a game whose config has
-            `clan.tags: false`.
         memberCount:
           type: integer
           description: How many players are in the clan now.
@@ -1488,13 +1489,10 @@ components:
             form offers only those, so a game whose config cannot be read at this moment can
             still create clans. Social never stores the picture.
         tag:
-          type: string
-          maxLength: 8
-          pattern: "^[A-Za-z0-9]+$"
+          deprecated: true
           description: |
-            Optional. The clan's short tag, letters and digits only. The clan form allows 4
-            characters and writes them in capitals; the contract allows up to 8 so the form
-            can be widened later. Sent empty by a game whose config has `clan.tags: false`.
+            Ignored, whatever its value. Clans have no tags (TEAM-277). It is listed only so that
+            an older SDK that still sends it is not refused as an unknown field. Do not send it.
     RenameClanRequest:
       type: object
       required: [name]
@@ -1589,6 +1587,34 @@ components:
           type: string
           format: date-time
           description: When the two became friends.
+    ListedFriend:
+      description: |
+        A friend in `GET /api/v1/friends`: a `Friend` plus the clan they are in now.
+        Accepting a request (and a request sent back) returns a plain `Friend`, without `clan`.
+      type: object
+      required: [id, displayName, since, clan]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The friend's player ID in the social service.
+        displayName:
+          type: string
+        since:
+          type: string
+          format: date-time
+          description: When the two became friends.
+        clan:
+          description: The friend's clan in the same game, or null when they are in none.
+          type: object
+          nullable: true
+          required: [id, name]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
     FriendList:
       type: object
       required: [friends]
@@ -1596,7 +1622,7 @@ components:
         friends:
           type: array
           items:
-            $ref: "#/components/schemas/Friend"
+            $ref: "#/components/schemas/ListedFriend"
     BlockedPlayer:
       type: object
       required: [id, displayName, since]

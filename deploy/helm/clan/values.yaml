@@ -86,8 +86,24 @@ telemetry:
 platform:
   replicas: 1
   corsOrigins: http://localhost:5173
-  developerTokenTtl: 24h
+  # Short on purpose: a developer token cannot be taken back; the dashboard renews it with the refresh cookie.
+  developerTokenTtl: 15m
   adminTokenTtl: 1h
+  # How long a developer stays logged in without using the dashboard (the refresh cookie's lifetime).
+  developerRefreshTtl: 168h
+  # Where the dashboard (Studio) runs. A password reset email links to <dashboardUrl>/reset-password.
+  dashboardUrl: http://localhost:5173
+  # true: a new developer must enter a 6-digit code from an email before the account is created.
+  # Needs smtp below, and a Studio version that has the "enter the code" page.
+  emailVerification: false
+  # The SMTP server that sends the password reset emails (STARTTLS). Its password is
+  # secrets.smtpPassword. Empty host: nothing is sent, platform writes each email to its log.
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    # The sender, "noreply@example.com" or "Name <noreply@example.com>". Empty: the username.
+    from: ""
   resources:
     requests:
       cpu: 50m
@@ -137,6 +153,8 @@ secrets:
   jwtPublicKey: ""
   # The Datadog API key of the OpenTelemetry Collector. Required when telemetry.collector.enabled.
   datadogApiKey: ""
+  # Password of platform.smtp.username (for Gmail: an app password, not the account password).
+  smtpPassword: ""
   # A GitLab group deploy token with the read_registry scope. Empty: no pull secret is created.
   registryUsername: ""
   registryPassword: ""

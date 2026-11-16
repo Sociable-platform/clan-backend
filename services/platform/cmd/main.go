@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
+	"gitlab.com/clan-platform/clan-backend/pkg/mailer"
 	"gitlab.com/clan-platform/clan-backend/pkg/otelx"
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
@@ -43,11 +45,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	tokenTTL, err := config.Duration("PLATFORM_DEVELOPER_TOKEN_TTL", 24*time.Hour)
+	tokenTTL, err := config.Duration("PLATFORM_DEVELOPER_TOKEN_TTL", 15*time.Minute)
 	if err != nil {
 		return err
 	}
 	adminTokenTTL, err := config.Duration("PLATFORM_ADMIN_TOKEN_TTL", time.Hour)
+	if err != nil {
+		return err
+	}
+	refreshTokenTTL, err := config.Duration("PLATFORM_DEVELOPER_REFRESH_TTL", 7*24*time.Hour)
+	if err != nil {
+		return err
+	}
+	// The refresh cookie is sent over https only, unless this is switched off for http://localhost.
+	cookieSecure, err := config.Bool("PLATFORM_COOKIE_SECURE", true)
 	if err != nil {
 		return err
 	}
@@ -116,7 +127,42 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	svc.WithAdminTokenTTL(adminTokenTTL)
+	svc.WithAdminTokenTTL(adminTokenTTL).WithRefreshTokenTTL(refreshTokenTTL)
+
+	// Password reset: the link in the email opens the dashboard at PLATFORM_DASHBOARD_URL, and the
+	// email goes through the SMTP server of PLATFORM_SMTP_HOST. Without one, the email is written
+	// to the log instead, which is fine on a developer's machine and wrong anywhere else.
+	var sender mailer.Sender = mailer.Log{Log: log}
+	if host := config.String("PLATFORM_SMTP_HOST", ""); host != "" {
+		smtpPort, err := config.Int("PLATFORM_SMTP_PORT", 587)
+		if err != nil {
+			return err
+		}
+		username := config.String("PLATFORM_SMTP_USERNAME", "")
+		sender = mailer.SMTP{
+			Host: host, Port: smtpPort, Username: username,
+			Password: config.String("PLATFORM_SMTP_PASSWORD", ""),
+			From:     config.String("PLATFORM_SMTP_FROM", username),
+		}
+		log.Info("password reset emails are sent by smtp", "host", host, "port", smtpPort) // never log the password
+	} else {
+		log.Warn("PLATFORM_SMTP_HOST is not set: password reset emails are written to the log, not sent")
+	}
+	dashboardURL := strings.TrimRight(config.String("PLATFORM_DASHBOARD_URL", "http://localhost:5173"), "/")
+	svc.WithPasswordReset(resetMailer{sender: sender, log: log}, dashboardURL)
+
+	// Email verification: with it on, registering creates the developer only after the 6-digit code
+	// from the email was entered. Off (the default), register creates the developer at once.
+	emailVerification, err := config.Bool("PLATFORM_EMAIL_VERIFICATION", false)
+	if err != nil {
+		return err
+	}
+	if emailVerification {
+		svc.WithEmailVerification(verificationMailer{sender: sender, log: log, dashboardURL: dashboardURL})
+		log.Info("email verification is on: a new developer confirms the email address with a code")
+	} else {
+		log.Warn("PLATFORM_EMAIL_VERIFICATION is off: developers register without confirming their email address")
+	}
 
 	// The /internal routes (for realtime) need a shared secret. Without one they answer 404.
 	internalToken := config.String("PLATFORM_INTERNAL_TOKEN", "")
@@ -130,11 +176,17 @@ func run() error {
 	}
 
 	mux := http.NewServeMux()
-	handler.New(serviceName, svc, log).WithInternal(httpx.RequireInternal(internalToken)).Register(mux)
+	routes := handler.New(serviceName, svc, log).WithInternal(httpx.RequireInternal(internalToken))
+	if !cookieSecure {
+		routes.WithInsecureCookies()
+		log.Warn("PLATFORM_COOKIE_SECURE is false: the refresh cookie is sent over plain http, use this on localhost only")
+	}
+	routes.Register(mux)
 
 	// Browser pages allowed to call this service (the developer dashboard).
 	origins := config.List("PLATFORM_CORS_ORIGINS", []string{"http://localhost:5173"})
-	cors, err := httpx.CORS(origins, "/api/v1/public/")
+	// With credentials: the dashboard is another origin and sends the refresh cookie to token/refresh and logout.
+	cors, err := httpx.CORSWithCredentials(origins, "/api/v1/public/")
 	if err != nil {
 		return err
 	}

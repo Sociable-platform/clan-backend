@@ -503,8 +503,9 @@ in the "WebSocket frames" part of [`event-messages.md`](event-messages.md); `Tes
 ```
 
 **`presence.update`** (not made by an event: Realtime sends it itself; `occurred_at` is when it was decided). To the connected friends of a player,
-`offline` ten seconds after their last connection closed and only if they did not connect again; and, for `friend.accepted` between two players who
-are both online, `online` to each one about the other, right after `conversation.added`:
+`offline` ten seconds after their last connection closed and only if they did not connect again; `online` when their first connection opens and
+they were offline (TEAM-274: not for another tab or a return within the ten seconds); and, for `friend.accepted` between two players who are both
+online, `online` to each one about the other, right after `conversation.added`:
 ```json
 { "event_id": "…", "type": "presence.update", "occurred_at": "…", "game_id": "…", "data": { "playerId": "2c33a1b2-…", "status": "offline" } }
 ```
@@ -523,7 +524,7 @@ Who gets what:
 | `friend.request_cancelled` | receiver: `friend_request_cancelled` |
 | `friend.request_declined` | receiver: `friend_request_declined` (the sender gets nothing) |
 | `friend.accepted` | both, in this order: `conversation.added`, then `friend_accepted` |
-| `friend.removed` | both: `conversation.removed` |
+| `friend.removed` | each: `conversation.updated` (the DM, `readOnly: true`, members offline; TEAM-283) |
 | `player.renamed` | nobody |
 | `config.published` | every connection of the game: `config.updated` |
 | `game.suspended` | no frame: every connection of the game is closed with `4403` `game_suspended` |

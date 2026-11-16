@@ -50,10 +50,15 @@ type LoginInput struct {
 	Password string
 }
 
-// Session is a freshly issued developer token.
+// Session is a freshly issued developer (or admin) token. A developer session also carries a
+// refresh token, which gets a new token when this one has expired (RefreshSession); an admin
+// session has none, and RefreshToken is empty.
 type Session struct {
 	Token     string
 	ExpiresIn int // seconds
+	// RefreshToken is for the dashboard's HttpOnly cookie; it is never part of a JSON answer.
+	RefreshToken     string
+	RefreshExpiresIn int // seconds
 }
 
 func errUnauthorized() *httpx.Error {
@@ -64,19 +69,31 @@ func errInvalidCredentials() *httpx.Error {
 	return httpx.NewError(http.StatusUnauthorized, "invalid_credentials", "Email or password is wrong")
 }
 
-// Register validates the input, hashes the password and creates the developer.
-func (s *Service) Register(ctx context.Context, in RegisterInput) (Developer, error) {
-	email := normalizeEmail(in.Email)
-	name := strings.TrimSpace(in.Name)
+// validateRegistration checks what a new developer sent and returns the email and the name the
+// way they are stored (lowercase, trimmed).
+func validateRegistration(in RegisterInput) (email, name string, err error) {
+	email = normalizeEmail(in.Email)
+	name = strings.TrimSpace(in.Name)
 	if err := validateEmail(email); err != nil {
-		return Developer{}, err
+		return "", "", err
 	}
 	if err := validatePassword(in.Password); err != nil {
-		return Developer{}, err
+		return "", "", err
 	}
 	if n := utf8.RuneCountInString(name); n == 0 || n > maxNameLen {
-		return Developer{}, httpx.NewError(http.StatusBadRequest, "invalid_name",
+		return "", "", httpx.NewError(http.StatusBadRequest, "invalid_name",
 			fmt.Sprintf("Name must be 1 to %d characters", maxNameLen))
+	}
+	return email, name, nil
+}
+
+// Register validates the input, hashes the password and creates the developer at once. With email
+// verification on (EmailVerificationOn), the handler uses RequestRegistration and
+// VerifyRegistration instead.
+func (s *Service) Register(ctx context.Context, in RegisterInput) (Developer, error) {
+	email, name, err := validateRegistration(in)
+	if err != nil {
+		return Developer{}, err
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), s.bcryptCost)
@@ -93,7 +110,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Developer, er
 	return toDeveloper(d), nil
 }
 
-// Login checks the email and password and returns a developer token.
+// Login checks the email and password and returns a developer token, and the refresh token of the
+// session this login starts.
 // An unknown email and a wrong password give the same error.
 func (s *Service) Login(ctx context.Context, in LoginInput) (Session, error) {
 	d, err := s.store.DeveloperByEmail(ctx, normalizeEmail(in.Email))
@@ -112,17 +130,38 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (Session, error) {
 	if err != nil {
 		return Session{}, fmt.Errorf("sign developer token: %w", err)
 	}
-	return Session{Token: token, ExpiresIn: int(s.tokenTTL.Seconds())}, nil
+	refreshToken, refreshExpiresIn, err := s.startRefreshSession(ctx, d.ID)
+	if err != nil {
+		return Session{}, err
+	}
+	return Session{
+		Token: token, ExpiresIn: int(s.tokenTTL.Seconds()),
+		RefreshToken: refreshToken, RefreshExpiresIn: refreshExpiresIn,
+	}, nil
 }
 
 // AuthenticateDeveloper checks a developer token (signature, expiry and type "developer")
 // and returns the developer ID inside it. Player tokens are rejected.
-func (s *Service) AuthenticateDeveloper(token string) (string, error) {
+//
+// It also reads the developer: a token of an account that is gone is refused, and so is a token
+// issued before the password was last reset, so a reset logs out whoever knew the old password.
+// A token's issue time has whole seconds, so one issued in the very second of the reset still works.
+func (s *Service) AuthenticateDeveloper(ctx context.Context, token string) (string, error) {
 	c, err := jwt.Verify(s.pub, token, jwt.TypeDeveloper, s.now())
 	if err != nil {
 		return "", errUnauthorized()
 	}
-	return c.Subject, nil
+	d, err := s.store.DeveloperByID(ctx, c.Subject)
+	if errors.Is(err, repository.ErrNotFound) {
+		return "", errUnauthorized()
+	}
+	if err != nil {
+		return "", fmt.Errorf("find developer %s: %w", c.Subject, err)
+	}
+	if d.PasswordChangedAt != nil && c.IssuedAt < d.PasswordChangedAt.Unix() {
+		return "", errUnauthorized()
+	}
+	return d.ID, nil
 }
 
 // Me returns the developer with the given ID (taken from a verified token).

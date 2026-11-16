@@ -124,10 +124,23 @@ services:
       PLATFORM_DATABASE_URL: postgres://platform_user:${PLATFORM_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
       PLATFORM_CORS_ORIGINS: ${PLATFORM_CORS_ORIGINS:-http://localhost:5173}
       PLATFORM_JWT_PRIVATE_KEY_FILE: /run/secrets/platform_jwt_private.pem
-      PLATFORM_DEVELOPER_TOKEN_TTL: ${PLATFORM_DEVELOPER_TOKEN_TTL:-24h}
+      PLATFORM_DEVELOPER_TOKEN_TTL: ${PLATFORM_DEVELOPER_TOKEN_TTL:-15m}
       PLATFORM_ADMIN_TOKEN_TTL: ${PLATFORM_ADMIN_TOKEN_TTL:-1h}
+      # Developer sessions: the refresh token (clan_refresh cookie) lives this long; README "Developer sessions"
+      PLATFORM_DEVELOPER_REFRESH_TTL: ${PLATFORM_DEVELOPER_REFRESH_TTL:-168h}
+      # false here because docker compose is local development over http://localhost. Never false behind https.
+      PLATFORM_COOKIE_SECURE: ${PLATFORM_COOKIE_SECURE:-false}
       # Shared secret of platform's /internal endpoints (realtime reads each game's allowed origins there). Empty: switched off.
       PLATFORM_INTERNAL_TOKEN: ${PLATFORM_INTERNAL_TOKEN:-}
+      # Password reset: the link points at the dashboard; without an SMTP host the email is written to the log (README "Password reset")
+      PLATFORM_DASHBOARD_URL: ${PLATFORM_DASHBOARD_URL:-http://localhost:5173}
+      # true: registering needs the 6-digit code from the email (README "Email verification at registration")
+      PLATFORM_EMAIL_VERIFICATION: ${PLATFORM_EMAIL_VERIFICATION:-false}
+      PLATFORM_SMTP_HOST: ${PLATFORM_SMTP_HOST:-}
+      PLATFORM_SMTP_PORT: ${PLATFORM_SMTP_PORT:-587}
+      PLATFORM_SMTP_USERNAME: ${PLATFORM_SMTP_USERNAME:-}
+      PLATFORM_SMTP_PASSWORD: ${PLATFORM_SMTP_PASSWORD:-}
+      PLATFORM_SMTP_FROM: ${PLATFORM_SMTP_FROM:-}
       # Events for the other services: config.published after a publish or rollback, game.suspended / game.resumed after an admin changes a status (README "RabbitMQ events")
       PLATFORM_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       # Outbox relay: how often it looks for unsent events, how long sent ones are kept (README "Event outbox")

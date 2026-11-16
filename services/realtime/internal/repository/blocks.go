@@ -11,8 +11,9 @@ import (
 
 // ConversationInfo is what the message rules need to know about a conversation.
 type ConversationInfo struct {
-	Kind    string   // "dm" or "clan"
-	Members []string // the IDs of all members, the asking player included
+	Kind     string   // "dm" or "clan"
+	Members  []string // the IDs of all members, the asking player included
+	ReadOnly bool     // a DM whose two players are not friends any more: nobody can send (TEAM-283)
 }
 
 // ConversationOf returns the kind and the members of a conversation, for a player who must be one of them.
@@ -24,11 +25,11 @@ func (r *Repository) ConversationOf(ctx context.Context, gameID, conversationID,
 	}
 	var info ConversationInfo
 	err := r.db(ctx).QueryRow(ctx, `
-		SELECT c.kind, array_agg(cm.player_id::text ORDER BY cm.player_id)
+		SELECT c.kind, c.read_only_since IS NOT NULL, array_agg(cm.player_id::text ORDER BY cm.player_id)
 		FROM conversations c
 		JOIN conversation_members cm ON cm.conversation_id = c.id
 		WHERE c.game_id = $1 AND c.id = $2
-		GROUP BY c.kind`, gameID, conversationID).Scan(&info.Kind, &info.Members)
+		GROUP BY c.kind, c.read_only_since`, gameID, conversationID).Scan(&info.Kind, &info.ReadOnly, &info.Members)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ConversationInfo{}, ErrNotMember
 	}

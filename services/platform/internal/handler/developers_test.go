@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +230,162 @@ type memStore struct {
 	keys       []memKey
 	drafts     map[string]repository.WidgetDraft     // by game ID
 	versions   map[string][]repository.WidgetVersion // by game ID, oldest first
+	// resetTokens holds the password reset tokens by their hash.
+	resetTokens map[string]memResetToken
+	// refreshTokens holds the refresh tokens by their hash; refreshSessions counts the sessions started.
+	refreshTokens   map[string]memRefreshToken
+	refreshSessions int
+	// pending holds the pending registrations by email.
+	pending map[string]repository.PendingRegistration
+}
+
+func (m *memStore) SavePendingRegistration(_ context.Context, p repository.PendingRegistration, now time.Time) error {
+	for email, old := range m.pending {
+		if !old.ExpiresAt.After(now) {
+			delete(m.pending, email)
+		}
+	}
+	if m.pending == nil {
+		m.pending = map[string]repository.PendingRegistration{}
+	}
+	p.Attempts = 0
+	m.pending[p.Email] = p
+	return nil
+}
+
+func (m *memStore) PendingRegistrationByEmail(_ context.Context, email string, now time.Time) (repository.PendingRegistration, error) {
+	p, ok := m.pending[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.PendingRegistration{}, repository.ErrNotFound
+	}
+	return p, nil
+}
+
+func (m *memStore) ReplacePendingRegistrationCode(_ context.Context, email, codeHash string, expiresAt, now time.Time) error {
+	p, ok := m.pending[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.ErrNotFound
+	}
+	p.CodeHash, p.Attempts, p.ExpiresAt, p.LastSentAt = codeHash, 0, expiresAt, now
+	m.pending[email] = p
+	return nil
+}
+
+func (m *memStore) ConfirmPendingRegistration(ctx context.Context, email, codeHash string, now time.Time, maxAttempts int) (repository.Developer, error) {
+	p, ok := m.pending[email]
+	if !ok || !p.ExpiresAt.After(now) {
+		return repository.Developer{}, repository.ErrNotFound
+	}
+	if p.CodeHash != codeHash {
+		if p.Attempts+1 >= maxAttempts {
+			delete(m.pending, email)
+			return repository.Developer{}, repository.ErrTooManyAttempts
+		}
+		p.Attempts++
+		m.pending[email] = p
+		return repository.Developer{}, repository.ErrWrongCode
+	}
+	d, err := m.CreateDeveloper(ctx, p.Email, p.PasswordHash, p.Name)
+	if err != nil {
+		return repository.Developer{}, err
+	}
+	delete(m.pending, email)
+	return d, nil
+}
+
+// memRefreshToken is a row of the developer_refresh_tokens table.
+type memRefreshToken struct {
+	developerID string
+	sessionID   string
+	expiresAt   time.Time
+	replacedAt  *time.Time
+}
+
+func (m *memStore) CreateRefreshSession(_ context.Context, developerID, tokenHash string, expiresAt, now time.Time) error {
+	for hash, tok := range m.refreshTokens {
+		if tok.developerID == developerID && !tok.expiresAt.After(now) {
+			delete(m.refreshTokens, hash)
+		}
+	}
+	if m.refreshTokens == nil {
+		m.refreshTokens = map[string]memRefreshToken{}
+	}
+	m.refreshSessions++
+	m.refreshTokens[tokenHash] = memRefreshToken{
+		developerID: developerID, sessionID: "session-" + strconv.Itoa(m.refreshSessions), expiresAt: expiresAt,
+	}
+	return nil
+}
+
+func (m *memStore) RotateRefreshToken(_ context.Context, oldHash, newHash string, newExpiresAt, now time.Time, grace time.Duration) (string, error) {
+	old, ok := m.refreshTokens[oldHash]
+	if !ok || !old.expiresAt.After(now) {
+		return "", repository.ErrNotFound
+	}
+	switch {
+	case old.replacedAt == nil:
+		old.replacedAt = &now
+		m.refreshTokens[oldHash] = old
+	case now.Sub(*old.replacedAt) > grace:
+		for hash, tok := range m.refreshTokens {
+			if tok.sessionID == old.sessionID {
+				delete(m.refreshTokens, hash)
+			}
+		}
+		return "", repository.ErrRefreshTokenReused
+	}
+	m.refreshTokens[newHash] = memRefreshToken{developerID: old.developerID, sessionID: old.sessionID, expiresAt: newExpiresAt}
+	return old.developerID, nil
+}
+
+func (m *memStore) DeleteRefreshSession(_ context.Context, tokenHash string) error {
+	found, ok := m.refreshTokens[tokenHash]
+	if !ok {
+		return nil
+	}
+	for hash, tok := range m.refreshTokens {
+		if tok.sessionID == found.sessionID {
+			delete(m.refreshTokens, hash)
+		}
+	}
+	return nil
+}
+
+type memResetToken struct {
+	developerID string
+	expiresAt   time.Time
+}
+
+func (m *memStore) CreatePasswordResetToken(_ context.Context, developerID, tokenHash string, expiresAt, now time.Time) error {
+	for hash, tok := range m.resetTokens {
+		if tok.developerID == developerID || !tok.expiresAt.After(now) {
+			delete(m.resetTokens, hash)
+		}
+	}
+	if m.resetTokens == nil {
+		m.resetTokens = map[string]memResetToken{}
+	}
+	m.resetTokens[tokenHash] = memResetToken{developerID: developerID, expiresAt: expiresAt}
+	return nil
+}
+
+func (m *memStore) ResetPassword(_ context.Context, tokenHash, passwordHash string, now time.Time) (string, error) {
+	tok, ok := m.resetTokens[tokenHash]
+	if !ok || !tok.expiresAt.After(now) {
+		return "", repository.ErrNotFound
+	}
+	delete(m.resetTokens, tokenHash)
+	for hash, rt := range m.refreshTokens {
+		if rt.developerID == tok.developerID {
+			delete(m.refreshTokens, hash)
+		}
+	}
+	for i := range m.devs {
+		if m.devs[i].ID == tok.developerID {
+			m.devs[i].PasswordHash, m.devs[i].PasswordChangedAt = passwordHash, &now
+		}
+	}
+	return tok.developerID, nil
 }
 
 func (m *memStore) Ping(context.Context) error { return nil }
