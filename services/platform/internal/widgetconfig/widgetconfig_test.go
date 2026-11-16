@@ -257,15 +257,35 @@ func TestRejectsALabelKeyThatIsNotInTheContract(t *testing.T) {
 	wantIssue(t, issuesOf(t, m), "/texts/labels", "additionalProperties")
 }
 
-// The clan chat's member lines (TEAM-293) can be worded by the game; {player} is the player's name.
+// The clan chat's member lines (TEAM-293) can be worded by the game; {player} is the player's name, and {by}
+// (in memberKickedBy, the line of a kick that says who removed the player) is that player's name.
 func TestAcceptsTheMemberLineLabels(t *testing.T) {
 	m := arena(t)
 	labels := obj(m, "texts", "labels")
 	labels["memberJoined"] = "Welcome, {player}!"
 	labels["memberLeft"] = "{player} left the {clan}"
 	labels["memberKicked"] = "{player} was removed"
+	labels["memberKickedBy"] = "{by} removed {player}"
 	if issues := issuesOf(t, m); len(issues) != 0 {
 		t.Fatalf("issues = %+v, want none", issues)
+	}
+}
+
+// memberKickedBy follows the rules of every label: 1 to 40 characters, no markup.
+func TestRejectsABadMemberKickedByLabel(t *testing.T) {
+	for name, text := range map[string]string{
+		"empty":    "",
+		"too long": "{player} was removed from the {clan} by {by} just now",
+		"markup":   "<b>{by}</b> removed {player}",
+		"a link":   "{by} removed {player} https://example.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := arena(t)
+			obj(m, "texts", "labels")["memberKickedBy"] = text
+			if issues := issuesOf(t, m); len(issues) == 0 {
+				t.Errorf("%q was accepted, want an issue", text)
+			}
+		})
 	}
 }
 
