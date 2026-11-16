@@ -18,6 +18,7 @@ import (
 	"gitlab.com/clan-platform/clan-backend/pkg/httpx"
 	"gitlab.com/clan-platform/clan-backend/pkg/jwt"
 	"gitlab.com/clan-platform/clan-backend/pkg/logx"
+	"gitlab.com/clan-platform/clan-backend/pkg/mailer"
 	"gitlab.com/clan-platform/clan-backend/pkg/otelx"
 	"gitlab.com/clan-platform/clan-backend/pkg/pg"
 
@@ -117,6 +118,27 @@ func run() error {
 		return err
 	}
 	svc.WithAdminTokenTTL(adminTokenTTL)
+
+	// Password reset: the link in the email opens the dashboard at PLATFORM_DASHBOARD_URL, and the
+	// email goes through the SMTP server of PLATFORM_SMTP_HOST. Without one, the email is written
+	// to the log instead, which is fine on a developer's machine and wrong anywhere else.
+	var sender mailer.Sender = mailer.Log{Log: log}
+	if host := config.String("PLATFORM_SMTP_HOST", ""); host != "" {
+		smtpPort, err := config.Int("PLATFORM_SMTP_PORT", 587)
+		if err != nil {
+			return err
+		}
+		username := config.String("PLATFORM_SMTP_USERNAME", "")
+		sender = mailer.SMTP{
+			Host: host, Port: smtpPort, Username: username,
+			Password: config.String("PLATFORM_SMTP_PASSWORD", ""),
+			From:     config.String("PLATFORM_SMTP_FROM", username),
+		}
+		log.Info("password reset emails are sent by smtp", "host", host, "port", smtpPort) // never log the password
+	} else {
+		log.Warn("PLATFORM_SMTP_HOST is not set: password reset emails are written to the log, not sent")
+	}
+	svc.WithPasswordReset(resetMailer{sender: sender, log: log}, config.String("PLATFORM_DASHBOARD_URL", "http://localhost:5173"))
 
 	// The /internal routes (for realtime) need a shared secret. Without one they answer 404.
 	internalToken := config.String("PLATFORM_INTERNAL_TOKEN", "")

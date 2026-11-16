@@ -59,6 +59,48 @@ type fakeStore struct {
 	pending   []events.Event  // events of the open transaction
 	depth     int             // InTx calls in progress
 	addErr    error           // what AddEvents returns, when set
+
+	// resetTokens holds the password reset tokens by their hash, like the real table.
+	resetTokens map[string]fakeResetToken
+}
+
+type fakeResetToken struct {
+	developerID string
+	expiresAt   time.Time
+}
+
+func (f *fakeStore) CreatePasswordResetToken(_ context.Context, developerID, tokenHash string, expiresAt, now time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	for hash, tok := range f.resetTokens {
+		if tok.developerID == developerID || !tok.expiresAt.After(now) {
+			delete(f.resetTokens, hash)
+		}
+	}
+	if f.resetTokens == nil {
+		f.resetTokens = map[string]fakeResetToken{}
+	}
+	f.resetTokens[tokenHash] = fakeResetToken{developerID: developerID, expiresAt: expiresAt}
+	return nil
+}
+
+func (f *fakeStore) ResetPassword(_ context.Context, tokenHash, passwordHash string, now time.Time) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	tok, ok := f.resetTokens[tokenHash]
+	if !ok || !tok.expiresAt.After(now) {
+		return "", repository.ErrNotFound
+	}
+	delete(f.resetTokens, tokenHash)
+	for email, d := range f.byEmail {
+		if d.ID == tok.developerID {
+			d.PasswordHash, d.PasswordChangedAt = passwordHash, &now
+			f.byEmail[email] = d
+		}
+	}
+	return tok.developerID, nil
 }
 
 func (f *fakeStore) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
@@ -356,7 +398,7 @@ func TestAuthenticateDeveloper(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, err := svc.AuthenticateDeveloper(tt.token)
+			id, err := svc.AuthenticateDeveloper(context.Background(), tt.token)
 			if tt.want {
 				if err != nil || id != dev.ID {
 					t.Fatalf("want id %q, got %q, %v", dev.ID, id, err)

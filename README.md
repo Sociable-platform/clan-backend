@@ -133,6 +133,34 @@ go run ./tools/devtoken -ttl -1m                              # already expired:
 
 Send it as `Authorization: Bearer <token>`. `go run ./tools/devtoken -h` lists all options.
 
+### Password reset (developers)
+
+A developer who forgot the password asks for a link on the dashboard's login page:
+
+1. `POST /api/v1/developers/password-reset` with the email. The answer is always 202, so nobody can use it to
+   find out who is registered. If the email belongs to an account, platform emails a link:
+   `<PLATFORM_DASHBOARD_URL>/reset-password#token=<token>`.
+2. The dashboard's reset page sends the token and the new password to `POST /api/v1/developers/password-reset/confirm`.
+
+Rules: the link works **once** and for **30 minutes**; asking again replaces the earlier link; the database keeps only a
+SHA-256 hash of the token (`password_reset_tokens`); the new password follows the rules of registration; after a reset,
+every developer token issued before it is refused, so sessions that used the old password are logged out
+(`developers.password_changed_at`). Limits, counted in platform's memory: 3 requests per email and 20 per IP address
+in 15 minutes, then 429 `rate_limited`.
+
+The email goes through an SMTP server with STARTTLS (`pkg/mailer`). **Without `PLATFORM_SMTP_HOST` nothing is sent**:
+platform writes the email, with the link, to its log (`email not sent: no mail server is configured`), which is how
+you try the flow on your own machine. Never run a public server that way.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PLATFORM_DASHBOARD_URL` | `http://localhost:5173` | Where the dashboard runs; the start of the reset link. |
+| `PLATFORM_SMTP_HOST` | none | SMTP server, for example `smtp.gmail.com`. Empty: emails are logged, not sent. |
+| `PLATFORM_SMTP_PORT` | `587` | The STARTTLS port. Port 465 (TLS from the first byte) is not supported. |
+| `PLATFORM_SMTP_USERNAME` | none | Login of the SMTP server; for Gmail the full address. |
+| `PLATFORM_SMTP_PASSWORD` | none | Its password; for Gmail an **app password** (the account needs 2-Step Verification). Never logged. |
+| `PLATFORM_SMTP_FROM` | the username | The sender: `noreply@example.com` or `Name <noreply@example.com>`. |
+
 ### Admin accounts (admin panel)
 
 Admins are distributor staff, kept in their own `admins` table and signed in with their own token type (`typ: admin`),
@@ -635,6 +663,8 @@ Only the developer's own switch counts here: a game suspended on its own does no
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
 | POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
 | POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
+| POST | `/api/v1/developers/password-reset` | 202 always, for a known and an unknown email alike; emails a reset link to a known one (see "Password reset"). 400 `invalid_email`; 429 `rate_limited` |
+| POST | `/api/v1/developers/password-reset/confirm` | 204 and the password is changed, with `{ token, password }`; 400 `invalid_reset_token` (unknown, used or expired) or `invalid_password`; 429 `rate_limited` |
 | GET | `/api/v1/developers/me` | 200 with the developer, including `status` (`active` / `suspended`) and `statusReason` (`non_payment` / `abuse` / `other`, else `null`) so the dashboard can explain a suspension; never the admin's internal note. 401 unless `Authorization: Bearer <developer token>` |
 | POST | `/api/v1/admin/login` | 200 `{ token, expiresIn }` with an **admin** token; 401 `invalid_credentials` for an unknown email, a wrong password and a disabled admin alike |
 | GET | `/api/v1/admin/me` | 200 with the admin; 401 unless `Authorization: Bearer <admin token>` of an admin who is not disabled (developer and player tokens get 401) |

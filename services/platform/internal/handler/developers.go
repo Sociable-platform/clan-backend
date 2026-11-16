@@ -102,7 +102,7 @@ func (h *Handler) requireDeveloper(next http.HandlerFunc) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized", "A valid developer token is required")
 			return
 		}
-		id, err := h.svc.AuthenticateDeveloper(token)
+		id, err := h.svc.AuthenticateDeveloper(r.Context(), token)
 		if err != nil {
 			h.fail(w, r, err)
 			return

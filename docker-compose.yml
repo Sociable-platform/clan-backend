@@ -128,6 +128,13 @@ services:
       PLATFORM_ADMIN_TOKEN_TTL: ${PLATFORM_ADMIN_TOKEN_TTL:-1h}
       # Shared secret of platform's /internal endpoints (realtime reads each game's allowed origins there). Empty: switched off.
       PLATFORM_INTERNAL_TOKEN: ${PLATFORM_INTERNAL_TOKEN:-}
+      # Password reset: the link points at the dashboard; without an SMTP host the email is written to the log (README "Password reset")
+      PLATFORM_DASHBOARD_URL: ${PLATFORM_DASHBOARD_URL:-http://localhost:5173}
+      PLATFORM_SMTP_HOST: ${PLATFORM_SMTP_HOST:-}
+      PLATFORM_SMTP_PORT: ${PLATFORM_SMTP_PORT:-587}
+      PLATFORM_SMTP_USERNAME: ${PLATFORM_SMTP_USERNAME:-}
+      PLATFORM_SMTP_PASSWORD: ${PLATFORM_SMTP_PASSWORD:-}
+      PLATFORM_SMTP_FROM: ${PLATFORM_SMTP_FROM:-}
       # Events for the other services: config.published after a publish or rollback, game.suspended / game.resumed after an admin changes a status (README "RabbitMQ events")
       PLATFORM_RABBITMQ_URL: amqp://${RABBITMQ_USER:-clan}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
       # Outbox relay: how often it looks for unsent events, how long sent ones are kept (README "Event outbox")

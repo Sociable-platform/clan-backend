@@ -221,6 +221,89 @@ paths:
                   message: Email or password is wrong
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
+  /api/v1/developers/password-reset:
+    post:
+      tags: [developers]
+      operationId: requestPasswordReset
+      summary: Ask for a link to reset a forgotten password
+      description: |
+        Emails a link to the dashboard's reset page (`<dashboard>/reset-password#token=<token>`) to the
+        developer with this email. The link works once and for 30 minutes; asking again replaces it.
+
+        The answer is the same 202 whether or not an account with this email exists, so this endpoint
+        does not tell who is registered. Limited to 3 requests per email and 20 per IP address in
+        15 minutes; over that it answers 429 with `Retry-After`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequest"
+            example:
+              email: dev@example.com
+      responses:
+        "202":
+          description: Accepted. If the email belongs to an account, the link is on its way.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+              example:
+                message: If an account with this email exists, a link to reset the password has been sent to it.
+        "400":
+          description: The body is not valid JSON (`invalid_json`) or the email is not an email address (`invalid_email`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_email
+                  message: Email address is not valid
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/v1/developers/password-reset/confirm:
+    post:
+      tags: [developers]
+      operationId: confirmPasswordReset
+      summary: Set a new password with the token from the reset link
+      description: |
+        `token` is the part after `#token=` in the emailed link. On success the password is changed,
+        the link stops working, and every developer token issued before is refused (401), so whoever
+        was logged in with the old password is logged out. The developer then logs in as usual.
+
+        The new password follows the rules of registration. A password that breaks them does not use
+        the link up. Limited to 20 requests per IP address in 15 minutes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetConfirmRequest"
+            example:
+              token: 3q2-7wEjYc0Vq8nG5sX1uZk4hTtB9aLmRrPdOoWfN6I
+              password: a brand new one
+      responses:
+        "204":
+          description: The password is changed.
+        "400":
+          description: |
+            The body is not valid JSON (`invalid_json`), the password is too short or too long
+            (`invalid_password`), or the token is unknown, already used or expired (`invalid_reset_token`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_reset_token
+                  message: This reset link is not valid or has expired. Ask for a new one.
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/v1/developers/me:
     get:
       tags: [developers]
@@ -1475,6 +1558,34 @@ components:
           type: string
           minLength: 1
           maxLength: 100
+    PasswordResetRequest:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+    PasswordResetConfirmRequest:
+      type: object
+      required: [token, password]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          description: The token from the reset link (the part after `#token=`).
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+    Message:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
     LoginRequest:
       type: object
       required: [email, password]
@@ -1950,8 +2061,23 @@ components:
             error:
               code: widget_version_not_found
               message: Widget version not found
+    RateLimited:
+      description: Too many attempts. `Retry-After` says how many seconds to wait.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until the limit starts again.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: rate_limited
+              message: Too many attempts. Try again in a few minutes.
     Unauthorized:
-      description: The developer token is missing, malformed, expired, of the wrong type, or its account no longer exists.
+      description: The developer token is missing, malformed, expired, of the wrong type, issued before the password was last reset, or its account no longer exists.
       content:
         application/json:
           schema:

@@ -31,6 +31,9 @@ type Developer struct {
 	// Status is StatusActive or StatusSuspended; StatusReason says why, and is empty while active.
 	Status       string
 	StatusReason string
+	// PasswordChangedAt is when the password was last reset, or nil when it never was. Developer
+	// tokens issued before it are no longer accepted (see service.AuthenticateDeveloper).
+	PasswordChangedAt *time.Time
 }
 
 // CreateDeveloper inserts a developer and returns it with its generated ID.
@@ -62,7 +65,7 @@ func (r *Repository) DeveloperByEmail(ctx context.Context, email string) (Develo
 		return Developer{}, ErrNoDatabase
 	}
 	row := r.db(ctx).QueryRow(ctx,
-		`select id::text, email, password_hash, name, created_at, status, coalesce(status_reason, '')
+		`select id::text, email, password_hash, name, created_at, status, coalesce(status_reason, ''), password_changed_at
 		 from developers where email = $1`, email)
 	return scanDeveloper(row)
 }
@@ -73,14 +76,14 @@ func (r *Repository) DeveloperByID(ctx context.Context, id string) (Developer, e
 		return Developer{}, ErrNoDatabase
 	}
 	row := r.db(ctx).QueryRow(ctx,
-		`select id::text, email, password_hash, name, created_at, status, coalesce(status_reason, '')
+		`select id::text, email, password_hash, name, created_at, status, coalesce(status_reason, ''), password_changed_at
 		 from developers where id = $1`, id)
 	return scanDeveloper(row)
 }
 
 func scanDeveloper(row pgx.Row) (Developer, error) {
 	var d Developer
-	err := row.Scan(&d.ID, &d.Email, &d.PasswordHash, &d.Name, &d.CreatedAt, &d.Status, &d.StatusReason)
+	err := row.Scan(&d.ID, &d.Email, &d.PasswordHash, &d.Name, &d.CreatedAt, &d.Status, &d.StatusReason, &d.PasswordChangedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Developer{}, ErrNotFound
 	}
