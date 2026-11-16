@@ -30,11 +30,13 @@ func (u *uniqueStore) UpsertDM(ctx context.Context, gameID, key string, a, b rep
 	return u.memStore.UpsertDM(ctx, gameID, key, a, b)
 }
 
-func (u *uniqueStore) RemoveDMMembers(ctx context.Context, gameID, key string) (string, bool, error) {
-	_, existed := u.rows[gameID+"|"+key]
-	delete(u.rows, gameID+"|"+key)
-	// The first removal finds the conversation; a repeat finds nothing and has nothing to tell.
-	return "c-1", existed, nil
+func (u *uniqueStore) MakeDMReadOnly(ctx context.Context, gameID, key string) (repository.DM, bool, error) {
+	// The first call makes the conversation read-only; a repeat finds it read-only already and has nothing to tell.
+	open, exists := u.rows[gameID+"|"+key]
+	if exists {
+		u.rows[gameID+"|"+key] = false
+	}
+	return repository.DM{ConversationID: "c-1", ReadOnly: true}, exists && open, nil
 }
 
 func (u *uniqueStore) RenamePlayer(_ context.Context, gameID, playerID, name string) error {
@@ -84,29 +86,29 @@ func TestEventsDeliveredTwiceLeaveOneRow(t *testing.T) {
 		}
 	})
 
-	t.Run("friend.removed tells once, then nothing", func(t *testing.T) {
+	t.Run("friend.removed makes it read-only once, then tells nothing", func(t *testing.T) {
 		store := newUniqueStore()
 		svc := New(store)
 		if _, err := svc.FriendAccepted(ctx, game, req1, a, b); err != nil {
 			t.Fatal(err)
 		}
 
-		first, err := svc.FriendRemoved(ctx, game, ali, rashad, ali)
+		first, err := svc.FriendRemoved(ctx, game, a, b, ali)
 		if err != nil {
 			t.Fatal(err)
 		}
-		second, err := svc.FriendRemoved(ctx, game, ali, rashad, ali)
+		second, err := svc.FriendRemoved(ctx, game, a, b, ali)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(first) != 1 || first[0].Type != "conversation.removed" {
-			t.Errorf("first delivery = %+v, want one conversation.removed", first)
+		if len(first) != 2 || first[0].Type != "conversation.updated" || first[1].Type != "conversation.updated" {
+			t.Errorf("first delivery = %+v, want conversation.updated for each player", first)
 		}
 		if second != nil {
 			t.Errorf("second delivery = %+v, want nothing", second)
 		}
-		if len(store.rows) != 0 {
-			t.Errorf("conversations = %d, want 0", len(store.rows))
+		if len(store.rows) != 1 {
+			t.Errorf("conversations = %d, want the one kept (read-only)", len(store.rows))
 		}
 	})
 

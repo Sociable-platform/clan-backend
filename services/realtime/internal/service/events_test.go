@@ -21,15 +21,12 @@ const (
 
 // memStore records what the service asks of the repository.
 type memStore struct {
-	upserts []upsertCall
-	removes []string // dm keys
-	renames []string // game|player|name
-	dm      repository.DM
-	removed struct {
-		id    string
-		found bool
-	}
-	err error
+	upserts         []upsertCall
+	renames         []string // game|player|name
+	dm              repository.DM
+	readOnly        []string // game|dm key, each MakeDMReadOnly call
+	readOnlyChanged bool     // what MakeDMReadOnly returns as changed (with dm, ReadOnly set)
+	err             error
 
 	inserts   []insertCall
 	members   []string
@@ -134,9 +131,11 @@ func (m *memStore) UpsertDM(_ context.Context, gameID, key string, a, b reposito
 	return m.dm, m.err
 }
 
-func (m *memStore) RemoveDMMembers(_ context.Context, gameID, key string) (string, bool, error) {
-	m.removes = append(m.removes, gameID+"|"+key)
-	return m.removed.id, m.removed.found, m.err
+func (m *memStore) MakeDMReadOnly(_ context.Context, gameID, key string) (repository.DM, bool, error) {
+	m.readOnly = append(m.readOnly, gameID+"|"+key)
+	dm := m.dm
+	dm.ReadOnly = true
+	return dm, m.readOnlyChanged, m.err
 }
 
 func (m *memStore) RenamePlayer(_ context.Context, gameID, playerID, name string) error {
@@ -264,19 +263,19 @@ func TestEventsRejectBadInputWithoutTouchingTheDatabase(t *testing.T) {
 			return err
 		}},
 		{"removed: same player twice", func(s *Service) error {
-			_, err := s.FriendRemoved(context.Background(), game, ali, ali, ali)
+			_, err := s.FriendRemoved(context.Background(), game, Player{ali, "Ali"}, Player{ali, "Ali"}, ali)
 			return err
 		}},
 		{"removed: id is empty", func(s *Service) error {
-			_, err := s.FriendRemoved(context.Background(), game, ali, "", ali)
+			_, err := s.FriendRemoved(context.Background(), game, Player{ali, "Ali"}, Player{"", "R"}, ali)
 			return err
 		}},
 		{"removed: removed_by is a stranger", func(s *Service) error {
-			_, err := s.FriendRemoved(context.Background(), game, ali, rashad, "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+			_, err := s.FriendRemoved(context.Background(), game, Player{ali, "Ali"}, Player{rashad, "R"}, "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 			return err
 		}},
 		{"removed: removed_by is missing", func(s *Service) error {
-			_, err := s.FriendRemoved(context.Background(), game, ali, rashad, "")
+			_, err := s.FriendRemoved(context.Background(), game, Player{ali, "Ali"}, Player{rashad, "R"}, "")
 			return err
 		}},
 		{"accepted: request id is not a uuid", func(s *Service) error {
@@ -327,7 +326,7 @@ func TestEventsRejectBadInputWithoutTouchingTheDatabase(t *testing.T) {
 			if !errors.Is(err, ErrInvalidEvent) {
 				t.Fatalf("error = %v, want ErrInvalidEvent", err)
 			}
-			if len(store.upserts)+len(store.removes)+len(store.renames) != 0 {
+			if len(store.upserts)+len(store.readOnly)+len(store.renames) != 0 {
 				t.Errorf("the database was called for an invalid event")
 			}
 		})
@@ -343,38 +342,56 @@ func TestDatabaseFailureIsNotAnInvalidEvent(t *testing.T) {
 	if !errors.Is(err, errDB) || errors.Is(err, ErrInvalidEvent) || pushes != nil {
 		t.Errorf("accepted = (%v, %v), want the database error and no frames", pushes, err)
 	}
-	store.removed.found = true
-	pushes, err = svc.FriendRemoved(context.Background(), game, ali, rashad, ali)
+	pushes, err = svc.FriendRemoved(context.Background(), game, Player{ali, "Ali"}, Player{rashad, "R"}, ali)
 	if !errors.Is(err, errDB) || errors.Is(err, ErrInvalidEvent) || pushes != nil {
 		t.Errorf("removed = (%v, %v), want the database error and no frames", pushes, err)
 	}
 }
 
+// A removal or a block ended the friendship (TEAM-283, Option A): both keep the DM, read-only.
 func TestFriendRemoved(t *testing.T) {
-	t.Run("both players hear about it", func(t *testing.T) {
-		store := &memStore{}
-		store.removed.id, store.removed.found = "c-1", true
-		pushes, err := New(store).FriendRemoved(context.Background(), game, rashad, ali, ali)
+	last := time.Date(2026, 11, 9, 18, 20, 0, 0, time.UTC)
+	t.Run("both keep the DM, read-only, and get it again with presence hidden", func(t *testing.T) {
+		store := &memStore{readOnlyChanged: true, dm: repository.DM{
+			ConversationID: "c-1",
+			LastMessage:    &repository.Message{ID: "m-1", SenderID: rashad, SenderName: "Rashad", Body: "gg", CreatedAt: last},
+			Unread:         map[string]int{ali: 2, rashad: 0},
+		}}
+		// Both are online, but a read-only DM is not a friendship: nobody sees the other online.
+		svc := New(store, WithPresence(onlineSet{ali: true, rashad: true}))
+		pushes, err := svc.FriendRemoved(context.Background(), game, Player{rashad, "Rashad"}, Player{ali, "Ali"}, ali)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := []string{game + "|" + ali + ":" + rashad}; !reflect.DeepEqual(store.removes, want) {
-			t.Errorf("removes = %v, want %v", store.removes, want)
+		if want := []string{game + "|" + ali + ":" + rashad}; !reflect.DeepEqual(store.readOnly, want) {
+			t.Errorf("read-only = %v, want %v", store.readOnly, want)
 		}
-		if len(pushes) != 1 || pushes[0].Type != "conversation.removed" || pushes[0].GameID != game {
-			t.Fatalf("pushes = %+v", pushes)
+		if len(pushes) != 2 {
+			t.Fatalf("pushes = %+v, want one per player", pushes)
 		}
-		if !reflect.DeepEqual(pushes[0].PlayerIDs, []string{rashad, ali}) {
-			t.Errorf("sent to %v, want both players", pushes[0].PlayerIDs)
-		}
-		if s := mustJSON(t, pushes[0].Data); s != `{"conversationId":"c-1"}` {
-			t.Errorf("data = %s", s)
+		for i, p := range []struct{ id, unread string }{{rashad, "0"}, {ali, "2"}} {
+			if pushes[i].Type != "conversation.updated" || !reflect.DeepEqual(pushes[i].PlayerIDs, []string{p.id}) {
+				t.Fatalf("push %d = %+v", i, pushes[i])
+			}
+			want := `{"conversation":{"id":"c-1","kind":"dm","clanId":null,"members":[` +
+				`{"id":"` + rashad + `","name":"Rashad","online":false},{"id":"` + ali + `","name":"Ali","online":false}],` +
+				`"lastMessage":{"id":"m-1","senderId":"` + rashad + `","senderName":"Rashad","body":"gg","createdAt":"2026-11-09T18:20:00Z"},` +
+				`"unread":` + p.unread + `,"readOnly":true}}`
+			if s := mustJSON(t, pushes[i].Data); s != want {
+				t.Errorf("push %d data =\n%s\nwant\n%s", i, s, want)
+			}
 		}
 	})
-	t.Run("no conversation, nothing to send", func(t *testing.T) {
-		pushes, err := New(&memStore{}).FriendRemoved(context.Background(), game, ali, rashad, rashad)
+	t.Run("no conversation, or already read-only (redelivered), nothing to send", func(t *testing.T) {
+		pushes, err := New(&memStore{}).FriendRemoved(context.Background(), game, Player{ali, "Ali"}, Player{rashad, "Rashad"}, rashad)
 		if err != nil || pushes != nil {
 			t.Errorf("= (%v, %v), want nothing", pushes, err)
+		}
+	})
+	t.Run("removed_by must be one of the two", func(t *testing.T) {
+		_, err := New(&memStore{readOnlyChanged: true}).FriendRemoved(context.Background(), game, Player{ali, "Ali"}, Player{rashad, "Rashad"}, "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+		if err == nil {
+			t.Error("accepted a removed_by who is not one of the players")
 		}
 	})
 }
@@ -385,7 +402,7 @@ func TestFriendRequestSent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(store.upserts)+len(store.removes) != 0 {
+	if len(store.upserts)+len(store.readOnly) != 0 {
 		t.Error("a friend request is not stored")
 	}
 	if len(pushes) != 1 || pushes[0].Type != "notification" || !reflect.DeepEqual(pushes[0].PlayerIDs, []string{rashad}) {
@@ -431,7 +448,7 @@ func TestFriendRequestCancelledAndDeclinedTellOnlyTheReceiver(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(store.upserts)+len(store.removes)+len(store.renames) != 0 {
+			if len(store.upserts)+len(store.readOnly)+len(store.renames) != 0 {
 				t.Error("nothing is stored for a request")
 			}
 			if len(pushes) != 1 || pushes[0].Type != "notification" || pushes[0].GameID != game ||
@@ -460,9 +477,8 @@ func TestFriendAcceptedWithoutARequestID(t *testing.T) {
 
 func TestFriendRemovedNeedsRemovedByToBeOneOfThePlayers(t *testing.T) {
 	for _, by := range []string{ali, rashad, strings.ToUpper(rashad)} {
-		store := &memStore{}
-		store.removed.id, store.removed.found = "c-1", true
-		if _, err := New(store).FriendRemoved(context.Background(), game, ali, rashad, by); err != nil {
+		store := &memStore{readOnlyChanged: true}
+		if _, err := New(store).FriendRemoved(context.Background(), game, Player{ali, "Ali"}, Player{rashad, "Rashad"}, by); err != nil {
 			t.Errorf("removed_by %s: %v", by, err)
 		}
 	}

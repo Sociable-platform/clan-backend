@@ -50,7 +50,7 @@ type Events interface {
 	FriendRequestCancelled(ctx context.Context, gameID, requestID string, sender service.Player, receiverID string) ([]service.Push, error)
 	FriendRequestDeclined(ctx context.Context, gameID, requestID string, sender service.Player, receiverID string) ([]service.Push, error)
 	FriendAccepted(ctx context.Context, gameID, requestID string, a, b service.Player) ([]service.Push, error)
-	FriendRemoved(ctx context.Context, gameID, aID, bID, removedBy string) ([]service.Push, error)
+	FriendRemoved(ctx context.Context, gameID string, a, b service.Player, removedBy string) ([]service.Push, error)
 	PlayerRenamed(ctx context.Context, gameID string, p service.Player) ([]service.Push, error)
 	PlayerBlocked(ctx context.Context, gameID, blockerID, blockedID string) ([]service.Push, error)
 	PlayerUnblocked(ctx context.Context, gameID, blockerID, blockedID string) ([]service.Push, error)
@@ -302,7 +302,7 @@ func (d *Dispatcher) store(ctx context.Context, env events.Event) ([]service.Pus
 		if len(data.Players) != 2 {
 			return nil, fmt.Errorf("%w: friend.removed needs exactly two players, got %d", ErrDrop, len(data.Players))
 		}
-		return d.events.FriendRemoved(ctx, env.GameID, data.Players[0].ID, data.Players[1].ID, data.RemovedBy)
+		return d.events.FriendRemoved(ctx, env.GameID, player(data.Players[0]), player(data.Players[1]), data.RemovedBy)
 	case typePlayerRenamed:
 		var data playerRenamedData
 		if err := decode(env.Data, &data); err != nil {

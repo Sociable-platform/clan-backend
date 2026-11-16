@@ -367,7 +367,7 @@ Every event with its `data` (the full messages, as they travel on the queue, are
 | `friend.request_cancelled` | sends a `friend_request_cancelled` notification to the `receiver` (all open tabs) so the SDK removes the `friend_request` with the same `requestId`. `request_id` is required. The sender is not told. |
 | `friend.request_declined` | sends a `friend_request_declined` notification to the `receiver` only (their other tabs drop the `friend_request`). `request_id` is required. The sender is **not** told. |
 | `friend.accepted` | creates the DM conversation of the two `players` and both memberships (or reuses it), sends `conversation.added` and a `friend_accepted` notification to both. Exactly two players are required. The notification carries `requestId` (`null` when the event has no `request_id`). |
-| `friend.removed` | deletes both memberships (the messages stay) and sends `conversation.removed` to both, with no notification. Exactly two `players` are required and `removed_by` must be one of them. |
+| `friend.removed` | keeps the pair's DM with both memberships and its history, and makes it read-only (TEAM-283): each player gets `conversation.updated` with `readOnly: true` and both members offline, with no notification. Nobody can send in it (`not_friends`) and no presence goes either way until a `friend.accepted` opens it again. The same for a removal and a block. Exactly two `players` are required and `removed_by` must be one of them. |
 | `player.renamed` | stores the new name with the player's memberships in that game. No frame is sent; messages keep the name their sender had when writing them. |
 | `clan.created` | creates the clan's chat room (a conversation of `kind` `clan` with the clan's `clanId`) with the owner (`player`) as its first member, and sends `conversation.added` to the owner. |
 | `clan.member_joined` | adds the `player` to the clan's room (and creates the room if `clan.created` was never seen), sends `conversation.added` with the room to the player and a `clan_joined` notification to the other members. The room comes with its **whole history**, also the messages written before the player joined or while they were away; their unread count starts from the start of the history. |
@@ -753,7 +753,8 @@ one-way and the blocked player is not told:
 - The blocked player's friend requests to the blocker answer 404 `player_not_found`, and the blocker is left out of
   their search, so the block stays hidden. The blocker's own request answers 409 `player_blocked` until they unblock.
 - Realtime keeps its own copy of the blocks from the two events and refuses direct messages between the pair.
-- Unblocking brings nothing back: the two have to become friends again.
+- Unblocking brings nothing back: the two have to become friends again. Their DM stays read-only for both until then
+  (as after any ended friendship, TEAM-283), and opens again with its history when they do.
 
 **Internal endpoints** are for other services, not for the SDK. They need `X-Internal-Token: <SOCIAL_INTERNAL_TOKEN>`
 (401 `invalid_internal_token` otherwise; a player token is not accepted). They are the only routes that

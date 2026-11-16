@@ -5,7 +5,7 @@ WebSocket. The two REST reads (conversation list and history) are in [`realtime.
 
 - **Status:** contract for the SDK. Every frame the server sends has the envelope of a queue event (section 2). Built so far: the endpoint with the token and origin checks, the `hello` frame, `ping`/`pong`,
   the 8 KB limit, `bad_frame` errors, the server's own keepalive ping (every 25 s), the close codes `1001`, `1008`, `1009`, `4001`, `4002` and `4403`,
-  the friend frames (`conversation.added`, `conversation.removed`, the `friend_request`, `friend_request_cancelled`, `friend_request_declined` and `friend_accepted` notifications), and
+  the friend frames (`conversation.added`, `conversation.updated`, the `friend_request`, `friend_request_cancelled`, `friend_request_declined` and `friend_accepted` notifications), and
   `message.send` with `message.ack` and `message.new`, and `conversation.read`.
   `message.send` follows the game's message rules (see `message.send` below): a rate limit per connection, the game's chat switches, blocks,
   its maximum length, slow mode and the profanity filter. Answers: `message.ack`, or `error` with `rate_limited`, `not_member`,
@@ -117,7 +117,7 @@ Send a text message to a conversation the player is a member of.
 - If the game's profanity filter is on, banned words in the stored and broadcast body are replaced with `***`.
   The `message.new` frame carries the final text.
 - The reply comes **after** the message is stored: `message.ack` on success, otherwise `error` and nothing is stored or
-  sent to anyone. Every `error` has `replyTo` (the frame's `id`). Possible error codes: `rate_limited`, `feature_disabled`, `not_member`, `blocked`, `empty`,
+  sent to anyone. Every `error` has `replyTo` (the frame's `id`). Possible error codes: `rate_limited`, `feature_disabled`, `not_member`, `not_friends`, `blocked`, `empty`,
   `too_long`, `slow_mode`, `bad_frame`, `internal`.
 - **The checks run in this order, and the first one that fails answers:**
 
@@ -127,10 +127,11 @@ Send a text message to a conversation the player is a member of.
   | 2 | The body is not empty after trimming and has no NUL character | `empty`, `bad_frame` |
   | 3 | The player is a member of the conversation | `not_member` |
   | 4 | The game turned this chat on: `chat.enabled`, and `chat.directMessages` for a DM or `chat.clanChat` for a clan room | `feature_disabled` |
-  | 5 | In a DM, neither player blocked the other (a block works both ways, and clan rooms are not affected) | `blocked` |
-  | 6 | The body is at most `chat.maxMessageLength` characters | `too_long` |
-  | 7 | Slow mode: `chat.slowModeSeconds` since this player's last stored message, counted across all their tabs and conversations. `retryAfterMs` says how long to wait. | `slow_mode` |
-  | 8 | The profanity filter, if `chat.profanityFilter` is on: whole words, compared in lower case, replaced with `***` | (no error) |
+  | 5 | A DM is not read-only (`readOnly`: the two are not friends any more; nobody can send until they are friends again) | `not_friends` |
+  | 6 | In a DM, neither player blocked the other (a block works both ways, and clan rooms are not affected) | `blocked` |
+  | 7 | The body is at most `chat.maxMessageLength` characters | `too_long` |
+  | 8 | Slow mode: `chat.slowModeSeconds` since this player's last stored message, counted across all their tabs and conversations. `retryAfterMs` says how long to wait. | `slow_mode` |
+  | 9 | The profanity filter, if `chat.profanityFilter` is on: whole words, compared in lower case, replaced with `***` | (no error) |
 
   Refused messages do not start the slow mode, and neither does one that could not be stored. The rules are those of the game's **published** config,
   which Realtime keeps in memory and updates on `config.published`. A game with no published config, or one Realtime cannot read yet (Platform down
@@ -171,6 +172,7 @@ Application-level liveness check for the SDK's own use. The server answers `pong
 | `notification` | `{ kind, payload }` |
 | `conversation.added` | `{ conversation }` |
 | `conversation.removed` | `{ conversationId }` |
+| `conversation.updated` | `{ conversation }` |
 | `config.updated` | `{ version }` |
 | `pong` | `{ replyTo }` |
 | `error` | `{ code, message, replyTo, retryAfterMs }` |
@@ -280,10 +282,22 @@ A notification can arrive twice (events are delivered at least once); showing it
 
 ### `conversation.added` / `conversation.removed`
 
-The list of conversations changed: a friendship started, the player joined or created a clan, or the opposite.
-`conversation.added` carries the full `conversation` object. The SDK ignores an `added` for an ID it already has.
-In `members`, `online` is true while the player has an open WebSocket or closed the last one less than 10 seconds ago. `conversation.removed` carries only the `conversationId`; remove it from the list. Messages stay in the history
-on the server, and a conversation returns with its history if the players become friends again.
+The list of conversations changed: a friendship started, the player joined or created a clan, or left it. An ended
+friendship does not remove the DM: it becomes read-only (`conversation.updated`, below).
+`conversation.added` carries the full `conversation` object. An `added` for an ID the SDK already has replaces that conversation (it opens a read-only DM again).
+In `members`, `online` is true while the player has an open WebSocket or closed the last one less than 10 seconds ago. `conversation.removed` carries only the `conversationId`; remove it from the list.
+
+### `conversation.updated`: a DM becomes read-only when the friendship ends
+
+When two players stop being friends, because one removed or blocked the other, their DM does not disappear: both
+keep it with its history, read-only (TEAM-283). Each of them gets `conversation.updated` with the full
+`conversation`, now with `readOnly: true` and both members `online: false`; replace the conversation with the same
+`id` (keep its loaded messages). Nobody is told who ended it. In a read-only DM nobody can send (`not_friends`), and
+it is not a friendship: no `presence.update` goes either way, and `GET /api/v1/conversations` lists it with
+`readOnly: true` and both members offline. It stays read-only after an unblock (unblocking does not make them
+friends). When they become friends again the same conversation comes back as `conversation.added` without
+`readOnly` (an SDK that already has it must update it, not ignore it), with the messages and each player's read
+position kept. `readOnly` is sent only when it is true.
 
 A clan room (`kind` `clan`, with the clan's `clanId`) is added when the player creates or joins the clan, and removed
 when they leave or are kicked. It comes with its whole history: the messages written before the player joined, and
@@ -352,6 +366,7 @@ A client frame was rejected. The connection stays open unless a close code in se
 | `rate_limited` | More than 5 `message.send` frames in 5 seconds on this connection. Three refused in a row also close the connection with `1008`. | Slow down; keep the text in the input. |
 | `feature_disabled` | The game turned off direct messages or clan chat for this kind of conversation. | Hide or disable the input. |
 | `not_member` | The player is not in the conversation (also for an unknown ID or one of another game). | Reload the conversation list. |
+| `not_friends` | The DM is read-only: the two are not friends any more (`readOnly` on the conversation). | Keep the conversation readable; disable the input. |
 | `blocked` | One of the two players blocked the other (direct messages only). The player is not told who blocked whom. | Show "you can't message this player". |
 | `empty` | The body is empty after trimming. | Do not send empty messages. |
 | `too_long` | The body is longer than the game's `max_message_length`. | Show the limit; the SDK checks first too. |

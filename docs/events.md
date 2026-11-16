@@ -524,7 +524,7 @@ Who gets what:
 | `friend.request_cancelled` | receiver: `friend_request_cancelled` |
 | `friend.request_declined` | receiver: `friend_request_declined` (the sender gets nothing) |
 | `friend.accepted` | both, in this order: `conversation.added`, then `friend_accepted` |
-| `friend.removed` | both: `conversation.removed` |
+| `friend.removed` | each: `conversation.updated` (the DM, `readOnly: true`, members offline; TEAM-283) |
 | `player.renamed` | nobody |
 | `config.published` | every connection of the game: `config.updated` |
 | `game.suspended` | no frame: every connection of the game is closed with `4403` `game_suspended` |

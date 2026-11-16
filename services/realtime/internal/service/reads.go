@@ -40,9 +40,10 @@ func (s *Service) Conversations(ctx context.Context, who Reader) ([]Conversation
 	}
 	out := make([]Conversation, 0, len(rows))
 	for _, c := range rows {
-		conv := Conversation{ID: c.ID, Kind: c.Kind, ClanID: c.ClanID, Members: make([]ConversationMember, 0, len(c.Members)), Unread: c.Unread}
+		conv := Conversation{ID: c.ID, Kind: c.Kind, ClanID: c.ClanID, Members: make([]ConversationMember, 0, len(c.Members)), Unread: c.Unread, ReadOnly: c.ReadOnly}
 		for _, m := range c.Members {
-			conv.Members = append(conv.Members, ConversationMember{ID: m.PlayerID, Name: m.Name, Online: s.online(who.GameID, m.PlayerID)})
+			// A read-only DM is not a friendship: its members' presence is not shown (always offline).
+			conv.Members = append(conv.Members, ConversationMember{ID: m.PlayerID, Name: m.Name, Online: !c.ReadOnly && s.online(who.GameID, m.PlayerID)})
 		}
 		conv.LastMessage = toMessage(c.LastMessage)
 		out = append(out, conv)
