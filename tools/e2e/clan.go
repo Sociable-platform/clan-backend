@@ -87,8 +87,9 @@ func (s *scenario) clanChat(ctx context.Context, a, b *player) error {
 	if back.LastMessage == nil || back.LastMessage.ID != missed {
 		return fmt.Errorf("%s: the room's last message is %+v, want the one written while away (%s)", b.name, back.LastMessage, missed)
 	}
-	if back.Unread != 2 {
-		return fmt.Errorf("%s: unread = %d, want 2 (both messages of %s)", b.name, back.Unread, a.name)
+	// What was written before joining is history, not unread.
+	if back.Unread != 0 {
+		return fmt.Errorf("%s: unread = %d, want 0 (a joiner starts with nothing unread)", b.name, back.Unread)
 	}
 	var history struct {
 		Messages []struct {
