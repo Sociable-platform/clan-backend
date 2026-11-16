@@ -44,11 +44,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	tokenTTL, err := config.Duration("PLATFORM_DEVELOPER_TOKEN_TTL", 24*time.Hour)
+	tokenTTL, err := config.Duration("PLATFORM_DEVELOPER_TOKEN_TTL", 15*time.Minute)
 	if err != nil {
 		return err
 	}
 	adminTokenTTL, err := config.Duration("PLATFORM_ADMIN_TOKEN_TTL", time.Hour)
+	if err != nil {
+		return err
+	}
+	refreshTokenTTL, err := config.Duration("PLATFORM_DEVELOPER_REFRESH_TTL", 7*24*time.Hour)
+	if err != nil {
+		return err
+	}
+	// The refresh cookie is sent over https only, unless this is switched off for http://localhost.
+	cookieSecure, err := config.Bool("PLATFORM_COOKIE_SECURE", true)
 	if err != nil {
 		return err
 	}
@@ -117,7 +126,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	svc.WithAdminTokenTTL(adminTokenTTL)
+	svc.WithAdminTokenTTL(adminTokenTTL).WithRefreshTokenTTL(refreshTokenTTL)
 
 	// Password reset: the link in the email opens the dashboard at PLATFORM_DASHBOARD_URL, and the
 	// email goes through the SMTP server of PLATFORM_SMTP_HOST. Without one, the email is written
@@ -152,11 +161,17 @@ func run() error {
 	}
 
 	mux := http.NewServeMux()
-	handler.New(serviceName, svc, log).WithInternal(httpx.RequireInternal(internalToken)).Register(mux)
+	routes := handler.New(serviceName, svc, log).WithInternal(httpx.RequireInternal(internalToken))
+	if !cookieSecure {
+		routes.WithInsecureCookies()
+		log.Warn("PLATFORM_COOKIE_SECURE is false: the refresh cookie is sent over plain http, use this on localhost only")
+	}
+	routes.Register(mux)
 
 	// Browser pages allowed to call this service (the developer dashboard).
 	origins := config.List("PLATFORM_CORS_ORIGINS", []string{"http://localhost:5173"})
-	cors, err := httpx.CORS(origins, "/api/v1/public/")
+	// With credentials: the dashboard is another origin and sends the refresh cookie to token/refresh and logout.
+	cors, err := httpx.CORSWithCredentials(origins, "/api/v1/public/")
 	if err != nil {
 		return err
 	}

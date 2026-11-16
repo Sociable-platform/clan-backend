@@ -62,6 +62,76 @@ type fakeStore struct {
 
 	// resetTokens holds the password reset tokens by their hash, like the real table.
 	resetTokens map[string]fakeResetToken
+	// refreshTokens holds the refresh tokens by their hash; refreshSessions counts the sessions started.
+	refreshTokens   map[string]fakeRefreshToken
+	refreshSessions int
+}
+
+// fakeRefreshToken is a row of the developer_refresh_tokens table.
+type fakeRefreshToken struct {
+	developerID string
+	sessionID   string
+	expiresAt   time.Time
+	replacedAt  *time.Time
+}
+
+func (f *fakeStore) CreateRefreshSession(_ context.Context, developerID, tokenHash string, expiresAt, now time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	for hash, tok := range f.refreshTokens {
+		if tok.developerID == developerID && !tok.expiresAt.After(now) {
+			delete(f.refreshTokens, hash)
+		}
+	}
+	if f.refreshTokens == nil {
+		f.refreshTokens = map[string]fakeRefreshToken{}
+	}
+	f.refreshSessions++
+	f.refreshTokens[tokenHash] = fakeRefreshToken{
+		developerID: developerID, sessionID: "session-" + strconv.Itoa(f.refreshSessions), expiresAt: expiresAt,
+	}
+	return nil
+}
+
+func (f *fakeStore) RotateRefreshToken(_ context.Context, oldHash, newHash string, newExpiresAt, now time.Time, grace time.Duration) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	old, ok := f.refreshTokens[oldHash]
+	if !ok || !old.expiresAt.After(now) {
+		return "", repository.ErrNotFound
+	}
+	switch {
+	case old.replacedAt == nil:
+		old.replacedAt = &now
+		f.refreshTokens[oldHash] = old
+	case now.Sub(*old.replacedAt) > grace:
+		for hash, tok := range f.refreshTokens {
+			if tok.sessionID == old.sessionID {
+				delete(f.refreshTokens, hash)
+			}
+		}
+		return "", repository.ErrRefreshTokenReused
+	}
+	f.refreshTokens[newHash] = fakeRefreshToken{developerID: old.developerID, sessionID: old.sessionID, expiresAt: newExpiresAt}
+	return old.developerID, nil
+}
+
+func (f *fakeStore) DeleteRefreshSession(_ context.Context, tokenHash string) error {
+	if f.err != nil {
+		return f.err
+	}
+	found, ok := f.refreshTokens[tokenHash]
+	if !ok {
+		return nil
+	}
+	for hash, tok := range f.refreshTokens {
+		if tok.sessionID == found.sessionID {
+			delete(f.refreshTokens, hash)
+		}
+	}
+	return nil
 }
 
 type fakeResetToken struct {
@@ -94,6 +164,11 @@ func (f *fakeStore) ResetPassword(_ context.Context, tokenHash, passwordHash str
 		return "", repository.ErrNotFound
 	}
 	delete(f.resetTokens, tokenHash)
+	for hash, rt := range f.refreshTokens {
+		if rt.developerID == tok.developerID {
+			delete(f.refreshTokens, hash)
+		}
+	}
 	for email, d := range f.byEmail {
 		if d.ID == tok.developerID {
 			d.PasswordHash, d.PasswordChangedAt = passwordHash, &now

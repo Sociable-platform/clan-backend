@@ -29,6 +29,7 @@
   (dict "name" "PLATFORM_JWT_PRIVATE_KEY_FILE" "value" "/run/secrets/platform_jwt_private.pem")
   (dict "name" "PLATFORM_DEVELOPER_TOKEN_TTL" "value" .Values.platform.developerTokenTtl)
   (dict "name" "PLATFORM_ADMIN_TOKEN_TTL" "value" .Values.platform.adminTokenTtl)
+  (dict "name" "PLATFORM_DEVELOPER_REFRESH_TTL" "value" .Values.platform.developerRefreshTtl)
   (dict "name" "PLATFORM_INTERNAL_TOKEN" "valueFrom" (dict "secretKeyRef" (dict "name" "clan-secrets" "key" "platform-internal-token")))
   (dict "name" "PLATFORM_DASHBOARD_URL" "value" .Values.platform.dashboardUrl)
   (dict "name" "PLATFORM_SMTP_HOST" "value" .Values.platform.smtp.host)

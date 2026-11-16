@@ -36,7 +36,8 @@ func (r *Repository) CreatePasswordResetToken(ctx context.Context, developerID, 
 // token or it expired before now; then nothing is changed.
 //
 // The token row is deleted first, so of two requests with the same token only one finds it.
-// password_changed_at is set to now, which makes the tokens of earlier logins invalid.
+// password_changed_at is set to now, which makes the access tokens of earlier logins invalid, and
+// the developer's refresh tokens are deleted, so those logins cannot get new ones either.
 func (r *Repository) ResetPassword(ctx context.Context, tokenHash, passwordHash string, now time.Time) (string, error) {
 	if r.pool == nil {
 		return "", ErrNoDatabase
@@ -57,6 +58,11 @@ func (r *Repository) ResetPassword(ctx context.Context, tokenHash, passwordHash 
 			`update developers set password_hash = $2, password_changed_at = $3 where id = $1`,
 			developerID, passwordHash, now); err != nil {
 			return fmt.Errorf("update developer password: %w", err)
+		}
+		// Every session ends: whoever was logged in with the old password must log in again.
+		if _, err := r.db(ctx).Exec(ctx,
+			`delete from developer_refresh_tokens where developer_id = $1`, developerID); err != nil {
+			return fmt.Errorf("delete refresh tokens: %w", err)
 		}
 		return nil
 	})

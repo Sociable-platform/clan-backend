@@ -40,6 +40,8 @@ var exemptFromTheWriteGuard = map[string]string{
 	// Before login, like the two above: a suspended developer who forgot the password must still get in.
 	"POST /api/v1/developers/password-reset":         "before login: the developer forgot the password",
 	"POST /api/v1/developers/password-reset/confirm": "before login: the reset link is the proof",
+	"POST /api/v1/developers/token/refresh":          "a suspended developer stays logged in, read-only",
+	"POST /api/v1/developers/logout":                 "logging out only takes access away",
 }
 
 // TestWritesRefuseASuspendedDeveloper walks Routes(): every route that changes something for a

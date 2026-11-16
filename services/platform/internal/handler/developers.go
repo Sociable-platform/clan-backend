@@ -59,7 +59,8 @@ func (h *Handler) registerDeveloper(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, toDeveloperResponse(d))
 }
 
-// loginDeveloper handles POST /api/v1/developers/login.
+// loginDeveloper handles POST /api/v1/developers/login. The developer token is in the body; the
+// refresh token of the new session goes into an HttpOnly cookie (sessions.go).
 func (h *Handler) loginDeveloper(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := httpx.DecodeJSON(w, r, &req); err != nil {
@@ -71,8 +72,7 @@ func (h *Handler) loginDeveloper(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store") // the response holds a credential
-	httpx.WriteJSON(w, http.StatusOK, loginResponse{Token: s.Token, ExpiresIn: s.ExpiresIn})
+	h.writeSession(w, s)
 }
 
 // me handles GET /api/v1/developers/me.

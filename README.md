@@ -82,7 +82,7 @@ Create both files **before** `docker compose up`: if a mounted file is missing, 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PLATFORM_JWT_PRIVATE_KEY_FILE` | none (required) | Path to the PEM file. Docker Compose sets it to the mounted `secrets/platform_jwt_private.pem`. |
-| `PLATFORM_DEVELOPER_TOKEN_TTL` | `24h` | How long a developer token is valid (Go duration such as `30m`). |
+| `PLATFORM_DEVELOPER_TOKEN_TTL` | `15m` | How long a developer token is valid (Go duration such as `30m`). Short on purpose: it cannot be taken back, and the dashboard renews it with the refresh cookie (see "Developer sessions"). |
 | `PLATFORM_ADMIN_TOKEN_TTL` | `1h` | How long an admin token (admin panel) is valid. Keep it short. |
 | `PLATFORM_INTERNAL_TOKEN` | none | Shared secret of platform's `/internal` endpoints, sent by other services as `X-Internal-Token`. At least 32 characters (`openssl rand -hex 32`); a shorter one stops platform at startup. Empty switches the endpoints off: they answer 404 like an unknown route. Never logged. |
 | `SOCIAL_JWT_PUBLIC_KEY_FILE` | none (required) | Platform's public key, used by social to check player tokens. Docker Compose sets it to the mounted `secrets/platform_jwt_public.pem`. |
@@ -132,6 +132,41 @@ go run ./tools/devtoken -ttl -1m                              # already expired:
 ```
 
 Send it as `Authorization: Bearer <token>`. `go run ./tools/devtoken -h` lists all options.
+
+### Developer sessions (refresh tokens)
+
+A developer login gives two things:
+
+- a **developer token** (JWT) in the answer's body, valid for `PLATFORM_DEVELOPER_TOKEN_TTL`. The dashboard keeps it in
+  memory and sends it as `Authorization: Bearer <token>`;
+- a **refresh token** in the cookie `clan_refresh` (HttpOnly, Secure, SameSite=Lax, path `/api/v1/developers`), valid
+  for `PLATFORM_DEVELOPER_REFRESH_TTL`. JavaScript cannot read it. It is a random value, not a JWT, and the database
+  keeps only its SHA-256 hash (`developer_refresh_tokens`).
+
+When the developer token has expired, or after a page reload, the dashboard calls `POST /api/v1/developers/token/refresh`.
+The cookie is the credential. The answer is a new developer token and a new refresh token; the old refresh token stops
+working (**rotation**) and the new one runs for the full lifetime again, so a developer who keeps using the dashboard
+stays logged in.
+
+A **session** is one login. Its refresh tokens share a `session_id`, which is what makes these possible:
+
+- **Logout** (`POST /api/v1/developers/logout`) deletes that session's tokens. Other logins of the developer stay.
+- **A replaced token used again** means two parties hold the same token, so that session is ended and both must log in.
+  A token replaced less than 10 seconds ago is still accepted: that is the same refresh arriving twice (a lost answer,
+  two tabs starting together), not a copy.
+- **A password reset** deletes every session of the developer.
+
+The developer token itself cannot be taken back; it simply expires. That is why it should be short once the dashboard
+refreshes it.
+
+The dashboard runs on another origin than platform, so platform's CORS answers allowed origins with
+`Access-Control-Allow-Credentials: true`, and the dashboard sends these requests with `credentials: "include"`.
+A page on any other origin is refused (403 `origin_not_allowed`), so it cannot refresh or log out for someone.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PLATFORM_DEVELOPER_REFRESH_TTL` | `168h` | Lifetime of a refresh token: how long a developer stays logged in without using the dashboard. |
+| `PLATFORM_COOKIE_SECURE` | `true` | `false` lets the refresh cookie travel over plain http. For `http://localhost` only; docker compose sets `false`. |
 
 ### Password reset (developers)
 
@@ -663,6 +698,8 @@ Only the developer's own switch counts here: a game suspended on its own does no
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
 | POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
 | POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
+| POST | `/api/v1/developers/token/refresh` | 200 `{ token, expiresIn }` and a new refresh cookie, for the `clan_refresh` cookie that login set; the old refresh token stops working. 401 `invalid_refresh_token` when the session is over (no cookie, expired, logged out, password reset, or a replaced token used again, which ends that session) |
+| POST | `/api/v1/developers/logout` | 204 always; ends the session of the refresh cookie and clears the cookie. Other logins of the developer stay |
 | POST | `/api/v1/developers/password-reset` | 202 always, for a known and an unknown email alike; emails a reset link to a known one (see "Password reset"). 400 `invalid_email`; 429 `rate_limited` |
 | POST | `/api/v1/developers/password-reset/confirm` | 204 and the password is changed, with `{ token, password }`; 400 `invalid_reset_token` (unknown, used or expired) or `invalid_password`; 429 `rate_limited` |
 | GET | `/api/v1/developers/me` | 200 with the developer, including `status` (`active` / `suspended`) and `statusReason` (`non_payment` / `abuse` / `other`, else `null`) so the dashboard can explain a suspension; never the admin's internal note. 401 unless `Authorization: Bearer <developer token>` |

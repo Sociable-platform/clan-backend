@@ -124,8 +124,12 @@ services:
       PLATFORM_DATABASE_URL: postgres://platform_user:${PLATFORM_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-clan}?sslmode=disable
       PLATFORM_CORS_ORIGINS: ${PLATFORM_CORS_ORIGINS:-http://localhost:5173}
       PLATFORM_JWT_PRIVATE_KEY_FILE: /run/secrets/platform_jwt_private.pem
-      PLATFORM_DEVELOPER_TOKEN_TTL: ${PLATFORM_DEVELOPER_TOKEN_TTL:-24h}
+      PLATFORM_DEVELOPER_TOKEN_TTL: ${PLATFORM_DEVELOPER_TOKEN_TTL:-15m}
       PLATFORM_ADMIN_TOKEN_TTL: ${PLATFORM_ADMIN_TOKEN_TTL:-1h}
+      # Developer sessions: the refresh token (clan_refresh cookie) lives this long; README "Developer sessions"
+      PLATFORM_DEVELOPER_REFRESH_TTL: ${PLATFORM_DEVELOPER_REFRESH_TTL:-168h}
+      # false here because docker compose is local development over http://localhost. Never false behind https.
+      PLATFORM_COOKIE_SECURE: ${PLATFORM_COOKIE_SECURE:-false}
       # Shared secret of platform's /internal endpoints (realtime reads each game's allowed origins there). Empty: switched off.
       PLATFORM_INTERNAL_TOKEN: ${PLATFORM_INTERNAL_TOKEN:-}
       # Password reset: the link points at the dashboard; without an SMTP host the email is written to the log (README "Password reset")

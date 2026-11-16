@@ -21,10 +21,10 @@ import (
 const (
 	// resetTokenTTL is how long a password reset link works.
 	resetTokenTTL = 30 * time.Minute
-	// resetTokenBytes is the size of the random token in the link: 256 bits, not guessable.
-	resetTokenBytes = 32
-	// maxResetTokenLen bounds what is hashed and looked up; a real token is 43 characters.
-	maxResetTokenLen = 128
+	// opaqueTokenBytes is the size of a random token (reset link, refresh token): 256 bits, not guessable.
+	opaqueTokenBytes = 32
+	// maxOpaqueTokenLen bounds what is hashed and looked up; a real token is 43 characters.
+	maxOpaqueTokenLen = 128
 	// resetPath is the dashboard page that the link opens. The token is in the fragment (after #),
 	// which browsers never send to a server, so it stays out of access logs and Referer headers.
 	resetPath = "/reset-password#token="
@@ -79,12 +79,12 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 		return fmt.Errorf("find developer: %w", err)
 	}
 
-	token, err := newResetToken()
+	token, err := newOpaqueToken()
 	if err != nil {
 		return err
 	}
 	now := s.now()
-	if err := s.store.CreatePasswordResetToken(ctx, d.ID, hashResetToken(token), now.Add(resetTokenTTL), now); err != nil {
+	if err := s.store.CreatePasswordResetToken(ctx, d.ID, hashOpaqueToken(token), now.Add(resetTokenTTL), now); err != nil {
 		return fmt.Errorf("store password reset token: %w", err)
 	}
 	s.resetSender.SendPasswordReset(d.Email, d.Name, s.dashboardURL+resetPath+token)
@@ -101,14 +101,14 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 		return err
 	}
 	token := strings.TrimSpace(in.Token)
-	if token == "" || len(token) > maxResetTokenLen {
+	if token == "" || len(token) > maxOpaqueTokenLen {
 		return errInvalidResetToken()
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), s.bcryptCost)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
-	_, err = s.store.ResetPassword(ctx, hashResetToken(token), string(hash), s.now())
+	_, err = s.store.ResetPassword(ctx, hashOpaqueToken(token), string(hash), s.now())
 	if errors.Is(err, repository.ErrNotFound) {
 		return errInvalidResetToken()
 	}
@@ -118,18 +118,19 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 	return nil
 }
 
-// newResetToken returns a random token that is safe to put in a URL.
-func newResetToken() (string, error) {
-	b := make([]byte, resetTokenBytes)
+// newOpaqueToken returns a random token of 256 bits that is safe to put in a URL or a cookie.
+// Password reset links and refresh tokens are made with it.
+func newOpaqueToken() (string, error) {
+	b := make([]byte, opaqueTokenBytes)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generate password reset token: %w", err)
+		return "", fmt.Errorf("generate token: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// hashResetToken is what the database stores instead of the token. A plain SHA-256 is enough:
+// hashOpaqueToken is what the database stores instead of the token. A plain SHA-256 is enough:
 // the token is 256 random bits, so there is nothing to guess, unlike with a password.
-func hashResetToken(token string) string {
+func hashOpaqueToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }
