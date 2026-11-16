@@ -257,6 +257,18 @@ func TestRejectsALabelKeyThatIsNotInTheContract(t *testing.T) {
 	wantIssue(t, issuesOf(t, m), "/texts/labels", "additionalProperties")
 }
 
+// The clan chat's member lines (TEAM-293) can be worded by the game; {player} is the player's name.
+func TestAcceptsTheMemberLineLabels(t *testing.T) {
+	m := arena(t)
+	labels := obj(m, "texts", "labels")
+	labels["memberJoined"] = "Welcome, {player}!"
+	labels["memberLeft"] = "{player} left the {clan}"
+	labels["memberKicked"] = "{player} was removed"
+	if issues := issuesOf(t, m); len(issues) != 0 {
+		t.Fatalf("issues = %+v, want none", issues)
+	}
+}
+
 func TestRejectsAConfigWithEverythingDisabled(t *testing.T) {
 	m := arena(t)
 	obj(m, "friends")["enabled"] = false
