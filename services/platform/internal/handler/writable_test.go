@@ -37,6 +37,9 @@ var exemptFromTheWriteGuard = map[string]string{
 	"POST /api/v1/developers/login":    "a suspended developer must be able to log in and see why",
 	"POST /api/v1/players/auth":        "guarded by the game's status instead (EnsureGameServed)",
 	"DELETE /api/v1/api-keys/{keyID}":  "revoking only takes access away; a developer must be able to kill a leaked key",
+	// Before login, like the two above: a suspended developer who forgot the password must still get in.
+	"POST /api/v1/developers/password-reset":         "before login: the developer forgot the password",
+	"POST /api/v1/developers/password-reset/confirm": "before login: the reset link is the proof",
 }
 
 // TestWritesRefuseASuspendedDeveloper walks Routes(): every route that changes something for a

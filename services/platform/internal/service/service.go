@@ -23,6 +23,8 @@ type Store interface {
 	DeveloperByEmail(ctx context.Context, email string) (repository.Developer, error)
 	DeveloperByID(ctx context.Context, id string) (repository.Developer, error)
 	DeveloperStatusOf(ctx context.Context, id string) (string, error)
+	CreatePasswordResetToken(ctx context.Context, developerID, tokenHash string, expiresAt, now time.Time) error
+	ResetPassword(ctx context.Context, tokenHash, passwordHash string, now time.Time) (developerID string, err error)
 	AdminByEmail(ctx context.Context, email string) (repository.Admin, error)
 	AdminByID(ctx context.Context, id string) (repository.Admin, error)
 	ListDevelopers(ctx context.Context, f repository.DeveloperFilter) ([]repository.DeveloperSummary, error)
@@ -67,10 +69,17 @@ type Service struct {
 	// "no such developer" and "wrong password" take about the same time.
 	dummyHash []byte
 	now       func() time.Time
+	// resetSender delivers password reset links, which point at dashboardURL (WithPasswordReset).
+	resetSender  ResetSender
+	dashboardURL string
 }
 
 // defaultAdminTokenTTL is used until WithAdminTokenTTL is called.
 const defaultAdminTokenTTL = time.Hour
+
+// defaultDashboardURL is where reset links point until WithPasswordReset is called: the
+// dashboard's dev server.
+const defaultDashboardURL = "http://localhost:5173"
 
 // New returns a Service. key signs developer tokens (and its public half verifies them);
 // tokenTTL is how long a developer token stays valid.
@@ -94,6 +103,7 @@ func newService(store Store, key ed25519.PrivateKey, tokenTTL time.Duration, cos
 	return &Service{
 		store: store, key: key, pub: pub, tokenTTL: tokenTTL, adminTokenTTL: defaultAdminTokenTTL,
 		bcryptCost: cost, dummyHash: dummy, now: time.Now,
+		resetSender: noResetSender{}, dashboardURL: defaultDashboardURL,
 	}, nil
 }
 

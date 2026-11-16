@@ -117,12 +117,26 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (Session, error) {
 
 // AuthenticateDeveloper checks a developer token (signature, expiry and type "developer")
 // and returns the developer ID inside it. Player tokens are rejected.
-func (s *Service) AuthenticateDeveloper(token string) (string, error) {
+//
+// It also reads the developer: a token of an account that is gone is refused, and so is a token
+// issued before the password was last reset, so a reset logs out whoever knew the old password.
+// A token's issue time has whole seconds, so one issued in the very second of the reset still works.
+func (s *Service) AuthenticateDeveloper(ctx context.Context, token string) (string, error) {
 	c, err := jwt.Verify(s.pub, token, jwt.TypeDeveloper, s.now())
 	if err != nil {
 		return "", errUnauthorized()
 	}
-	return c.Subject, nil
+	d, err := s.store.DeveloperByID(ctx, c.Subject)
+	if errors.Is(err, repository.ErrNotFound) {
+		return "", errUnauthorized()
+	}
+	if err != nil {
+		return "", fmt.Errorf("find developer %s: %w", c.Subject, err)
+	}
+	if d.PasswordChangedAt != nil && c.IssuedAt < d.PasswordChangedAt.Unix() {
+		return "", errUnauthorized()
+	}
+	return d.ID, nil
 }
 
 // Me returns the developer with the given ID (taken from a verified token).

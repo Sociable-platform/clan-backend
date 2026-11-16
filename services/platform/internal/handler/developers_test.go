@@ -229,6 +229,40 @@ type memStore struct {
 	keys       []memKey
 	drafts     map[string]repository.WidgetDraft     // by game ID
 	versions   map[string][]repository.WidgetVersion // by game ID, oldest first
+	// resetTokens holds the password reset tokens by their hash.
+	resetTokens map[string]memResetToken
+}
+
+type memResetToken struct {
+	developerID string
+	expiresAt   time.Time
+}
+
+func (m *memStore) CreatePasswordResetToken(_ context.Context, developerID, tokenHash string, expiresAt, now time.Time) error {
+	for hash, tok := range m.resetTokens {
+		if tok.developerID == developerID || !tok.expiresAt.After(now) {
+			delete(m.resetTokens, hash)
+		}
+	}
+	if m.resetTokens == nil {
+		m.resetTokens = map[string]memResetToken{}
+	}
+	m.resetTokens[tokenHash] = memResetToken{developerID: developerID, expiresAt: expiresAt}
+	return nil
+}
+
+func (m *memStore) ResetPassword(_ context.Context, tokenHash, passwordHash string, now time.Time) (string, error) {
+	tok, ok := m.resetTokens[tokenHash]
+	if !ok || !tok.expiresAt.After(now) {
+		return "", repository.ErrNotFound
+	}
+	delete(m.resetTokens, tokenHash)
+	for i := range m.devs {
+		if m.devs[i].ID == tok.developerID {
+			m.devs[i].PasswordHash, m.devs[i].PasswordChangedAt = passwordHash, &now
+		}
+	}
+	return tok.developerID, nil
 }
 
 func (m *memStore) Ping(context.Context) error { return nil }

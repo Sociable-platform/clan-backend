@@ -23,6 +23,9 @@ type fakeService struct {
 	// ensureDeveloperActive decides whether a developer may write; nil means every developer may.
 	ensureDeveloperActive func(developerID string) error
 
+	requestPasswordReset func(email string) error
+	resetPassword        func(in service.ResetPasswordInput) error
+
 	adminLogin func(service.LoginInput) (service.Session, error)
 	authAdmin  func(token string) (string, error)
 	adminMe    func(id string) (service.Admin, error)
@@ -68,7 +71,17 @@ func (f fakeService) Login(_ context.Context, in service.LoginInput) (service.Se
 	return f.login(in)
 }
 
-func (f fakeService) AuthenticateDeveloper(token string) (string, error) { return f.auth(token) }
+func (f fakeService) AuthenticateDeveloper(_ context.Context, token string) (string, error) {
+	return f.auth(token)
+}
+
+func (f fakeService) RequestPasswordReset(_ context.Context, email string) error {
+	return f.requestPasswordReset(email)
+}
+
+func (f fakeService) ResetPassword(_ context.Context, in service.ResetPasswordInput) error {
+	return f.resetPassword(in)
+}
 
 func (f fakeService) Me(_ context.Context, id string) (service.Developer, error) { return f.me(id) }
 
