@@ -28,6 +28,10 @@ type Store interface {
 	CreateRefreshSession(ctx context.Context, developerID, tokenHash string, expiresAt, now time.Time) error
 	RotateRefreshToken(ctx context.Context, oldHash, newHash string, newExpiresAt, now time.Time, grace time.Duration) (developerID string, err error)
 	DeleteRefreshSession(ctx context.Context, tokenHash string) error
+	SavePendingRegistration(ctx context.Context, p repository.PendingRegistration, now time.Time) error
+	PendingRegistrationByEmail(ctx context.Context, email string, now time.Time) (repository.PendingRegistration, error)
+	ReplacePendingRegistrationCode(ctx context.Context, email, codeHash string, expiresAt, now time.Time) error
+	ConfirmPendingRegistration(ctx context.Context, email, codeHash string, now time.Time, maxAttempts int) (repository.Developer, error)
 	AdminByEmail(ctx context.Context, email string) (repository.Admin, error)
 	AdminByID(ctx context.Context, id string) (repository.Admin, error)
 	ListDevelopers(ctx context.Context, f repository.DeveloperFilter) ([]repository.DeveloperSummary, error)
@@ -77,6 +81,9 @@ type Service struct {
 	// resetSender delivers password reset links, which point at dashboardURL (WithPasswordReset).
 	resetSender  ResetSender
 	dashboardURL string
+	// verification delivers the codes of registrations with email verification. nil: verification
+	// is off and Register creates the account at once (WithEmailVerification).
+	verification VerificationSender
 }
 
 // defaultAdminTokenTTL is used until WithAdminTokenTTL is called.

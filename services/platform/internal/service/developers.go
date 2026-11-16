@@ -69,19 +69,31 @@ func errInvalidCredentials() *httpx.Error {
 	return httpx.NewError(http.StatusUnauthorized, "invalid_credentials", "Email or password is wrong")
 }
 
-// Register validates the input, hashes the password and creates the developer.
-func (s *Service) Register(ctx context.Context, in RegisterInput) (Developer, error) {
-	email := normalizeEmail(in.Email)
-	name := strings.TrimSpace(in.Name)
+// validateRegistration checks what a new developer sent and returns the email and the name the
+// way they are stored (lowercase, trimmed).
+func validateRegistration(in RegisterInput) (email, name string, err error) {
+	email = normalizeEmail(in.Email)
+	name = strings.TrimSpace(in.Name)
 	if err := validateEmail(email); err != nil {
-		return Developer{}, err
+		return "", "", err
 	}
 	if err := validatePassword(in.Password); err != nil {
-		return Developer{}, err
+		return "", "", err
 	}
 	if n := utf8.RuneCountInString(name); n == 0 || n > maxNameLen {
-		return Developer{}, httpx.NewError(http.StatusBadRequest, "invalid_name",
+		return "", "", httpx.NewError(http.StatusBadRequest, "invalid_name",
 			fmt.Sprintf("Name must be 1 to %d characters", maxNameLen))
+	}
+	return email, name, nil
+}
+
+// Register validates the input, hashes the password and creates the developer at once. With email
+// verification on (EmailVerificationOn), the handler uses RequestRegistration and
+// VerifyRegistration instead.
+func (s *Service) Register(ctx context.Context, in RegisterInput) (Developer, error) {
+	email, name, err := validateRegistration(in)
+	if err != nil {
+		return Developer{}, err
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), s.bcryptCost)
