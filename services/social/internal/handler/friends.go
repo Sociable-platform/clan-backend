@@ -31,8 +31,21 @@ type friendRequestsResponse struct {
 	Outgoing []friendRequestResponse `json:"outgoing"`
 }
 
+// friendClanResponse is the clan a listed friend is in.
+type friendClanResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// listedFriendResponse is a friend in GET /api/v1/friends: a friendResponse plus their clan,
+// which is always present and null when they are in none.
+type listedFriendResponse struct {
+	friendResponse
+	Clan *friendClanResponse `json:"clan"`
+}
+
 type friendListResponse struct {
-	Friends []friendResponse `json:"friends"`
+	Friends []listedFriendResponse `json:"friends"`
 }
 
 func toFriendRequestResponse(r service.FriendRequest) friendRequestResponse {
@@ -45,6 +58,14 @@ func toFriendRequestResponse(r service.FriendRequest) friendRequestResponse {
 
 func toFriendResponse(f service.Friend) friendResponse {
 	return friendResponse{ID: f.ID, DisplayName: f.DisplayName, Since: f.Since.UTC()}
+}
+
+func toListedFriendResponse(f service.Friend) listedFriendResponse {
+	out := listedFriendResponse{friendResponse: toFriendResponse(f)}
+	if f.Clan != nil {
+		out.Clan = &friendClanResponse{ID: f.Clan.ID, Name: f.Clan.Name}
+	}
+	return out
 }
 
 type sendFriendRequestRequest struct {
@@ -119,7 +140,8 @@ func (h *Handler) acceptFriendRequest(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, toFriendResponse(f))
 }
 
-// listFriends handles GET /api/v1/friends: the caller's friends, sorted by name.
+// listFriends handles GET /api/v1/friends: the caller's friends, sorted by name, each with
+// the clan they are in ("clan": null when none).
 func (h *Handler) listFriends(w http.ResponseWriter, r *http.Request) {
 	caller, ok := auth.PlayerFrom(r.Context())
 	if !ok {
@@ -131,9 +153,9 @@ func (h *Handler) listFriends(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	out := friendListResponse{Friends: make([]friendResponse, 0, len(friends))}
+	out := friendListResponse{Friends: make([]listedFriendResponse, 0, len(friends))}
 	for _, f := range friends {
-		out.Friends = append(out.Friends, toFriendResponse(f))
+		out.Friends = append(out.Friends, toListedFriendResponse(f))
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
