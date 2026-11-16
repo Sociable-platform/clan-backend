@@ -25,6 +25,22 @@ import (
 // Every other method, and every other path, follows the rules above.
 // A prefix starts and ends with "/", for example "/api/v1/public/".
 func CORS(allowedOrigins []string, publicPathPrefixes ...string) (Middleware, error) {
+	return newCORS(false, allowedOrigins, publicPathPrefixes)
+}
+
+// CORSWithCredentials is CORS for a service that also keeps a cookie in the browser (platform's
+// refresh cookie). A request from an allowed origin is answered with
+// "Access-Control-Allow-Credentials: true" as well; without it the browser neither sends the
+// cookie from a page on another origin nor lets that page read the answer of a request that
+// carried it.
+//
+// The public paths are not affected: they stay open to every origin with "*", and a browser never
+// sends cookies to an answer like that.
+func CORSWithCredentials(allowedOrigins []string, publicPathPrefixes ...string) (Middleware, error) {
+	return newCORS(true, allowedOrigins, publicPathPrefixes)
+}
+
+func newCORS(credentials bool, allowedOrigins, publicPathPrefixes []string) (Middleware, error) {
 	allowed := make(map[string]bool, len(allowedOrigins))
 	for _, o := range allowedOrigins {
 		o = strings.TrimRight(strings.TrimSpace(o), "/")
@@ -92,6 +108,9 @@ func CORS(allowedOrigins []string, publicPathPrefixes ...string) (Middleware, er
 				return
 			}
 			h.Set("Access-Control-Allow-Origin", origin)
+			if credentials {
+				h.Set("Access-Control-Allow-Credentials", "true")
+			}
 
 			// Preflight: the browser asks which methods and headers it may use.
 			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {

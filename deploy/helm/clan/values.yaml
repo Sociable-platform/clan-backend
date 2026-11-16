@@ -88,6 +88,8 @@ platform:
   corsOrigins: http://localhost:5173
   developerTokenTtl: 24h
   adminTokenTtl: 1h
+  # How long a developer stays logged in without using the dashboard (the refresh cookie's lifetime).
+  developerRefreshTtl: 168h
   # Where the dashboard (Studio) runs. A password reset email links to <dashboardUrl>/reset-password.
   dashboardUrl: http://localhost:5173
   # The SMTP server that sends the password reset emails (STARTTLS). Its password is

@@ -133,6 +133,41 @@ go run ./tools/devtoken -ttl -1m                              # already expired:
 
 Send it as `Authorization: Bearer <token>`. `go run ./tools/devtoken -h` lists all options.
 
+### Developer sessions (refresh tokens)
+
+A developer login gives two things:
+
+- a **developer token** (JWT) in the answer's body, valid for `PLATFORM_DEVELOPER_TOKEN_TTL`. The dashboard keeps it in
+  memory and sends it as `Authorization: Bearer <token>`;
+- a **refresh token** in the cookie `clan_refresh` (HttpOnly, Secure, SameSite=Lax, path `/api/v1/developers`), valid
+  for `PLATFORM_DEVELOPER_REFRESH_TTL`. JavaScript cannot read it. It is a random value, not a JWT, and the database
+  keeps only its SHA-256 hash (`developer_refresh_tokens`).
+
+When the developer token has expired, or after a page reload, the dashboard calls `POST /api/v1/developers/token/refresh`.
+The cookie is the credential. The answer is a new developer token and a new refresh token; the old refresh token stops
+working (**rotation**) and the new one runs for the full lifetime again, so a developer who keeps using the dashboard
+stays logged in.
+
+A **session** is one login. Its refresh tokens share a `session_id`, which is what makes these possible:
+
+- **Logout** (`POST /api/v1/developers/logout`) deletes that session's tokens. Other logins of the developer stay.
+- **A replaced token used again** means two parties hold the same token, so that session is ended and both must log in.
+  A token replaced less than 10 seconds ago is still accepted: that is the same refresh arriving twice (a lost answer,
+  two tabs starting together), not a copy.
+- **A password reset** deletes every session of the developer.
+
+The developer token itself cannot be taken back; it simply expires. That is why it should be short once the dashboard
+refreshes it.
+
+The dashboard runs on another origin than platform, so platform's CORS answers allowed origins with
+`Access-Control-Allow-Credentials: true`, and the dashboard sends these requests with `credentials: "include"`.
+A page on any other origin is refused (403 `origin_not_allowed`), so it cannot refresh or log out for someone.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PLATFORM_DEVELOPER_REFRESH_TTL` | `168h` | Lifetime of a refresh token: how long a developer stays logged in without using the dashboard. |
+| `PLATFORM_COOKIE_SECURE` | `true` | `false` lets the refresh cookie travel over plain http. For `http://localhost` only; docker compose sets `false`. |
+
 ### Password reset (developers)
 
 A developer who forgot the password asks for a link on the dashboard's login page:
