@@ -25,6 +25,9 @@ type Store interface {
 	DeveloperStatusOf(ctx context.Context, id string) (string, error)
 	CreatePasswordResetToken(ctx context.Context, developerID, tokenHash string, expiresAt, now time.Time) error
 	ResetPassword(ctx context.Context, tokenHash, passwordHash string, now time.Time) (developerID string, err error)
+	CreateRefreshSession(ctx context.Context, developerID, tokenHash string, expiresAt, now time.Time) error
+	RotateRefreshToken(ctx context.Context, oldHash, newHash string, newExpiresAt, now time.Time, grace time.Duration) (developerID string, err error)
+	DeleteRefreshSession(ctx context.Context, tokenHash string) error
 	AdminByEmail(ctx context.Context, email string) (repository.Admin, error)
 	AdminByID(ctx context.Context, id string) (repository.Admin, error)
 	ListDevelopers(ctx context.Context, f repository.DeveloperFilter) ([]repository.DeveloperSummary, error)
@@ -62,6 +65,8 @@ type Service struct {
 	key      ed25519.PrivateKey
 	pub      ed25519.PublicKey
 	tokenTTL time.Duration
+	// refreshTokenTTL is how long a developer's refresh token stays valid (WithRefreshTokenTTL).
+	refreshTokenTTL time.Duration
 	// adminTokenTTL is how long an admin token stays valid; admin sessions are short on purpose.
 	adminTokenTTL time.Duration
 	bcryptCost    int
@@ -102,7 +107,7 @@ func newService(store Store, key ed25519.PrivateKey, tokenTTL time.Duration, cos
 	}
 	return &Service{
 		store: store, key: key, pub: pub, tokenTTL: tokenTTL, adminTokenTTL: defaultAdminTokenTTL,
-		bcryptCost: cost, dummyHash: dummy, now: time.Now,
+		bcryptCost: cost, dummyHash: dummy, now: time.Now, refreshTokenTTL: defaultRefreshTokenTTL,
 		resetSender: noResetSender{}, dashboardURL: defaultDashboardURL,
 	}, nil
 }

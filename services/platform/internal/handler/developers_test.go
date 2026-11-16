@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -231,6 +232,67 @@ type memStore struct {
 	versions   map[string][]repository.WidgetVersion // by game ID, oldest first
 	// resetTokens holds the password reset tokens by their hash.
 	resetTokens map[string]memResetToken
+	// refreshTokens holds the refresh tokens by their hash; refreshSessions counts the sessions started.
+	refreshTokens   map[string]memRefreshToken
+	refreshSessions int
+}
+
+// memRefreshToken is a row of the developer_refresh_tokens table.
+type memRefreshToken struct {
+	developerID string
+	sessionID   string
+	expiresAt   time.Time
+	replacedAt  *time.Time
+}
+
+func (m *memStore) CreateRefreshSession(_ context.Context, developerID, tokenHash string, expiresAt, now time.Time) error {
+	for hash, tok := range m.refreshTokens {
+		if tok.developerID == developerID && !tok.expiresAt.After(now) {
+			delete(m.refreshTokens, hash)
+		}
+	}
+	if m.refreshTokens == nil {
+		m.refreshTokens = map[string]memRefreshToken{}
+	}
+	m.refreshSessions++
+	m.refreshTokens[tokenHash] = memRefreshToken{
+		developerID: developerID, sessionID: "session-" + strconv.Itoa(m.refreshSessions), expiresAt: expiresAt,
+	}
+	return nil
+}
+
+func (m *memStore) RotateRefreshToken(_ context.Context, oldHash, newHash string, newExpiresAt, now time.Time, grace time.Duration) (string, error) {
+	old, ok := m.refreshTokens[oldHash]
+	if !ok || !old.expiresAt.After(now) {
+		return "", repository.ErrNotFound
+	}
+	switch {
+	case old.replacedAt == nil:
+		old.replacedAt = &now
+		m.refreshTokens[oldHash] = old
+	case now.Sub(*old.replacedAt) > grace:
+		for hash, tok := range m.refreshTokens {
+			if tok.sessionID == old.sessionID {
+				delete(m.refreshTokens, hash)
+			}
+		}
+		return "", repository.ErrRefreshTokenReused
+	}
+	m.refreshTokens[newHash] = memRefreshToken{developerID: old.developerID, sessionID: old.sessionID, expiresAt: newExpiresAt}
+	return old.developerID, nil
+}
+
+func (m *memStore) DeleteRefreshSession(_ context.Context, tokenHash string) error {
+	found, ok := m.refreshTokens[tokenHash]
+	if !ok {
+		return nil
+	}
+	for hash, tok := range m.refreshTokens {
+		if tok.sessionID == found.sessionID {
+			delete(m.refreshTokens, hash)
+		}
+	}
+	return nil
 }
 
 type memResetToken struct {
@@ -257,6 +319,11 @@ func (m *memStore) ResetPassword(_ context.Context, tokenHash, passwordHash stri
 		return "", repository.ErrNotFound
 	}
 	delete(m.resetTokens, tokenHash)
+	for hash, rt := range m.refreshTokens {
+		if rt.developerID == tok.developerID {
+			delete(m.refreshTokens, hash)
+		}
+	}
 	for i := range m.devs {
 		if m.devs[i].ID == tok.developerID {
 			m.devs[i].PasswordHash, m.devs[i].PasswordChangedAt = passwordHash, &now

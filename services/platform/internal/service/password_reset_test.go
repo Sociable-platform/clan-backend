@@ -74,7 +74,7 @@ func TestRequestPasswordReset_SendsALink(t *testing.T) {
 	if _, ok := store.resetTokens[token]; ok {
 		t.Fatal("the token itself was stored")
 	}
-	stored, ok := store.resetTokens[hashResetToken(token)]
+	stored, ok := store.resetTokens[hashOpaqueToken(token)]
 	if !ok {
 		t.Fatal("the hash of the token was not stored")
 	}

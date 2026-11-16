@@ -50,10 +50,15 @@ type LoginInput struct {
 	Password string
 }
 
-// Session is a freshly issued developer token.
+// Session is a freshly issued developer (or admin) token. A developer session also carries a
+// refresh token, which gets a new token when this one has expired (RefreshSession); an admin
+// session has none, and RefreshToken is empty.
 type Session struct {
 	Token     string
 	ExpiresIn int // seconds
+	// RefreshToken is for the dashboard's HttpOnly cookie; it is never part of a JSON answer.
+	RefreshToken     string
+	RefreshExpiresIn int // seconds
 }
 
 func errUnauthorized() *httpx.Error {
@@ -93,7 +98,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Developer, er
 	return toDeveloper(d), nil
 }
 
-// Login checks the email and password and returns a developer token.
+// Login checks the email and password and returns a developer token, and the refresh token of the
+// session this login starts.
 // An unknown email and a wrong password give the same error.
 func (s *Service) Login(ctx context.Context, in LoginInput) (Session, error) {
 	d, err := s.store.DeveloperByEmail(ctx, normalizeEmail(in.Email))
@@ -112,7 +118,14 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (Session, error) {
 	if err != nil {
 		return Session{}, fmt.Errorf("sign developer token: %w", err)
 	}
-	return Session{Token: token, ExpiresIn: int(s.tokenTTL.Seconds())}, nil
+	refreshToken, refreshExpiresIn, err := s.startRefreshSession(ctx, d.ID)
+	if err != nil {
+		return Session{}, err
+	}
+	return Session{
+		Token: token, ExpiresIn: int(s.tokenTTL.Seconds()),
+		RefreshToken: refreshToken, RefreshExpiresIn: refreshExpiresIn,
+	}, nil
 }
 
 // AuthenticateDeveloper checks a developer token (signature, expiry and type "developer")
