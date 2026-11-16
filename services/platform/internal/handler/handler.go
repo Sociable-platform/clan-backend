@@ -22,6 +22,8 @@ type Service interface {
 	AuthenticateDeveloper(ctx context.Context, token string) (developerID string, err error)
 	RequestPasswordReset(ctx context.Context, email string) error
 	ResetPassword(ctx context.Context, in service.ResetPasswordInput) error
+	RefreshSession(ctx context.Context, refreshToken string) (service.Session, error)
+	Logout(ctx context.Context, refreshToken string) error
 	AdminLogin(ctx context.Context, in service.LoginInput) (service.Session, error)
 	AuthenticateAdmin(ctx context.Context, token string) (adminID string, err error)
 	AdminMe(ctx context.Context, adminID string) (service.Admin, error)
@@ -61,6 +63,10 @@ type Handler struct {
 	resetByIP      *ratelimit.Limiter
 	resetByEmail   *ratelimit.Limiter
 	resetConfirmIP *ratelimit.Limiter
+	// sessionByIP limits token/refresh and logout; insecureCookies drops Secure from the refresh
+	// cookie for http://localhost (sessions.go).
+	sessionByIP     *ratelimit.Limiter
+	insecureCookies bool
 }
 
 // New returns a Handler. name is the service name shown in /health.
@@ -71,6 +77,7 @@ func New(name string, svc Service, log *slog.Logger) *Handler {
 		resetByIP:      ratelimit.New(resetPerIP, resetLimitWindow),
 		resetByEmail:   ratelimit.New(resetPerEmail, resetLimitWindow),
 		resetConfirmIP: ratelimit.New(resetConfirmPerIP, resetLimitWindow),
+		sessionByIP:    ratelimit.New(sessionPerIP, resetLimitWindow),
 	}
 }
 
@@ -105,6 +112,10 @@ type Route struct {
 // The two password reset endpoints need no login (the developer forgot the password) and are
 // rate limited instead; see password_reset.go.
 //
+// token/refresh and logout take no developer token either: the refresh cookie is their
+// credential (sessions.go). A browser page on another origin cannot call them, because the CORS
+// middleware refuses every origin that is not allowed.
+//
 // Endpoints under /api/v1/admin/ are for the distributor's admin panel. Every one except
 // /admin/login is wrapped with h.requireAdmin, which accepts only an admin token.
 //
@@ -127,6 +138,8 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPost, "/api/v1/developers/login", h.loginDeveloper},
 		{http.MethodPost, "/api/v1/developers/password-reset", h.requestPasswordReset},
 		{http.MethodPost, "/api/v1/developers/password-reset/confirm", h.confirmPasswordReset},
+		{http.MethodPost, "/api/v1/developers/token/refresh", h.refreshDeveloperToken},
+		{http.MethodPost, "/api/v1/developers/logout", h.logoutDeveloper},
 		{http.MethodGet, "/api/v1/developers/me", h.requireDeveloper(h.me)},
 		{http.MethodPost, "/api/v1/admin/login", h.adminLogin},
 		{http.MethodGet, "/api/v1/admin/me", h.requireAdmin(h.adminMe)},

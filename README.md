@@ -663,6 +663,8 @@ Only the developer's own switch counts here: a game suspended on its own does no
 | GET | `/ready` | 200 when the database answers, otherwise 503 `not_ready` |
 | POST | `/api/v1/developers/register` | 201 with the new developer; 400 invalid email, password or name; 409 `email_taken` |
 | POST | `/api/v1/developers/login` | 200 `{ token, expiresIn }`; 401 `invalid_credentials` |
+| POST | `/api/v1/developers/token/refresh` | 200 `{ token, expiresIn }` and a new refresh cookie, for the `clan_refresh` cookie that login set; the old refresh token stops working. 401 `invalid_refresh_token` when the session is over (no cookie, expired, logged out, password reset, or a replaced token used again, which ends that session) |
+| POST | `/api/v1/developers/logout` | 204 always; ends the session of the refresh cookie and clears the cookie. Other logins of the developer stay |
 | POST | `/api/v1/developers/password-reset` | 202 always, for a known and an unknown email alike; emails a reset link to a known one (see "Password reset"). 400 `invalid_email`; 429 `rate_limited` |
 | POST | `/api/v1/developers/password-reset/confirm` | 204 and the password is changed, with `{ token, password }`; 400 `invalid_reset_token` (unknown, used or expired) or `invalid_password`; 429 `rate_limited` |
 | GET | `/api/v1/developers/me` | 200 with the developer, including `status` (`active` / `suspended`) and `statusReason` (`non_payment` / `abuse` / `other`, else `null`) so the dashboard can explain a suspension; never the admin's internal note. 401 unless `Authorization: Bearer <developer token>` |

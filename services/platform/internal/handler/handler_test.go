@@ -26,6 +26,9 @@ type fakeService struct {
 	requestPasswordReset func(email string) error
 	resetPassword        func(in service.ResetPasswordInput) error
 
+	refreshSession func(refreshToken string) (service.Session, error)
+	logout         func(refreshToken string) error
+
 	adminLogin func(service.LoginInput) (service.Session, error)
 	authAdmin  func(token string) (string, error)
 	adminMe    func(id string) (service.Admin, error)
@@ -81,6 +84,14 @@ func (f fakeService) RequestPasswordReset(_ context.Context, email string) error
 
 func (f fakeService) ResetPassword(_ context.Context, in service.ResetPasswordInput) error {
 	return f.resetPassword(in)
+}
+
+func (f fakeService) RefreshSession(_ context.Context, refreshToken string) (service.Session, error) {
+	return f.refreshSession(refreshToken)
+}
+
+func (f fakeService) Logout(_ context.Context, refreshToken string) error {
+	return f.logout(refreshToken)
 }
 
 func (f fakeService) Me(_ context.Context, id string) (service.Developer, error) { return f.me(id) }

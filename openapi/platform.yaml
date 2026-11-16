@@ -180,6 +180,10 @@ paths:
       description: |
         Send the token as `Authorization: Bearer <token>` on developer endpoints.
         An unknown email and a wrong password give the same 401.
+
+        Login also starts a session: the answer sets the `clan_refresh` cookie (HttpOnly, 7 days) with
+        the session's refresh token. When the developer token has expired, `token/refresh` gives a new
+        one for that cookie, and `logout` ends the session.
       requestBody:
         required: true
         content:
@@ -191,7 +195,12 @@ paths:
               password: correct horse
       responses:
         "200":
-          description: Logged in. The response is not cacheable.
+          description: Logged in. The refresh token is in `Set-Cookie`. The response is not cacheable.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: "`clan_refresh=<token>; Path=/api/v1/developers; Max-Age=604800; HttpOnly; Secure; SameSite=Lax`"
           content:
             application/json:
               schema:
@@ -300,6 +309,80 @@ paths:
                 error:
                   code: invalid_reset_token
                   message: This reset link is not valid or has expired. Ask for a new one.
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/v1/developers/token/refresh:
+    post:
+      tags: [developers]
+      operationId: refreshDeveloperToken
+      summary: Get a new developer token with the refresh cookie
+      description: |
+        The request has no body and no `Authorization` header: the `clan_refresh` cookie, set by login,
+        is the credential. A browser must send it (`credentials: "include"`).
+
+        The answer is a new developer token and a new cookie. The refresh token that was sent stops
+        working (rotation), and the new one is valid for 7 days again, so a developer who keeps using
+        the dashboard stays logged in.
+
+        401 `invalid_refresh_token` means the session is over and the developer must log in: no cookie,
+        an unknown or expired token, a session that was logged out or ended by a password reset, or a
+        token that had already been replaced. In that last case someone is using a copy, so the whole
+        session is ended. (A token replaced within the last 10 seconds is still accepted: the same
+        refresh arriving twice.) The 401 also clears the cookie.
+
+        Works while the account is suspended. Limited to 300 requests per IP address in 15 minutes,
+        together with logout.
+      security:
+        - refreshCookie: []
+      responses:
+        "200":
+          description: A new developer token; the new refresh token is in `Set-Cookie`. Not cacheable.
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: "`clan_refresh=<token>; Path=/api/v1/developers; Max-Age=604800; HttpOnly; Secure; SameSite=Lax`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+              example:
+                token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9...
+                expiresIn: 86400
+        "401":
+          description: The session is over (`invalid_refresh_token`). The cookie is cleared.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_refresh_token
+                  message: Your session has ended. Log in again.
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/v1/developers/logout:
+    post:
+      tags: [developers]
+      operationId: logoutDeveloper
+      summary: End the session of the refresh cookie
+      description: |
+        Deletes every refresh token of the session the `clan_refresh` cookie belongs to and clears the
+        cookie, so no new developer token can be had for that login. Other logins of the same developer
+        (another browser, another computer) are not touched.
+
+        The developer token already issued stays valid until it expires; the dashboard forgets it.
+        Answers 204 with or without a session, so logging out twice is fine.
+      security:
+        - refreshCookie: []
+        - {}
+      responses:
+        "204":
+          description: Logged out. The cookie is cleared.
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
         "429":
@@ -1515,6 +1598,13 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Developer token (typ "developer") returned by login. Used by the dashboard.
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: clan_refresh
+      description: |
+        Refresh token of a developer session, set by login as an HttpOnly cookie for the path
+        `/api/v1/developers`. Only `token/refresh` and `logout` read it. JavaScript cannot read it.
     adminToken:
       type: http
       scheme: bearer
