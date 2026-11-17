@@ -51,6 +51,8 @@ type fakeService struct {
 	// memberGame decides whether a developer belongs to a game (requireGameMember); nil means every developer
 	// belongs to every game, so the tests of the endpoints themselves need not set it. The membership tests do.
 	memberGame func(developerID, gameID string) (service.Game, error)
+	// gameMembers answers GET /games/{id}/members.
+	gameMembers func(developerID, gameID string) ([]service.GameMember, error)
 
 	createAPIKey func(developerID, gameID string) (service.NewAPIKey, error)
 	listAPIKeys  func(developerID, gameID string) ([]service.APIKey, error)
@@ -218,6 +220,10 @@ func (f fakeService) MemberGame(_ context.Context, developerID, gameID string) (
 		return service.Game{ID: gameID, Role: "owner"}, nil
 	}
 	return f.memberGame(developerID, gameID)
+}
+
+func (f fakeService) GameMembers(_ context.Context, developerID, gameID string) ([]service.GameMember, error) {
+	return f.gameMembers(developerID, gameID)
 }
 
 func (f fakeService) CreateAPIKey(_ context.Context, developerID, gameID string) (service.NewAPIKey, error) {

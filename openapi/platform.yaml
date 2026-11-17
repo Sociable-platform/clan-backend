@@ -1037,6 +1037,36 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/AccountSuspendedOrOrigin"
+  /api/v1/games/{gameID}/members:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    get:
+      tags: [games]
+      operationId: listGameMembers
+      summary: List the developers on a game
+      description: |
+        Everybody who belongs to the game: its owners first, then its members, each group by when they joined. Any
+        member of the game may look (a team knows who is on it); a developer who is not in the game gets 404.
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The game's team.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameMemberList"
+              example:
+                members:
+                  - developerId: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+                    name: Ali
+                    email: ali@example.com
+                    role: owner
+                    joinedAt: "2026-11-07T09:30:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
   /api/v1/games/{gameID}/api-keys:
     parameters:
       - $ref: "#/components/parameters/GameID"
@@ -1046,7 +1076,7 @@ paths:
       summary: List a game's API keys
       description: |
         Active and revoked keys, newest first. Only the prefix is shown, never the full key.
-        Only the game's owner can list its keys; for anyone else the game does not exist (404).
+        Only the game's owner can list its keys: a member of the game gets 403 `owner_required`, and a developer who is not in it gets 404.
       security:
         - developerToken: []
       responses:
@@ -1066,7 +1096,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/OwnerRequired"
         "404":
           $ref: "#/components/responses/GameNotFound"
     post:
@@ -1076,7 +1106,8 @@ paths:
       description: |
         Generates a random key. **The full key is in this response only**; the database keeps
         just a hash, so it cannot be shown again. Keep it on the game's own server, never in
-        browser code. No request body.
+        browser code. No request body. Only the game's owner can create keys: a member of the game gets 403
+        `owner_required`, and a developer who is not in it gets 404.
       security:
         - developerToken: []
       responses:
@@ -1096,7 +1127,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/AccountSuspendedOrOrigin"
+          $ref: "#/components/responses/OwnerRequired"
         "404":
           $ref: "#/components/responses/GameNotFound"
   /api/v1/games/{gameID}/allowed-origins:
@@ -1107,6 +1138,9 @@ paths:
       operationId: setAllowedOrigins
       summary: Set the websites allowed to open a WebSocket for a game
       description: |
+        Only the game's owner can set them: a member of the game gets 403 `owner_required`, and a developer who is
+        not in it gets 404.
+
         Replaces the whole list. Realtime accepts a WebSocket from a browser only when the page's
         `Origin` is one of these (once realtime uses the list; see the internal config endpoint).
         Each origin is written as the browser sends it in the `Origin` header: `http` or `https`, then
@@ -1153,7 +1187,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/AccountSuspendedOrOrigin"
+          $ref: "#/components/responses/OwnerRequired"
         "404":
           $ref: "#/components/responses/GameNotFound"
   /api/v1/games/{gameID}/widget/draft:
@@ -1422,8 +1456,8 @@ paths:
       summary: Revoke an API key
       description: |
         The key stops working immediately and stays in the list marked revoked.
-        Revoking an already revoked key succeeds. Only the owner of the key's game can revoke it;
-        for anyone else the key does not exist (404).
+        Revoking an already revoked key succeeds. Only an owner of the key's game can revoke it:
+        a member of the game gets 403 `owner_required`, and for a developer who is not in it the key does not exist (404).
       security:
         - developerToken: []
       parameters:
@@ -1439,7 +1473,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/OriginNotAllowed"
+          $ref: "#/components/responses/OwnerRequired"
         "404":
           description: No such key, or it belongs to a game the developer is not in.
           content:
@@ -2060,11 +2094,18 @@ components:
           maxLength: 500
     Game:
       type: object
-      required: [id, name, description, allowedOrigins, createdAt]
+      required: [id, role, name, description, allowedOrigins, createdAt]
       properties:
         id:
           type: string
           format: uuid
+        role:
+          type: string
+          enum: [owner, member]
+          description: |
+            The logged-in developer's role on this game. An `owner` may do everything, including API keys, allowed
+            origins and the team; a `member` sees the game, edits the draft, publishes and rolls back, and gets 403
+            `owner_required` for the owner-only actions.
         name:
           type: string
         description:
@@ -2081,6 +2122,31 @@ components:
         createdAt:
           type: string
           format: date-time
+    GameMember:
+      type: object
+      required: [developerId, name, email, role, joinedAt]
+      properties:
+        developerId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [owner, member]
+        joinedAt:
+          type: string
+          format: date-time
+    GameMemberList:
+      type: object
+      required: [members]
+      properties:
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/GameMember"
     SetAllowedOriginsRequest:
       type: object
       required: [allowedOrigins]
@@ -2289,8 +2355,20 @@ components:
           type: string
           description: For people. Clients should rely on `path` and `rule`.
   responses:
+    OwnerRequired:
+      description: |
+        Only the game's owner can do this (`owner_required`): the developer is a member of the game. The shared
+        403s also apply: `account_suspended` on a write while the developer is suspended, and `origin_not_allowed`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: owner_required
+              message: Only the game's owner can do this
     GameNotFound:
-      description: No such game, or it belongs to another developer.
+      description: No such game, or the developer is not in it. The two answer the same, so nobody learns that somebody else's game exists.
       content:
         application/json:
           schema:
@@ -2300,7 +2378,7 @@ components:
               code: game_not_found
               message: Game not found
     WidgetVersionNotFound:
-      description: No such game, it belongs to another developer (`game_not_found`), or the game has no such version (`widget_version_not_found`).
+      description: No such game, or the developer is not in it (`game_not_found`), or the game has no such version (`widget_version_not_found`).
       content:
         application/json:
           schema:

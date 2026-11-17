@@ -39,12 +39,12 @@ func errInvalidOrigins(message string) *httpx.Error {
 	return httpx.NewError(http.StatusBadRequest, "invalid_origins", message)
 }
 
-// SetAllowedOrigins replaces the allowed origins of a game the developer owns. Each origin is
+// SetAllowedOrigins replaces the allowed origins of a game the developer owns (a member gets 403 owner_required). Each origin is
 // written as the browser sends it in the Origin header, scheme://host[:port]: http or https, no
 // path, query, fragment or user name, no trailing slash, no wildcard. Hosts are lower-cased and
 // repeats are dropped. An empty list is allowed and clears the setting.
 func (s *Service) SetAllowedOrigins(ctx context.Context, developerID, gameID string, origins []string) (Game, error) {
-	if _, err := s.MemberGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.OwnerGame(ctx, developerID, gameID); err != nil {
 		return Game{}, err
 	}
 	if len(origins) > maxAllowedOrigins {

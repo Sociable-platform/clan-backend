@@ -71,7 +71,7 @@ func TestSetAllowedOrigins_Handler(t *testing.T) {
 	svc.setAllowedOrigins = func(dev, game string, origins []string) (service.Game, error) {
 		gotDev, gotGame, gotOrigins = dev, game, origins
 		return service.Game{
-			ID: game, Name: "Space Raiders", AllowedOrigins: origins,
+			ID: game, Role: "owner", Name: "Space Raiders", AllowedOrigins: origins,
 			CreatedAt: time.Date(2026, 11, 7, 9, 30, 0, 0, time.UTC),
 		}, nil
 	}
@@ -88,7 +88,7 @@ func TestSetAllowedOrigins_Handler(t *testing.T) {
 	if len(gotOrigins) != 2 || gotOrigins[0] != "https://play.example.com" {
 		t.Errorf("service got %v", gotOrigins)
 	}
-	want := `{"id":"` + someGameID + `","name":"Space Raiders","description":"",` +
+	want := `{"id":"` + someGameID + `","role":"owner","name":"Space Raiders","description":"",` +
 		`"allowedOrigins":["https://play.example.com","http://localhost:5174"],"createdAt":"2026-11-07T09:30:00Z"}` + "\n"
 	if rec.Body.String() != want {
 		t.Errorf("body %s\nwant %s", rec.Body.String(), want)

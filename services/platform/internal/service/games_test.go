@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -66,6 +67,31 @@ func (f *fakeStore) GameOfMember(_ context.Context, gameID, developerID string) 
 		}
 	}
 	return repository.Game{}, repository.ErrNotFound
+}
+
+// GameMembers lists the developer who registered the game as its owner, then the members, like the SQL does.
+func (f *fakeStore) GameMembers(_ context.Context, gameID string) ([]repository.GameMember, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := []repository.GameMember{}
+	for _, g := range f.games {
+		if g.ID != gameID {
+			continue
+		}
+		out = append(out, repository.GameMember{DeveloperID: g.DeveloperID, Name: "Owner", Email: "owner@example.com", Role: repository.RoleOwner, JoinedAt: g.CreatedAt})
+		var ids []string
+		for key := range f.members {
+			if id, found := strings.CutPrefix(key, gameID+"|"); found {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			out = append(out, repository.GameMember{DeveloperID: id, Name: "Member " + id, Email: id + "@example.com", Role: f.members[gameID+"|"+id], JoinedAt: g.CreatedAt.Add(time.Hour)})
+		}
+	}
+	return out, nil
 }
 
 // gameAs is the game with the role developerID has on it, or false when they do not belong to it.

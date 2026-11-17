@@ -41,6 +41,7 @@ type Service interface {
 	RegisterGame(ctx context.Context, developerID string, in service.RegisterGameInput) (service.Game, error)
 	ListGames(ctx context.Context, developerID string) ([]service.Game, error)
 	MemberGame(ctx context.Context, developerID, gameID string) (service.Game, error)
+	GameMembers(ctx context.Context, developerID, gameID string) ([]service.GameMember, error)
 	CreateAPIKey(ctx context.Context, developerID, gameID string) (service.NewAPIKey, error)
 	ListAPIKeys(ctx context.Context, developerID, gameID string) ([]service.APIKey, error)
 	RevokeAPIKey(ctx context.Context, developerID, keyID string) error
@@ -139,7 +140,9 @@ type Route struct {
 //
 // Endpoints under /api/v1/games/{gameID} are wrapped with h.requireGameMember, inside h.requireDeveloper and
 // h.requireWritable, so a developer can only reach a game they belong to, and the handler knows their role
-// (gameFrom). TestEveryGameRouteChecksMembership fails for one that is not.
+// (gameFrom). The ones only an owner may use (API keys, allowed origins) add h.requireGameOwner. A developer who
+// is not in the game gets 404 game_not_found; a member who is not an owner gets 403 owner_required.
+// TestEveryGameRouteChecksMembership and TestGameRoutesAreForOwnersOrMembers fail for a route that is not there.
 //
 // The OpenAPI file (openapi/platform.yaml) must document exactly these routes;
 // TestOpenAPIMatchesRoutes fails when the two drift apart.
@@ -165,10 +168,11 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/admin/audit-log", h.requireAdmin(h.listAuditLog)},
 		{http.MethodGet, "/api/v1/games", h.requireDeveloper(h.listGames)},
 		{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.requireWritable(h.registerGame))},
-		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.createAPIKey)))},
-		{http.MethodGet, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.requireGameMember(h.listAPIKeys))},
+		{http.MethodGet, "/api/v1/games/{gameID}/members", h.requireDeveloper(h.requireGameMember(h.listGameMembers))},
+		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.createAPIKey))))},
+		{http.MethodGet, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.requireGameMember(h.requireGameOwner(h.listAPIKeys)))},
 		{http.MethodDelete, "/api/v1/api-keys/{keyID}", h.requireDeveloper(h.revokeAPIKey)},
-		{http.MethodPut, "/api/v1/games/{gameID}/allowed-origins", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.setAllowedOrigins)))},
+		{http.MethodPut, "/api/v1/games/{gameID}/allowed-origins", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.setAllowedOrigins))))},
 		{http.MethodGet, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.requireGameMember(h.getWidgetDraft))},
 		{http.MethodPut, "/api/v1/games/{gameID}/widget/draft", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.saveWidgetDraft)))},
 		{http.MethodPost, "/api/v1/games/{gameID}/widget/publish", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.publishWidget)))},

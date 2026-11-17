@@ -44,6 +44,7 @@ type Store interface {
 	CreateGame(ctx context.Context, developerID, name, description string) (repository.Game, error)
 	GamesOfMember(ctx context.Context, developerID string) ([]repository.Game, error)
 	GameOfMember(ctx context.Context, gameID, developerID string) (repository.Game, error)
+	GameMembers(ctx context.Context, gameID string) ([]repository.GameMember, error)
 	GameByID(ctx context.Context, gameID string) (repository.Game, error)
 	SetAllowedOrigins(ctx context.Context, gameID, developerID string, origins []string) (repository.Game, error)
 	CreateAPIKey(ctx context.Context, gameID, keyPrefix, keyHash string) (repository.APIKey, error)

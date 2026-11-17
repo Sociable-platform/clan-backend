@@ -232,11 +232,15 @@ func TestMembershipDecidesWhoMayUseAGame(t *testing.T) {
 	if list, err := r.GamesOfMember(ctx, stranger); err != nil || len(list) != 1 || list[0].ID != game || list[0].Role != RoleMember {
 		t.Errorf("GamesOfMember by a member = %+v, %v", list, err)
 	}
-	if set, err := r.SetAllowedOrigins(ctx, game, stranger, []string{"https://ok.example.com"}); err != nil || set.Role != RoleMember {
-		t.Errorf("SetAllowedOrigins by a member = %+v, %v; want it to work (TEAM-306 makes it owner-only) and report the role", set, err)
+	// What manages the game is not a member's: the owner role is part of the statement.
+	if _, err := r.SetAllowedOrigins(ctx, game, stranger, []string{"https://ok.example.com"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetAllowedOrigins by a member: %v, want ErrNotFound (owner only)", err)
 	}
-	if err := r.RevokeAPIKey(ctx, key.ID, stranger); err != nil {
-		t.Errorf("RevokeAPIKey by a member: %v", err)
+	if err := r.RevokeAPIKey(ctx, key.ID, stranger); !errors.Is(err, ErrOwnerRequired) {
+		t.Errorf("RevokeAPIKey by a member: %v, want ErrOwnerRequired", err)
+	}
+	if keys, err := r.APIKeysByGame(ctx, game); err != nil || len(keys) != 1 || keys[0].RevokedAt != nil {
+		t.Errorf("keys after a member tried to revoke = %+v, %v; want the key untouched", keys, err)
 	}
 
 	// The owner still has the game, and the member row going takes the access with it.
@@ -279,5 +283,97 @@ func TestGameMembersRules(t *testing.T) {
 	}
 	if got := rolesOf(t, r, game); len(got) != 0 {
 		t.Errorf("members of a deleted game = %v, want none", got)
+	}
+}
+
+func TestOnlyAnOwnerRevokesKeysAndSetsOrigins(t *testing.T) {
+	r := testRepo(t)
+	ctx := context.Background()
+	owner, game := newGame(t, r)
+	member := newDeveloper(t, r, "member")
+	second := newDeveloper(t, r, "second-owner")
+	if _, err := r.pool.Exec(ctx, `insert into game_members (game_id, developer_id, role) values ($1, $2, 'member'), ($1, $3, 'owner')`, game, member, second); err != nil {
+		t.Fatal(err)
+	}
+	key, err := r.CreateAPIKey(ctx, game, "clk_roles", fmt.Sprintf("hash-%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A second owner is an owner like the first: owners are decided by the role, not by who registered the game.
+	if set, err := r.SetAllowedOrigins(ctx, game, second, []string{"https://second.example.com"}); err != nil || set.Role != RoleOwner {
+		t.Fatalf("SetAllowedOrigins by a second owner = %+v, %v", set, err)
+	}
+	if err := r.RevokeAPIKey(ctx, key.ID, member); !errors.Is(err, ErrOwnerRequired) {
+		t.Fatalf("revoke by a member: %v, want ErrOwnerRequired", err)
+	}
+	if err := r.RevokeAPIKey(ctx, key.ID, second); err != nil {
+		t.Fatalf("revoke by a second owner: %v", err)
+	}
+	var first *time.Time
+	if keys, _ := r.APIKeysByGame(ctx, game); len(keys) == 1 {
+		first = keys[0].RevokedAt
+	}
+	if first == nil {
+		t.Fatal("the key is not revoked")
+	}
+	// Revoking again keeps the first time; a member is still refused, and a stranger still sees nothing.
+	if err := r.RevokeAPIKey(ctx, key.ID, owner); err != nil {
+		t.Errorf("revoke twice: %v", err)
+	}
+	if keys, _ := r.APIKeysByGame(ctx, game); len(keys) != 1 || keys[0].RevokedAt == nil || !keys[0].RevokedAt.Equal(*first) {
+		t.Errorf("the revocation time moved on a second revoke: %+v", keys)
+	}
+	if err := r.RevokeAPIKey(ctx, key.ID, member); !errors.Is(err, ErrOwnerRequired) {
+		t.Errorf("a member after: %v, want ErrOwnerRequired even for a revoked key", err)
+	}
+	if err := r.RevokeAPIKey(ctx, key.ID, unknownID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a developer who is not in the game: %v, want ErrNotFound", err)
+	}
+	if err := r.RevokeAPIKey(ctx, unknownID, owner); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a key that does not exist: %v, want ErrNotFound", err)
+	}
+	if err := r.RevokeAPIKey(ctx, "not-a-uuid", owner); err == nil {
+		t.Log("a key ID that is not a UUID is refused by the service before it gets here")
+	}
+}
+
+func TestGameMembersListsOwnersFirstThenByJoining(t *testing.T) {
+	r := testRepo(t)
+	ctx := context.Background()
+	owner, game := newGame(t, r)
+	early := newDeveloper(t, r, "early")
+	late := newDeveloper(t, r, "late")
+	second := newDeveloper(t, r, "second-owner")
+	rows := []struct {
+		dev, role string
+		hours     int
+	}{{early, "member", 2}, {late, "member", 1}, {second, "owner", 3}}
+	for _, row := range rows {
+		if _, err := r.pool.Exec(ctx,
+			`insert into game_members (game_id, developer_id, role, created_at) values ($1, $2, $3, now() + make_interval(hours => $4))`,
+			game, row.dev, row.role, row.hours); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := r.GameMembers(ctx, game)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, m := range got {
+		order = append(order, m.DeveloperID+":"+m.Role)
+		if m.Name == "" || m.Email == "" || m.JoinedAt.IsZero() {
+			t.Errorf("a member row is missing its name, email or join time: %+v", m)
+		}
+	}
+	// The owners first (the one who registered the game joined first), then the members by when they joined.
+	want := []string{owner + ":owner", second + ":owner", late + ":member", early + ":member"}
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("members = %v\nwant     %v", order, want)
+	}
+	if none, err := r.GameMembers(ctx, unknownID); err != nil || none == nil || len(none) != 0 {
+		t.Errorf("members of a game that does not exist = %#v, %v; want an empty, non-nil list", none, err)
 	}
 }

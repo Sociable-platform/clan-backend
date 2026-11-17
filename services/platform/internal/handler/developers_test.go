@@ -598,19 +598,26 @@ func (m *memStore) CreateGame(_ context.Context, developerID, name, description 
 	return g, nil
 }
 
+// The in-memory store only knows owners: the developer who registered a game owns it.
 func (m *memStore) GamesOfMember(_ context.Context, developerID string) ([]repository.Game, error) {
 	out := []repository.Game{}
 	for _, g := range m.games {
 		if g.DeveloperID == developerID {
+			g.Role = repository.RoleOwner
 			out = append(out, g)
 		}
 	}
 	return out, nil
 }
 
+func (m *memStore) GameMembers(context.Context, string) ([]repository.GameMember, error) {
+	return []repository.GameMember{}, nil
+}
+
 func (m *memStore) GameOfMember(_ context.Context, gameID, developerID string) (repository.Game, error) {
 	for _, g := range m.games {
 		if g.ID == gameID && g.DeveloperID == developerID {
+			g.Role = repository.RoleOwner
 			return g, nil
 		}
 	}

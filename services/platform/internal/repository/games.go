@@ -146,9 +146,10 @@ func (r *Repository) GameByID(ctx context.Context, gameID string) (Game, error) 
 	return g, nil
 }
 
-// SetAllowedOrigins replaces the allowed origins of a game that developerID belongs to and returns the
-// game. A game that does not exist and a game the developer is not in both give ErrNotFound. Only an
-// owner may set them: today every member is an owner, and TEAM-306 turns a member away with its own error.
+// SetAllowedOrigins replaces the allowed origins of a game that developerID owns and returns the game. Only
+// an owner may: the service turns a member away with ErrOwnerRequired before it gets here, and the role is
+// checked again in this statement, so a role that changes at the same moment cannot let a member through (that
+// race answers ErrNotFound). A game that does not exist and a game the developer is not in give ErrNotFound too.
 func (r *Repository) SetAllowedOrigins(ctx context.Context, gameID, developerID string, origins []string) (Game, error) {
 	if r.pool == nil {
 		return Game{}, ErrNoDatabase
@@ -160,7 +161,7 @@ func (r *Repository) SetAllowedOrigins(ctx context.Context, gameID, developerID 
 	err := r.db(ctx).QueryRow(ctx,
 		`update games g set allowed_origins = $3
 		 from game_members m
-		 where g.id = $1 and m.game_id = g.id and m.developer_id = $2
+		 where g.id = $1 and m.game_id = g.id and m.developer_id = $2 and m.role = 'owner'
 		 returning g.id::text, g.developer_id::text, m.role, g.name, coalesce(g.description, ''), g.allowed_origins, g.created_at`,
 		gameID, developerID, origins,
 	).Scan(&g.ID, &g.DeveloperID, &g.Role, &g.Name, &g.Description, &g.AllowedOrigins, &g.CreatedAt)
@@ -171,4 +172,44 @@ func (r *Repository) SetAllowedOrigins(ctx context.Context, gameID, developerID 
 		return Game{}, fmt.Errorf("update allowed origins: %w", err)
 	}
 	return g, nil
+}
+
+// GameMember is a developer on a game, as the team list shows them.
+type GameMember struct {
+	DeveloperID string
+	Name        string
+	Email       string
+	Role        string // RoleOwner or RoleMember
+	JoinedAt    time.Time
+}
+
+// GameMembers returns everybody who belongs to the game: the owners first, then the members, each group by when
+// they joined (ties by ID, so the order is always the same). The caller has already checked that the developer
+// asking belongs to the game; a game that does not exist gives an empty list.
+func (r *Repository) GameMembers(ctx context.Context, gameID string) ([]GameMember, error) {
+	if r.pool == nil {
+		return nil, ErrNoDatabase
+	}
+	rows, err := r.db(ctx).Query(ctx,
+		`select d.id::text, d.name, d.email, m.role, m.created_at
+		 from game_members m join developers d on d.id = m.developer_id
+		 where m.game_id = $1
+		 order by (m.role = 'owner') desc, m.created_at, d.id`, gameID)
+	if err != nil {
+		return nil, fmt.Errorf("select game members: %w", err)
+	}
+	defer rows.Close()
+
+	members := []GameMember{}
+	for rows.Next() {
+		var m GameMember
+		if err := rows.Scan(&m.DeveloperID, &m.Name, &m.Email, &m.Role, &m.JoinedAt); err != nil {
+			return nil, fmt.Errorf("scan game member: %w", err)
+		}
+		members = append(members, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read game members: %w", err)
+	}
+	return members, nil
 }
