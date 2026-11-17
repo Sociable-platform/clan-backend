@@ -54,6 +54,13 @@ type fakeService struct {
 	// gameMembers answers GET /games/{id}/members.
 	gameMembers func(developerID, gameID string) ([]service.GameMember, error)
 
+	inviteToGame     func(developerID, gameID, email string) (service.GameInvite, error)
+	gameInvites      func(developerID, gameID string) ([]service.GameInvite, error)
+	cancelGameInvite func(developerID, gameID, inviteID string) error
+	myInvites        func(developerID string) ([]service.GameInvite, error)
+	acceptInvite     func(developerID, inviteID string) (service.Game, error)
+	declineInvite    func(developerID, inviteID string) error
+
 	createAPIKey func(developerID, gameID string) (service.NewAPIKey, error)
 	listAPIKeys  func(developerID, gameID string) ([]service.APIKey, error)
 	revokeAPIKey func(developerID, keyID string) error
@@ -224,6 +231,30 @@ func (f fakeService) MemberGame(_ context.Context, developerID, gameID string) (
 
 func (f fakeService) GameMembers(_ context.Context, developerID, gameID string) ([]service.GameMember, error) {
 	return f.gameMembers(developerID, gameID)
+}
+
+func (f fakeService) InviteToGame(_ context.Context, developerID, gameID, email string) (service.GameInvite, error) {
+	return f.inviteToGame(developerID, gameID, email)
+}
+
+func (f fakeService) GameInvites(_ context.Context, developerID, gameID string) ([]service.GameInvite, error) {
+	return f.gameInvites(developerID, gameID)
+}
+
+func (f fakeService) CancelGameInvite(_ context.Context, developerID, gameID, inviteID string) error {
+	return f.cancelGameInvite(developerID, gameID, inviteID)
+}
+
+func (f fakeService) MyInvites(_ context.Context, developerID string) ([]service.GameInvite, error) {
+	return f.myInvites(developerID)
+}
+
+func (f fakeService) AcceptInvite(_ context.Context, developerID, inviteID string) (service.Game, error) {
+	return f.acceptInvite(developerID, inviteID)
+}
+
+func (f fakeService) DeclineInvite(_ context.Context, developerID, inviteID string) error {
+	return f.declineInvite(developerID, inviteID)
 }
 
 func (f fakeService) CreateAPIKey(_ context.Context, developerID, gameID string) (service.NewAPIKey, error) {

@@ -127,6 +127,7 @@ func newDeveloper(t *testing.T, r *Repository, label string) string {
 	}
 	t.Cleanup(func() {
 		c := context.Background()
+		_, _ = r.pool.Exec(c, `delete from game_invites where invited_by = $1`, dev.ID)
 		_, _ = r.pool.Exec(c, `delete from game_members where developer_id = $1`, dev.ID)
 		_, _ = r.pool.Exec(c, `delete from developers where id = $1`, dev.ID)
 	})

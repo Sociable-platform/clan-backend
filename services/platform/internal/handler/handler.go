@@ -42,6 +42,12 @@ type Service interface {
 	ListGames(ctx context.Context, developerID string) ([]service.Game, error)
 	MemberGame(ctx context.Context, developerID, gameID string) (service.Game, error)
 	GameMembers(ctx context.Context, developerID, gameID string) ([]service.GameMember, error)
+	InviteToGame(ctx context.Context, developerID, gameID, email string) (service.GameInvite, error)
+	GameInvites(ctx context.Context, developerID, gameID string) ([]service.GameInvite, error)
+	CancelGameInvite(ctx context.Context, developerID, gameID, inviteID string) error
+	MyInvites(ctx context.Context, developerID string) ([]service.GameInvite, error)
+	AcceptInvite(ctx context.Context, developerID, inviteID string) (service.Game, error)
+	DeclineInvite(ctx context.Context, developerID, inviteID string) error
 	CreateAPIKey(ctx context.Context, developerID, gameID string) (service.NewAPIKey, error)
 	ListAPIKeys(ctx context.Context, developerID, gameID string) ([]service.APIKey, error)
 	RevokeAPIKey(ctx context.Context, developerID, keyID string) error
@@ -169,6 +175,12 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/games", h.requireDeveloper(h.listGames)},
 		{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.requireWritable(h.registerGame))},
 		{http.MethodGet, "/api/v1/games/{gameID}/members", h.requireDeveloper(h.requireGameMember(h.listGameMembers))},
+		{http.MethodPost, "/api/v1/games/{gameID}/invites", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.inviteToGame))))},
+		{http.MethodGet, "/api/v1/games/{gameID}/invites", h.requireDeveloper(h.requireGameMember(h.requireGameOwner(h.listGameInvites)))},
+		{http.MethodDelete, "/api/v1/games/{gameID}/invites/{inviteID}", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.cancelGameInvite))))},
+		{http.MethodGet, "/api/v1/invites", h.requireDeveloper(h.listMyInvites)},
+		{http.MethodPost, "/api/v1/invites/{inviteID}/accept", h.requireDeveloper(h.requireWritable(h.acceptInvite))},
+		{http.MethodPost, "/api/v1/invites/{inviteID}/decline", h.requireDeveloper(h.requireWritable(h.declineInvite))},
 		{http.MethodPost, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.createAPIKey))))},
 		{http.MethodGet, "/api/v1/games/{gameID}/api-keys", h.requireDeveloper(h.requireGameMember(h.requireGameOwner(h.listAPIKeys)))},
 		{http.MethodDelete, "/api/v1/api-keys/{keyID}", h.requireDeveloper(h.revokeAPIKey)},

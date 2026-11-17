@@ -17,6 +17,13 @@ const foreignKeyViolation = "23503"
 // that is not a UUID.
 const invalidTextRepresentation = "22P02"
 
+// isInvalidText reports whether err is Postgres refusing text that is not a valid value, here an ID that is
+// not a UUID. Such an ID matches nothing, so callers answer it like a missing row.
+func isInvalidText(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == invalidTextRepresentation
+}
+
 // The two roles a developer has on a game (game_members.role). The owner may do everything; a member
 // works on the game but does not manage it (TEAM-306).
 const (
@@ -116,8 +123,7 @@ func (r *Repository) GameOfMember(ctx context.Context, gameID, developerID strin
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Game{}, ErrNotFound
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == invalidTextRepresentation {
+	if isInvalidText(err) {
 		return Game{}, ErrNotFound
 	}
 	if err != nil {

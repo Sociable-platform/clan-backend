@@ -26,6 +26,8 @@ tags:
     description: The distributor's admin panel (admin token only; there is no way to register as an admin)
   - name: games
     description: Existing games a developer has registered with the toolkit
+  - name: invites
+    description: Inviting developers to a game by email, and answering an invitation
   - name: api-keys
     description: Secret keys a game's own server uses to get player tokens
   - name: internal
@@ -1067,6 +1069,236 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/invites:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    post:
+      tags: [invites]
+      operationId: inviteToGame
+      summary: Invite a developer to a game by email
+      description: |
+        Only the game's owner can invite: a member of the game gets 403 `owner_required`, and a developer who is
+        not in it gets 404.
+
+        The invitation is a pending row for the email address; it carries no secret and no link. The person it is
+        for sees it in `GET /api/v1/invites` once they are logged in with an account that has that address, and
+        the email tells them so: someone with an account logs in, someone without one registers first (which
+        confirms the address when email verification is on) and then logs in. Nobody can accept it by holding the
+        email, only by being that address. The answer is the same whether or not the address has an account.
+
+        There is one pending invite per game and address: inviting again renews it (a new 7 days) and sends the
+        email again. It lasts 7 days and expired ones are removed.
+
+        Sending is limited. `429 rate_limited` when the game sent 20 invitations in the last hour, when this
+        game invited this address 3 times in the last day, or when this address received 5 invitations from all
+        games in the last day.
+      security:
+        - developerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteRequest"
+            example:
+              email: carol@example.com
+      responses:
+        "201":
+          description: The invitation, as the owner sees it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameInvite"
+              example:
+                id: 5c2e8a10-7d3b-4f19-a6e4-3b9c1d0f8a27
+                email: carol@example.com
+                invitedByName: Ali
+                createdAt: "2026-11-17T10:00:00Z"
+                expiresAt: "2026-11-24T10:00:00Z"
+        "400":
+          description: |
+            `invalid_email` (not a plain address like `dev@example.com`) or `invalid_json` (also for unknown fields,
+            such as a game or a developer in the body: those come from the path and the login).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_email
+                  message: Email address is not valid
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OwnerRequired"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+        "409":
+          description: A developer with that address is already on the game, as an owner or a member (`already_member`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: already_member
+                  message: This developer is already on the game
+        "429":
+          description: Over one of the limits above (`rate_limited`). Nothing was created and no email was sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: rate_limited
+                  message: This person was invited to this game several times today. Try again tomorrow.
+    get:
+      tags: [invites]
+      operationId: listGameInvites
+      summary: List a game's pending invitations
+      description: |
+        The invitations that are waiting for an answer and have not expired, newest first. Only the game's owner
+        can list them (403 `owner_required` for a member, 404 for a developer who is not in the game).
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The pending invitations. An empty list when there are none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameInviteList"
+              example:
+                invites:
+                  - id: 5c2e8a10-7d3b-4f19-a6e4-3b9c1d0f8a27
+                    email: carol@example.com
+                    invitedByName: Ali
+                    createdAt: "2026-11-17T10:00:00Z"
+                    expiresAt: "2026-11-24T10:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/OwnerRequired"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/invites/{inviteID}:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+      - $ref: "#/components/parameters/InviteID"
+    delete:
+      tags: [invites]
+      operationId: cancelGameInvite
+      summary: Take an invitation back
+      description: |
+        Only the game's owner can (403 `owner_required` for a member, 404 for a developer who is not in the game).
+        The invitation is deleted and can no longer be accepted.
+      security:
+        - developerToken: []
+      responses:
+        "204":
+          description: Cancelled.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountSuspendedOrOwner"
+        "404":
+          $ref: "#/components/responses/InviteNotFound"
+  /api/v1/invites:
+    get:
+      tags: [invites]
+      operationId: listMyInvites
+      summary: List the invitations sent to me
+      description: |
+        The invitations that wait for the logged-in developer: the ones sent to the email address of their account,
+        newest first, not expired. An invitation is for an address, so it shows for the account that has it and for
+        nobody else. Open to a suspended developer (reading); answering is not.
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: The invitations. An empty list when there are none.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyInviteList"
+              example:
+                invites:
+                  - id: 5c2e8a10-7d3b-4f19-a6e4-3b9c1d0f8a27
+                    gameId: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                    gameName: Space Raiders
+                    invitedByName: Ali
+                    createdAt: "2026-11-17T10:00:00Z"
+                    expiresAt: "2026-11-24T10:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/invites/{inviteID}/accept:
+    parameters:
+      - $ref: "#/components/parameters/InviteID"
+    post:
+      tags: [invites]
+      operationId: acceptInvite
+      summary: Accept an invitation
+      description: |
+        Makes the logged-in developer a `member` of the game and deletes the invitation, in one step. The
+        invitation must have been sent to the email address of their account: somebody else's invitation and
+        one that does not exist are both 404 `invite_not_found`, so an ID tells nothing. One that is theirs but
+        past its 7 days is 410 `invite_expired` and makes nobody a member. Accepting is a write, so a suspended
+        developer gets 403 `account_suspended`. No body.
+      security:
+        - developerToken: []
+      responses:
+        "200":
+          description: "The game, with `role: member`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+              example:
+                id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                role: member
+                name: Space Raiders
+                description: Browser shooter, 2 to 4 players
+                allowedOrigins: []
+                createdAt: "2026-11-07T09:30:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountSuspendedOrOrigin"
+        "404":
+          $ref: "#/components/responses/InviteNotFound"
+        "410":
+          description: The invitation is for this account but has expired (`invite_expired`). Ask the owner for a new one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invite_expired
+                  message: This invitation has expired. Ask the game's owner to send a new one.
+  /api/v1/invites/{inviteID}/decline:
+    parameters:
+      - $ref: "#/components/parameters/InviteID"
+    post:
+      tags: [invites]
+      operationId: declineInvite
+      summary: Decline an invitation
+      description: |
+        Deletes an invitation sent to the logged-in developer's address; nothing else happens (the owner can
+        invite again). Somebody else's invitation and one that does not exist are both 404 `invite_not_found`.
+        No body.
+      security:
+        - developerToken: []
+      responses:
+        "204":
+          description: Declined.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountSuspendedOrOrigin"
+        "404":
+          $ref: "#/components/responses/InviteNotFound"
   /api/v1/games/{gameID}/api-keys:
     parameters:
       - $ref: "#/components/parameters/GameID"
@@ -1748,6 +1980,13 @@ components:
       schema:
         type: string
         format: uuid
+    InviteID:
+      name: inviteID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     PageLimit:
       name: limit
       in: query
@@ -2139,6 +2378,71 @@ components:
         joinedAt:
           type: string
           format: date-time
+    InviteRequest:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: The address to invite. Lower-cased; it need not have an account yet.
+    GameInvite:
+      type: object
+      required: [id, email, invitedByName, createdAt, expiresAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        invitedByName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+          description: When it was sent, or last renewed.
+        expiresAt:
+          type: string
+          format: date-time
+          description: 7 days after it was sent or renewed.
+    GameInviteList:
+      type: object
+      required: [invites]
+      properties:
+        invites:
+          type: array
+          items:
+            $ref: "#/components/schemas/GameInvite"
+    MyInvite:
+      type: object
+      required: [id, gameId, gameName, invitedByName, createdAt, expiresAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        gameId:
+          type: string
+          format: uuid
+        gameName:
+          type: string
+        invitedByName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+    MyInviteList:
+      type: object
+      required: [invites]
+      properties:
+        invites:
+          type: array
+          items:
+            $ref: "#/components/schemas/MyInvite"
     GameMemberList:
       type: object
       required: [members]
@@ -2359,6 +2663,31 @@ components:
       description: |
         Only the game's owner can do this (`owner_required`): the developer is a member of the game. The shared
         403s also apply: `account_suspended` on a write while the developer is suspended, and `origin_not_allowed`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: owner_required
+              message: Only the game's owner can do this
+    InviteNotFound:
+      description: |
+        No such invitation, or it was not sent to the logged-in developer's address, or (for an owner) it belongs
+        to another game. These answer the same, so an ID tells nothing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: invite_not_found
+              message: Invitation not found
+    AccountSuspendedOrOwner:
+      description: |
+        Only the game's owner can do this (`owner_required`, the developer is a member), or the developer's account
+        is suspended (`account_suspended`), or the request came from a website that is not allowed
+        (`origin_not_allowed`).
       content:
         application/json:
           schema:

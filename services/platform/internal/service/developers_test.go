@@ -70,6 +70,9 @@ type fakeStore struct {
 	refreshSessions int
 	// pendingRegs holds the pending registrations by email, like the real table.
 	pendingRegs map[string]repository.PendingRegistration
+	// invites and inviteLog are the tables game_invites and game_invite_log.
+	invites   []repository.GameInvite
+	inviteLog []fakeInviteLog
 }
 
 func (f *fakeStore) SavePendingRegistration(_ context.Context, p repository.PendingRegistration, now time.Time) error {

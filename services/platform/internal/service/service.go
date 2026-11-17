@@ -46,6 +46,15 @@ type Store interface {
 	GameOfMember(ctx context.Context, gameID, developerID string) (repository.Game, error)
 	GameMembers(ctx context.Context, gameID string) ([]repository.GameMember, error)
 	GameByID(ctx context.Context, gameID string) (repository.Game, error)
+	PurgeGameInvites(ctx context.Context, now time.Time) error
+	EmailIsMember(ctx context.Context, gameID, email string) (bool, error)
+	InviteCountsSince(ctx context.Context, gameID, email string, now time.Time) (repository.InviteCounts, error)
+	SaveGameInvite(ctx context.Context, gameID, email, invitedBy string, now, expiresAt time.Time) (repository.GameInvite, error)
+	GameInvitesOfGame(ctx context.Context, gameID string, now time.Time) ([]repository.GameInvite, error)
+	GameInvitesForEmail(ctx context.Context, email string, now time.Time) ([]repository.GameInvite, error)
+	DeleteGameInvite(ctx context.Context, gameID, inviteID string) error
+	DeclineGameInvite(ctx context.Context, inviteID, email string) error
+	AcceptGameInvite(ctx context.Context, inviteID, developerID, email string, now time.Time) (repository.Game, error)
 	SetAllowedOrigins(ctx context.Context, gameID, developerID string, origins []string) (repository.Game, error)
 	CreateAPIKey(ctx context.Context, gameID, keyPrefix, keyHash string) (repository.APIKey, error)
 	APIKeysByGame(ctx context.Context, gameID string) ([]repository.APIKey, error)
@@ -85,6 +94,8 @@ type Service struct {
 	// verification delivers the codes of registrations with email verification. nil: verification
 	// is off and Register creates the account at once (WithEmailVerification).
 	verification VerificationSender
+	// inviteSender delivers the game invitation emails (WithInvites).
+	inviteSender InviteSender
 }
 
 // defaultAdminTokenTTL is used until WithAdminTokenTTL is called.
@@ -116,7 +127,7 @@ func newService(store Store, key ed25519.PrivateKey, tokenTTL time.Duration, cos
 	return &Service{
 		store: store, key: key, pub: pub, tokenTTL: tokenTTL, adminTokenTTL: defaultAdminTokenTTL,
 		bcryptCost: cost, dummyHash: dummy, now: time.Now, refreshTokenTTL: defaultRefreshTokenTTL,
-		resetSender: noResetSender{}, dashboardURL: defaultDashboardURL,
+		resetSender: noResetSender{}, dashboardURL: defaultDashboardURL, inviteSender: noInviteSender{},
 	}, nil
 }
 
