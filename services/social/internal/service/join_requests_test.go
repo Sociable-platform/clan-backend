@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"gitlab.com/clan-platform/clan-backend/services/social/internal/gameconfig"
 	"gitlab.com/clan-platform/clan-backend/services/social/internal/repository"
 )
 
@@ -410,4 +411,55 @@ func TestJoinClanOfAClosedClanIs403(t *testing.T) {
 	store.joinErr = repository.ErrClanClosed
 	_, err := New(store).JoinClan(context.Background(), gameA, "u_42", "Ali", someClan)
 	wantHTTPError(t, err, http.StatusForbidden, "clan_closed")
+}
+
+// requestRules is a game that chose who decides on requests (TEAM-300): every member, the elder too, but not
+// the co-leader, though it may remove members. The leader (the owner's role) says no, which the owner ignores.
+type requestRules struct{}
+
+func (requestRules) Rules(context.Context, string) gameconfig.Rules {
+	yes, no := true, false
+	return gameconfig.Rules{MaxMembers: 30, Published: true, Roles: []gameconfig.Role{
+		{ID: "member", Name: "Member", CanHandleRequests: &yes},
+		{ID: "elder", Name: "Elder", CanHandleRequests: &yes},
+		{ID: "co-leader", Name: "Co-leader", CanPromote: true, CanKick: true, CanHandleRequests: &no},
+		{ID: "leader", Name: "Leader", CanPromote: true, CanKick: true, CanHandleRequests: &no},
+	}}
+}
+
+func TestTheGameChoosesWhoDecidesOnRequests(t *testing.T) {
+	want := map[string]bool{pOwner: true, pCo: false, pElder: true, pNew: true}
+	for name, call := range map[string]func(*Service) error{
+		"list": func(s *Service) error {
+			_, err := s.ListJoinRequests(context.Background(), gameA, "u_elder", someClan)
+			return err
+		},
+		"accept": func(s *Service) error {
+			return s.AcceptJoinRequest(context.Background(), gameA, "u_elder", someClan, someRequest)
+		},
+		"decline": func(s *Service) error {
+			return s.DeclineJoinRequest(context.Background(), gameA, "u_elder", someClan, someRequest)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newRequestStore()
+			if err := call(New(store).WithRules(requestRules{})); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(store.allowed, want) {
+				t.Errorf("rule = %v, want %v", store.allowed, want)
+			}
+		})
+	}
+
+	// The new-request notification goes to the same members.
+	store := newRequestStore()
+	svc, rec := friendService(store)
+	svc.WithRules(requestRules{})
+	if _, err := svc.RequestJoin(context.Background(), gameA, "u_rashad", "Rashad", someClan); err != nil {
+		t.Fatal(err)
+	}
+	if got := oneEvent(t, rec, EventClanJoinRequested)["managers"]; !reflect.DeepEqual(got, []string{pOwner, pElder, pNew}) {
+		t.Errorf("managers = %v, want the owner, the elder and the member: not the co-leader", got)
+	}
 }

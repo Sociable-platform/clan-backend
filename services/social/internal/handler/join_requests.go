@@ -54,7 +54,7 @@ func (h *Handler) cancelJoinRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 // listJoinRequests handles GET /api/v1/clans/{clanID}/requests: the pending requests of the clan, oldest
-// first, for a leader of that clan (its owner, or a role that may remove members).
+// first, for a leader of that clan (its owner, or a role with canHandleRequests).
 func (h *Handler) listJoinRequests(w http.ResponseWriter, r *http.Request) {
 	caller, ok := auth.PlayerFrom(r.Context())
 	if !ok {
