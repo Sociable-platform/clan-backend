@@ -29,7 +29,7 @@ func TestRegisterGame_Created(t *testing.T) {
 	svc := authedFake()
 	svc.registerGame = func(dev string, in service.RegisterGameInput) (service.Game, error) {
 		gotDev, gotIn = dev, in
-		return service.Game{ID: "g1", Name: in.Name, Description: in.Description, CreatedAt: created}, nil
+		return service.Game{ID: "g1", Role: "owner", Name: in.Name, Description: in.Description, CreatedAt: created}, nil
 	}
 
 	rec := call(t, svc, discardLog(), http.MethodPost, "/api/v1/games",
@@ -44,7 +44,7 @@ func TestRegisterGame_Created(t *testing.T) {
 	if gotIn != (service.RegisterGameInput{Name: "Space Raiders", Description: "Browser shooter"}) {
 		t.Fatalf("service got %+v", gotIn)
 	}
-	want := `{"id":"g1","name":"Space Raiders","description":"Browser shooter","allowedOrigins":[],"createdAt":"2026-11-07T09:30:00Z"}` + "\n"
+	want := `{"id":"g1","role":"owner","name":"Space Raiders","description":"Browser shooter","allowedOrigins":[],"createdAt":"2026-11-07T09:30:00Z"}` + "\n"
 	if rec.Body.String() != want {
 		t.Fatalf("body %s", rec.Body.String())
 	}

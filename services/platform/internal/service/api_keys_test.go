@@ -48,8 +48,9 @@ func (f *fakeStore) APIKeysByGame(_ context.Context, gameID string) ([]repositor
 	return out, nil
 }
 
-// RevokeAPIKey follows the SQL: only a key of a game owned by developerID matches,
-// and an already revoked key keeps its first revocation time.
+// RevokeAPIKey follows the SQL: a key of a game developerID owns is revoked (an already revoked key keeps
+// its first revocation time), a member of the game gets ErrOwnerRequired, and a key of a game the developer
+// is not in, or no key at all, is ErrNotFound.
 func (f *fakeStore) RevokeAPIKey(_ context.Context, keyID, developerID string) error {
 	if f.err != nil {
 		return f.err
@@ -59,13 +60,21 @@ func (f *fakeStore) RevokeAPIKey(_ context.Context, keyID, developerID string) e
 			continue
 		}
 		for _, g := range f.games {
-			if g.ID == k.GameID && g.DeveloperID == developerID {
-				if f.keys[i].RevokedAt == nil {
-					now := time.Unix(1_900_000_000+int64(i), 0)
-					f.keys[i].RevokedAt = &now
-				}
-				return nil
+			if g.ID != k.GameID {
+				continue
 			}
+			as, ok := f.gameAs(g, developerID)
+			if !ok {
+				continue
+			}
+			if as.Role != repository.RoleOwner {
+				return repository.ErrOwnerRequired
+			}
+			if f.keys[i].RevokedAt == nil {
+				now := time.Unix(1_900_000_000+int64(i), 0)
+				f.keys[i].RevokedAt = &now
+			}
+			return nil
 		}
 	}
 	return repository.ErrNotFound

@@ -94,7 +94,7 @@ func TestRefreshSession_RotatesTheToken(t *testing.T) {
 		t.Fatal("the developer token was not replaced")
 	}
 	id, err := svc.AuthenticateDeveloper(context.Background(), second.Token)
-	if err != nil || id != "dev-1" {
+	if err != nil || id != fakeDeveloperID(1) {
 		t.Fatalf("the new developer token does not work: %q, %v", id, err)
 	}
 
@@ -212,7 +212,7 @@ func TestRefreshSession_SuspendedDeveloperCanRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.suspendedDevs = map[string]bool{"dev-1": true}
+	store.suspendedDevs = map[string]bool{fakeDeveloperID(1): true}
 	refresh(t, svc, s.RefreshToken)
 }
 

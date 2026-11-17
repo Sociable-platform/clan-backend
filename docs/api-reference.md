@@ -22,7 +22,7 @@ plugin in your editor.
 
 | Caller | Proves who it is with | Can reach |
 |---|---|---|
-| A developer in Studio | a developer token (15 minutes, renewed with a refresh cookie) | platform: their own account, games, API keys, widget config |
+| A developer in Studio | a developer token (15 minutes, renewed with a refresh cookie) | platform: their own account, the games they belong to (as owner or member), their invitations, and for each game its widget config; an owner also reaches its API keys, allowed origins and team |
 | An admin in Studio | an admin token (1 hour) | platform: `/api/v1/admin/...` only |
 | A game's server | the game's API key, in `X-API-Key` | platform: `POST /api/v1/players/auth` |
 | A player's browser (the SDK) | a player token (1 hour) | social and realtime, for that player and that game only |

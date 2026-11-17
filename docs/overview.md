@@ -16,7 +16,7 @@ The product name is **Sociable**. The dashboard is called **Studio**.
 
 | Part | Repository | What it is | Runs at |
 |---|---|---|---|
-| **platform** | clan-backend | Developers, admins, games, API keys, the widget's draft and published versions, player tokens | local 8081, `platform.<host>` |
+| **platform** | clan-backend | Developers, admins, games and who is on each (owners and members, invitations, the team history), API keys, the widget's draft and published versions, player tokens | local 8081, `platform.<host>` |
 | **social** | clan-backend | Players, clans and their members and roles, friends, blocks | local 8082, `social.<host>` |
 | **realtime** | clan-backend | WebSocket connections, conversations, messages, presence, notifications | local 8083, `realtime.<host>` |
 | **Studio** | clan-frontend | The developer dashboard and the admin panel (React). Also the public developer guide at `/docs` | local 5173, `studio.<host>` |

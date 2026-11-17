@@ -32,6 +32,23 @@ type adminGameResponse struct {
 	StatusReason    *string    `json:"statusReason"`
 	StatusChangedAt *time.Time `json:"statusChangedAt"`
 	CreatedAt       time.Time  `json:"createdAt"`
+	// Role is the developer's role on the game, in a developer's list of games; absent elsewhere.
+	Role string `json:"role,omitempty"`
+}
+
+// adminGameMemberResponse is a developer on a game as the admin sees them: with their account status.
+type adminGameMemberResponse struct {
+	DeveloperID string    `json:"developerId"`
+	Name        string    `json:"name"`
+	Email       string    `json:"email"`
+	Role        string    `json:"role"`
+	Status      string    `json:"status"`
+	JoinedAt    time.Time `json:"joinedAt"`
+}
+
+type adminGameDetailResponse struct {
+	adminGameResponse
+	Members []adminGameMemberResponse `json:"members"`
 }
 
 type adminDeveloperResponse struct {
@@ -113,8 +130,23 @@ func toAdminDeveloperResponse(d service.AdminDeveloper) adminDeveloperResponse {
 func toAdminGameResponse(g service.AdminGame) adminGameResponse {
 	return adminGameResponse{
 		ID: g.ID, Name: g.Name, Description: g.Description, Status: g.Status, StatusReason: nilIfEmpty(g.StatusReason),
-		StatusChangedAt: utcOrNil(g.StatusChangedAt), CreatedAt: g.CreatedAt.UTC(),
+		StatusChangedAt: utcOrNil(g.StatusChangedAt), CreatedAt: g.CreatedAt.UTC(), Role: g.Role,
 	}
+}
+
+// getAdminGame handles GET /api/v1/admin/games/{gameID}: the game with the developers on it.
+func (h *Handler) getAdminGame(w http.ResponseWriter, r *http.Request) {
+	g, err := h.svc.AdminGameDetail(r.Context(), r.PathValue("gameID"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	out := adminGameDetailResponse{adminGameResponse: toAdminGameResponse(g.AdminGame), Members: make([]adminGameMemberResponse, 0, len(g.Members))}
+	for _, m := range g.Members {
+		out.Members = append(out.Members, adminGameMemberResponse{DeveloperID: m.DeveloperID, Name: m.Name, Email: m.Email,
+			Role: m.Role, Status: m.Status, JoinedAt: m.JoinedAt.UTC()})
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 // listAuditLog handles GET /api/v1/admin/audit-log?targetId=&limit=&cursor=.
@@ -169,4 +201,53 @@ func utcOrNil(t *time.Time) *time.Time {
 	}
 	u := t.UTC()
 	return &u
+}
+
+// teamLogPersonResponse is a developer in a game's history. `developerId` is null for an invitation to an address
+// that has no account.
+type teamLogPersonResponse struct {
+	DeveloperID *string `json:"developerId"`
+	Name        string  `json:"name"`
+	Email       string  `json:"email"`
+}
+
+type teamLogEntryResponse struct {
+	ID        string                `json:"id"`
+	Action    string                `json:"action"`
+	Actor     teamLogPersonResponse `json:"actor"`
+	Subject   teamLogPersonResponse `json:"subject"`
+	Role      *string               `json:"role"` // the new role of a role change, else null
+	CreatedAt time.Time             `json:"createdAt"`
+}
+
+type teamLogResponse struct {
+	Entries    []teamLogEntryResponse `json:"entries"`
+	NextCursor *string                `json:"nextCursor"`
+}
+
+func toTeamLogPersonResponse(p service.TeamLogPerson) teamLogPersonResponse {
+	return teamLogPersonResponse{DeveloperID: nilIfEmpty(p.DeveloperID), Name: p.Name, Email: p.Email}
+}
+
+// listAdminTeamLog handles GET /api/v1/admin/games/{gameID}/team-log?limit=&cursor=: who changed the game's team, newest first.
+func (h *Handler) listAdminTeamLog(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, err := parseLimit(q.Get("limit"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	page, err := h.svc.AdminTeamLog(r.Context(), r.PathValue("gameID"), limit, q.Get("cursor"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	out := teamLogResponse{Entries: make([]teamLogEntryResponse, 0, len(page.Entries)), NextCursor: nilIfEmpty(page.NextCursor)}
+	for _, e := range page.Entries {
+		out.Entries = append(out.Entries, teamLogEntryResponse{
+			ID: e.ID, Action: e.Action, Actor: toTeamLogPersonResponse(e.Actor), Subject: toTeamLogPersonResponse(e.Subject),
+			Role: nilIfEmpty(e.Role), CreatedAt: e.CreatedAt.UTC(),
+		})
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }

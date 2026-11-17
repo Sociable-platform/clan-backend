@@ -14,7 +14,9 @@ type registerGameRequest struct {
 }
 
 type gameResponse struct {
-	ID             string    `json:"id"`
+	ID string `json:"id"`
+	// Role is the logged-in developer's role on the game: "owner" or "member".
+	Role           string    `json:"role"`
 	Name           string    `json:"name"`
 	Description    string    `json:"description"`
 	AllowedOrigins []string  `json:"allowedOrigins"`
@@ -30,7 +32,7 @@ func toGameResponse(g service.Game) gameResponse {
 	if origins == nil {
 		origins = []string{} // JSON [] and not null
 	}
-	return gameResponse{ID: g.ID, Name: g.Name, Description: g.Description, AllowedOrigins: origins, CreatedAt: g.CreatedAt.UTC()}
+	return gameResponse{ID: g.ID, Role: g.Role, Name: g.Name, Description: g.Description, AllowedOrigins: origins, CreatedAt: g.CreatedAt.UTC()}
 }
 
 // registerGame handles POST /api/v1/games: it records an existing game for the logged-in developer.
@@ -49,7 +51,7 @@ func (h *Handler) registerGame(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, toGameResponse(g))
 }
 
-// listGames handles GET /api/v1/games: only the logged-in developer's games.
+// listGames handles GET /api/v1/games: only the games the logged-in developer belongs to, each with their role.
 func (h *Handler) listGames(w http.ResponseWriter, r *http.Request) {
 	games, err := h.svc.ListGames(r.Context(), developerID(r.Context()))
 	if err != nil {

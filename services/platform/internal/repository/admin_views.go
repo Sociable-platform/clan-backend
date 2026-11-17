@@ -43,6 +43,11 @@ type AdminGame struct {
 	StatusReason    string
 	StatusChangedAt *time.Time
 	CreatedAt       time.Time
+	// Role is the role of the developer the list is for (AdminGamesByDeveloper); empty elsewhere.
+	Role string
+	// OtherOwnerActive says that another owner of the game has an active account, so suspending or resuming the
+	// developer the list is for does not change whether the game is served (AdminGamesByDeveloper only).
+	OtherOwnerActive bool
 }
 
 // AuditEntry is a row of admin_audit_log.
@@ -96,7 +101,7 @@ func (r *Repository) ListDevelopers(ctx context.Context, f DeveloperFilter) ([]D
 	}
 	rows, err := r.db(ctx).Query(ctx,
 		`select d.id::text, d.email, d.name, d.status, d.created_at,
-		        (select count(*) from games g where g.developer_id = d.id)
+		        (select count(*) from game_members m where m.developer_id = d.id)
 		 from developers d
 		 where ($1 = '' or d.status = $1)
 		   and ($2 = '' or d.email ilike $2 or d.name ilike $2)
@@ -142,16 +147,20 @@ func (r *Repository) AdminDeveloperByID(ctx context.Context, id string) (AdminDe
 	return d, nil
 }
 
-// AdminGamesByDeveloper returns every game the developer owns with its status, newest first.
-// A developer without games gets an empty, non-nil slice.
+// AdminGamesByDeveloper returns every game the developer is on, as owner or member, with their role and its status,
+// newest first. A developer without games gets an empty, non-nil slice.
 func (r *Repository) AdminGamesByDeveloper(ctx context.Context, developerID string) ([]AdminGame, error) {
 	if r.pool == nil {
 		return nil, ErrNoDatabase
 	}
 	rows, err := r.db(ctx).Query(ctx,
-		`select id::text, name, coalesce(description, ''), status, coalesce(status_reason, ''), status_changed_at, created_at
-		 from games where developer_id = $1
-		 order by created_at desc, id desc`, developerID)
+		`select g.id::text, g.name, coalesce(g.description, ''), g.status, coalesce(g.status_reason, ''), g.status_changed_at,
+		        g.created_at, m.role,
+		        exists (select 1 from game_members o join developers od on od.id = o.developer_id
+		                where o.game_id = g.id and o.role = 'owner' and o.developer_id <> m.developer_id and od.status = 'active')
+		 from game_members m join games g on g.id = m.game_id
+		 where m.developer_id = $1
+		 order by g.created_at desc, g.id desc`, developerID)
 	if err != nil {
 		return nil, fmt.Errorf("select games for admin: %w", err)
 	}
@@ -160,7 +169,7 @@ func (r *Repository) AdminGamesByDeveloper(ctx context.Context, developerID stri
 	out := []AdminGame{}
 	for rows.Next() {
 		var g AdminGame
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.Status, &g.StatusReason, &g.StatusChangedAt, &g.CreatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.Status, &g.StatusReason, &g.StatusChangedAt, &g.CreatedAt, &g.Role, &g.OtherOwnerActive); err != nil {
 			return nil, fmt.Errorf("scan game for admin: %w", err)
 		}
 		out = append(out, g)
@@ -216,4 +225,23 @@ func (r *Repository) AuditEntries(ctx context.Context, f AuditFilter) ([]AuditEn
 // their special meaning, so a search for "50%" finds "50%" and not everything.
 func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// AdminGameByID returns one game with its status, or ErrNotFound (also for an ID that is not a UUID).
+func (r *Repository) AdminGameByID(ctx context.Context, gameID string) (AdminGame, error) {
+	if r.pool == nil {
+		return AdminGame{}, ErrNoDatabase
+	}
+	var g AdminGame
+	err := r.db(ctx).QueryRow(ctx,
+		`select id::text, name, coalesce(description, ''), status, coalesce(status_reason, ''), status_changed_at, created_at
+		 from games where id = $1`, gameID,
+	).Scan(&g.ID, &g.Name, &g.Description, &g.Status, &g.StatusReason, &g.StatusChangedAt, &g.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) || isInvalidText(err) {
+		return AdminGame{}, ErrNotFound
+	}
+	if err != nil {
+		return AdminGame{}, fmt.Errorf("select game for admin: %w", err)
+	}
+	return g, nil
 }

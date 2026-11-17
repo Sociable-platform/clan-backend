@@ -66,23 +66,36 @@ func (r *Repository) APIKeysByGame(ctx context.Context, gameID string) ([]APIKey
 	return keys, nil
 }
 
-// RevokeAPIKey revokes the key keyID if it belongs to a game owned by developerID.
+// RevokeAPIKey revokes the key keyID if developerID is an owner of the game it belongs to. The role is read
+// and used in one statement, so a role that changes at the same moment cannot let a member revoke.
 // Revoking a key that is already revoked succeeds and keeps the first revocation time.
-// A key that does not exist and a key of someone else's game both give ErrNotFound.
+// A key that does not exist and a key of a game the developer is not in both give ErrNotFound; a member
+// of the game, who may not manage its keys, gets ErrOwnerRequired.
 func (r *Repository) RevokeAPIKey(ctx context.Context, keyID, developerID string) error {
 	if r.pool == nil {
 		return ErrNoDatabase
 	}
-	tag, err := r.db(ctx).Exec(ctx,
-		`update api_keys k set revoked_at = coalesce(k.revoked_at, now())
-		 from games g
-		 where k.id = $1 and g.id = k.game_id and g.developer_id = $2`,
-		keyID, developerID)
+	var role *string
+	var revoked bool
+	err := r.db(ctx).QueryRow(ctx,
+		`with target as (
+		     select k.id, m.role
+		     from api_keys k join game_members m on m.game_id = k.game_id and m.developer_id = $2
+		     where k.id = $1),
+		 done as (
+		     update api_keys set revoked_at = coalesce(revoked_at, now())
+		     where id in (select id from target where role = 'owner')
+		     returning id)
+		 select (select role from target), exists (select 1 from done)`,
+		keyID, developerID).Scan(&role, &revoked)
 	if err != nil {
 		return fmt.Errorf("revoke api key: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	switch {
+	case role == nil:
 		return ErrNotFound
+	case !revoked:
+		return ErrOwnerRequired
 	}
 	return nil
 }

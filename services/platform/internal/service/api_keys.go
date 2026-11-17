@@ -65,10 +65,10 @@ func newKey() (string, error) {
 	return keyPrefix + base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// CreateAPIKey makes a new key for a game the developer owns. The full key is in the
-// result and nowhere else: the database gets only its prefix and its hash.
+// CreateAPIKey makes a new key for a game the developer owns (a member gets 403 owner_required). The full key
+// is in the result and nowhere else: the database gets only its prefix and its hash.
 func (s *Service) CreateAPIKey(ctx context.Context, developerID, gameID string) (NewAPIKey, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.OwnerGame(ctx, developerID, gameID); err != nil {
 		return NewAPIKey{}, err
 	}
 	key, err := newKey()
@@ -82,9 +82,10 @@ func (s *Service) CreateAPIKey(ctx context.Context, developerID, gameID string) 
 	return NewAPIKey{APIKey: toAPIKey(k), Key: key}, nil
 }
 
-// ListAPIKeys returns the keys (prefix only, active and revoked) of a game the developer owns.
+// ListAPIKeys returns the keys (prefix only, active and revoked) of a game the developer owns. Keys are the most
+// sensitive part of a game, so a member does not see them either (403 owner_required).
 func (s *Service) ListAPIKeys(ctx context.Context, developerID, gameID string) ([]APIKey, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.OwnerGame(ctx, developerID, gameID); err != nil {
 		return nil, err
 	}
 	rows, err := s.store.APIKeysByGame(ctx, gameID)
@@ -99,7 +100,8 @@ func (s *Service) ListAPIKeys(ctx context.Context, developerID, gameID string) (
 }
 
 // RevokeAPIKey revokes a key of a game the developer owns. Revoking twice is fine.
-// A key that does not exist, a malformed ID and another developer's key all give the same 404.
+// A key that does not exist, a malformed ID and a key of a game the developer is not in all give the same 404;
+// a member of the game gets 403 owner_required.
 func (s *Service) RevokeAPIKey(ctx context.Context, developerID, keyID string) error {
 	if !uuidPattern.MatchString(keyID) {
 		return errAPIKeyNotFound()
@@ -107,6 +109,9 @@ func (s *Service) RevokeAPIKey(ctx context.Context, developerID, keyID string) e
 	err := s.store.RevokeAPIKey(ctx, keyID, developerID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return errAPIKeyNotFound()
+	}
+	if errors.Is(err, repository.ErrOwnerRequired) {
+		return errOwnerRequired()
 	}
 	if err != nil {
 		return fmt.Errorf("revoke api key %s: %w", keyID, err)

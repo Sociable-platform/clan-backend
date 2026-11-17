@@ -59,7 +59,7 @@ func checkWidgetConfig(raw []byte) error {
 // WidgetDraft returns the draft of a game the developer owns, or the default config
 // when nothing was saved yet.
 func (s *Service) WidgetDraft(ctx context.Context, developerID, gameID string) (WidgetDraft, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.MemberGame(ctx, developerID, gameID); err != nil {
 		return WidgetDraft{}, err
 	}
 	d, err := s.store.WidgetDraftOfGame(ctx, gameID)
@@ -74,7 +74,7 @@ func (s *Service) WidgetDraft(ctx context.Context, developerID, gameID string) (
 
 // SaveWidgetDraft stores config as the draft of a game the developer owns.
 func (s *Service) SaveWidgetDraft(ctx context.Context, developerID, gameID string, config json.RawMessage) (WidgetDraft, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.MemberGame(ctx, developerID, gameID); err != nil {
 		return WidgetDraft{}, err
 	}
 	if err := checkWidgetConfig(config); err != nil {
@@ -142,7 +142,7 @@ func (s *Service) PublicWidgetConfig(ctx context.Context, gameID string) (Widget
 // PublishWidget publishes the saved draft of a game the developer owns as its next version.
 // The draft stays as it is, so the developer can keep editing from it.
 func (s *Service) PublishWidget(ctx context.Context, developerID, gameID string) (WidgetVersion, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.MemberGame(ctx, developerID, gameID); err != nil {
 		return WidgetVersion{}, err
 	}
 	d, err := s.store.WidgetDraftOfGame(ctx, gameID)
@@ -162,7 +162,7 @@ func (s *Service) PublishWidget(ctx context.Context, developerID, gameID string)
 // WidgetVersions lists the published versions of a game the developer owns, newest first,
 // without their configs. A game that was never published has an empty list.
 func (s *Service) WidgetVersions(ctx context.Context, developerID, gameID string) ([]WidgetVersion, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.MemberGame(ctx, developerID, gameID); err != nil {
 		return nil, err
 	}
 	rows, err := s.store.WidgetVersionsOfGame(ctx, gameID)
@@ -178,7 +178,7 @@ func (s *Service) WidgetVersions(ctx context.Context, developerID, gameID string
 
 // WidgetVersion returns one published version, with its config.
 func (s *Service) WidgetVersion(ctx context.Context, developerID, gameID string, version int) (WidgetVersion, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.MemberGame(ctx, developerID, gameID); err != nil {
 		return WidgetVersion{}, err
 	}
 	v, err := s.store.WidgetVersionOfGame(ctx, gameID, version)
