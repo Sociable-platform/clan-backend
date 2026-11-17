@@ -11,7 +11,7 @@ developer sign-in endpoints are left out: few people use them, and sign-in is ra
 | --- | --- | --- |
 | `smoke.js` | One player, once: widget config, player token, own profile. Proves the setup. | ready |
 | `widget-open.js` | Players loading a game page: widget config, then a player token. | ready |
-| `social-reads.js` | Players opening their profile, clan, members and friends. | planned |
+| `social-reads.js` | Players opening their profile, clan, members and friends. | ready |
 | `clan-chat.js` | Players in one clan room over WebSocket, sending and receiving messages. | planned |
 | `mixed.js` | The three together in realistic proportions. | planned |
 
@@ -100,6 +100,12 @@ Test players are numbered `lt_1`, `lt_2`, ... with the display names `Load 1`, `
 The same number is the same player in every run, so runs reuse players instead of adding more.
 Everything a test creates (players, clans, friendships, messages) belongs to the test game.
 
+`social-reads.js` fills the game before it starts (`lib/seed.js`): every player is put in a clan
+of up to 20 members (`LOADTEST_CLAN_SIZE`, never more than the game allows) named `LT <n> <xxxx>`,
+and made friends with the three players numbered after them, so everyone has six friends. Seeding
+only adds what is missing, so the first run of an environment takes a moment and later runs are
+quick. One player is prepared per virtual player, up to 500 (`LOADTEST_MAX_PLAYERS`).
+
 To clean up, an admin suspends the test game in the admin panel while it is not in use, or the
 rows of that game are removed from the social and realtime schemas by whoever runs the database.
 There is no delete-game endpoint yet.
@@ -110,7 +116,9 @@ There is no delete-game endpoint yet.
 loadtest/
   lib/config.js    addresses, game ID and API key, read from the environment
   lib/players.js   player numbering and the player-token request
-  lib/profiles.js  the ramp profiles (short, steps) and the stop-when-failing rule
+  lib/profiles.js  the ramp profiles (short, steps, stress) and the stop-when-failing rule
+  lib/seed.js      fills the test game: players, clans, friendships
   smoke.js         the setup check
   widget-open.js   scenario 1
+  social-reads.js  scenario 2
 ```
