@@ -62,14 +62,14 @@ func joinRequestError(err error) error {
 }
 
 // canHandle is the clan-role rule of "may decide on requests" for the repository: the owner, or a role
-// that may remove members (see roles.Ladder.CanHandleRequests).
+// with canHandleRequests (canKick when the config does not say; see roles.Ladder.CanHandleRequests).
 func (s *Service) canHandle(ctx context.Context, gameID string) func(repository.MemberRole) bool {
 	_, ladder := s.clanRules(ctx, gameID)
 	return func(m repository.MemberRole) bool { return ladder.CanHandleRequests(toRoleMember(m)) }
 }
 
 // RequestJoin sends the calling player's request to join the closed clan clanID. A leader of the clan
-// (its owner, or a role that may remove members) accepts or declines it. The player record is created
+// (its owner, or a role with canHandleRequests) accepts or declines it. The player record is created
 // first if this is the player's first request.
 //
 // Errors the client can act on:

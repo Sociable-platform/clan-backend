@@ -235,7 +235,7 @@
 ## clan.join_requested
 
 A player asked to join a closed clan. `managers` are the IDs of the members who may decide on it: the owner and every
-role that may remove members (`canKick`). Social lists them because Realtime knows no roles.
+role with `canHandleRequests` (`canKick` when the config does not say). Social lists them because Realtime knows no roles.
 
 ```json
 {

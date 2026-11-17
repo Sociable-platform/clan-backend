@@ -193,7 +193,7 @@ type clanMemberLeftData struct {
 }
 
 // clanJoinRequestedData is the data of clan.join_requested: a player asked to join a closed clan, and managers
-// are the IDs of the members who may decide on it (the owner and every role that may remove members).
+// are the IDs of the members who may decide on it (the owner and every role that may decide on requests).
 type clanJoinRequestedData struct {
 	Clan      clanRef    `json:"clan"`
 	Player    playerData `json:"player"`

@@ -144,7 +144,7 @@ func (s *Service) ClanMemberLeft(ctx context.Context, gameID, clanID, playerID s
 }
 
 // ClanJoinRequested handles clan.join_requested: a player asked to join a closed clan. The members named in
-// managers (Social lists the owner and every role that may remove members: Realtime knows no roles) get a
+// managers (Social lists the owner and every role that may decide on requests: Realtime knows no roles) get a
 // clan_join_request notification with the clan, the request and the player. Nothing is stored. A manager who
 // is the player is left out, and an event that names nobody sends nothing.
 func (s *Service) ClanJoinRequested(ctx context.Context, gameID, clanID, clanName, requestID string, p Player, managers []string) ([]Push, error) {

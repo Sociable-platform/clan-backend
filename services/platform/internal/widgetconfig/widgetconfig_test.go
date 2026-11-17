@@ -271,6 +271,19 @@ func TestAcceptsTheMemberLineLabels(t *testing.T) {
 	}
 }
 
+// canHandleRequests (TEAM-300) is optional on any role, the first one included; when given it is a boolean.
+func TestRolesMayChooseWhoHandlesRequests(t *testing.T) {
+	m := arena(t)
+	roles := obj(m, "clan")["roles"].([]any)
+	roles[0].(map[string]any)["canHandleRequests"] = true
+	roles[1].(map[string]any)["canHandleRequests"] = false
+	if issues := issuesOf(t, m); len(issues) != 0 {
+		t.Fatalf("issues = %+v, want none", issues)
+	}
+	roles[0].(map[string]any)["canHandleRequests"] = "yes"
+	wantIssue(t, issuesOf(t, m), "/clan/roles/0/canHandleRequests", "type")
+}
+
 // memberKickedBy follows the rules of every label: 1 to 40 characters, no markup.
 func TestRejectsABadMemberKickedByLabel(t *testing.T) {
 	for name, text := range map[string]string{

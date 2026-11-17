@@ -47,6 +47,9 @@ type Role struct {
 	Name       string `json:"name"`
 	CanPromote bool   `json:"canPromote"`
 	CanKick    bool   `json:"canKick"`
+	// CanHandleRequests: the role may accept and decline requests to join a closed clan. nil when the
+	// config does not say (it is optional; configs from before it never do): then CanKick decides.
+	CanHandleRequests *bool `json:"canHandleRequests,omitempty"`
 }
 
 // Rules are the clan rules of one game.

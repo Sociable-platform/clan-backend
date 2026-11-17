@@ -277,7 +277,7 @@ Something happened that the SDK should show as a notice. `kind` says what; `payl
 | `clan_joined` | the other members of the clan (the player who joined gets `conversation.added` instead) | `{ "clanId": "...", "player": { "id": "...", "name": "..." } }` |
 | `clan_kicked` | the player who was removed | `{ "clanId": "..." }` |
 | `clan_disbanded` | everybody who was still in the clan, the last member included | `{ "clanId": "..." }` |
-| `clan_join_request` | the leaders of a closed clan (the owner and every role that may remove members), when a player asks to join | `{ "clanId": "...", "clanName": "...", "requestId": "...", "player": { "id": "...", "name": "..." } }`; the request is in `GET /api/v1/clans/{clanID}/requests` (Social) |
+| `clan_join_request` | the leaders of a closed clan (the owner and every role with `canHandleRequests`, or `canKick` when the config does not say), when a player asks to join | `{ "clanId": "...", "clanName": "...", "requestId": "...", "player": { "id": "...", "name": "..." } }`; the request is in `GET /api/v1/clans/{clanID}/requests` (Social) |
 | `clan_join_declined` | the player whose request a leader declined | `{ "clanId": "...", "clanName": "..." }`; an accepted request is a `conversation.added` for the clan room instead |
 
 The SDK must ignore a `kind` it does not know, so new kinds can be added later without breaking old SDKs.
