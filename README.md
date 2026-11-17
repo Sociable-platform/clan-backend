@@ -1,12 +1,13 @@
 # clan-backend
 
-Backend for the clan platform: three Go services in one repository (realtime is a skeleton so far).
+Backend for the clan platform (the product is called Sociable): three Go services in one repository.
+New here? Start with [`docs/overview.md`](docs/overview.md): the parts, a diagram, and how a request flows between them.
 
 | Service | Owns | Port | Database schema |
 |---|---|---|---|
-| `services/platform` | Developers, registered games, API keys, player tokens | 8081 | `platform` |
-| `services/social` | Players, clans, clan members | 8082 | `social` |
-| `services/realtime` | WebSocket connections, chat, presence (so far: connections, the hub, `hello`, friend events from RabbitMQ that create and remove DM conversations, clan events that create and remove clan chat rooms, sending messages, and presence with a 10 s offline grace) | 8083 | `realtime` |
+| `services/platform` | Developers and their sessions, admins, registered games, API keys, the widget config (draft and published versions), player tokens | 8081 | `platform` |
+| `services/social` | Players, clans, clan members and their roles, join requests, friends, blocks | 8082 | `social` |
+| `services/realtime` | WebSocket connections, conversations (direct messages and clan rooms, made from Social's events), messages, read positions, presence, notifications | 8083 | `realtime` |
 
 ## Layout
 
@@ -18,17 +19,23 @@ clan-backend/
 ├── deploy/traefik/            # gateway: static config and the /realtime route
 ├── deploy/rabbitmq/           # definitions.json: exchanges, queues, bindings and dead-letter policies, applied by rabbitmq-setup
 ├── deploy/migrate/            # Dockerfile of the migration images (migrate/migrate + a service's migrations)
+├── deploy/helm/clan/          # the Helm chart of the backend on the server (its own README)
+├── deploy/k3s/                # the server's Traefik settings
+├── deploy/deploy.sh           # what CI runs to deploy main: copies the chart to the server and runs helm there
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
-├── docs/                      # events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
+├── docs/                      # overview.md: start here; running-locally.md: every part on your computer; operations.md: deploys, rollbacks, logs, the production database, admins; api-reference.md: where each API is described; events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
 ├── tools/                     # devtoken: test tokens; createadmin: creates an admin account; e2e: end-to-end check of the realtime flow; dlq: list and replay dead events
-├── .gitlab-ci.yml             # CI: build, vet and test with the race detector, then build and push the images
-├── pkg/                       # shared code, used by both services
+├── .gitlab-ci.yml             # CI: build, vet and test with the race detector, then on main build and push the images and deploy
+├── pkg/                       # shared code, used by all three services
 │   ├── config/                # read settings from environment variables
 │   ├── logx/                  # JSON logger (slog)
 │   ├── otelx/                 # OpenTelemetry tracing and metrics setup, off unless an endpoint is set
 │   ├── pg/                    # PostgreSQL connection pool (pgx)
-│   ├── httpx/                 # error format, JSON helpers, middleware, server with graceful shutdown
-│   └── jwt/                   # sign (platform) and verify (social) tokens, Ed25519
+│   ├── httpx/                 # error format, JSON helpers, middleware, CORS, server with graceful shutdown
+│   ├── events/                # the event envelope, publishing to RabbitMQ and the outbox relay
+│   ├── mailer/                # sending email over SMTP (password reset, registration codes)
+│   ├── ratelimit/             # in-memory request limits (sign-in, register, password reset)
+│   └── jwt/                   # sign (platform) and verify (social, realtime) tokens, Ed25519
 └── services/
     ├── platform/
     │   ├── cmd/main.go        # starts the service and wires the layers
@@ -36,7 +43,7 @@ clan-backend/
     │   │   ├── handler/       # HTTP: routes, reading requests, writing JSON
     │   │   ├── service/       # business rules, no HTTP and no SQL
     │   │   └── repository/    # SQL, platform schema only
-    │   │   ├── migrations/        # SQL for tables in the platform schema
+    │   ├── migrations/        # SQL for tables in the platform schema
     │   └── Dockerfile
     ├── social/                # same structure
     └── realtime/              # same structure
@@ -60,7 +67,7 @@ Needs Go 1.26 or newer.
 go mod tidy
 ```
 
-The repo is one Go module, but the two services are still separate programs with separate `main` packages, ports and database schemas.
+The repo is one Go module, but the three services are still separate programs with separate `main` packages, ports and database schemas.
 If a service ever moves to its own repository, it gets its own `go.mod` then.
 
 ## JWT signing key
@@ -555,11 +562,12 @@ Kubernetes pulls the services from this project's GitLab container registry. CI 
 | `.../platform-migrate` | `deploy/migrate/Dockerfile` with `SERVICE=platform` | `migrate/migrate` plus `services/platform/migrations`; Kubernetes runs it before the service, like `platform-migrate` in docker-compose |
 | `.../social-migrate`, `.../realtime-migrate` | the same with `SERVICE=social` / `SERVICE=realtime` | the migrations of social and realtime |
 
-**When CI builds them:** after the tests pass, on every push to `develop` and `main`. On a merge request the job only
-starts when you press ▶ in the pipeline (to try a branch's images before merging).
+**When CI builds them:** after the tests pass, on every push to `main`. Nothing is built from `develop`, because nothing
+is deployed from it. On a merge request the job only starts when you press ▶ in the pipeline (to try a branch's images
+before merging).
 
 **Tags:** every image gets the short commit SHA (`social:a1b2c3d`, a fixed version to deploy and roll back to) and
-the branch name (`social:develop`, the newest build of that branch). Builds from `main` also get `latest`.
+the branch name (`social:main`, the newest build of that branch; a merge request's manual build is tagged with its branch). Builds from `main` also get `latest`.
 
 **How the ARM build works:** the build stage of each service Dockerfile runs on the build machine's own CPU
 (`FROM --platform=$BUILDPLATFORM`) and Go cross-compiles with `GOOS=$TARGETOS GOARCH=$TARGETARCH`, so no ARM emulation
@@ -621,11 +629,11 @@ With telemetry on, one request is one trace across the services:
 |---|---|
 | platform | `openapi/platform.yaml` |
 | social | `openapi/social.yaml` |
-| realtime | `openapi/realtime.yaml` (REST) and `openapi/realtime-ws.md` (WebSocket frames); the REST endpoints are not built yet, so there is no route test for it yet |
+| realtime | `openapi/realtime.yaml` (REST) and `openapi/realtime-ws.md` (WebSocket frames) |
 
 These files are the contract the dashboard, SDK and demo game build against.
 When you add or change a route, update `Routes()` in the service's `internal/handler/handler.go` **and** its OpenAPI file in the same commit.
-`go test ./...` fails if a route is missing from the file, or the file lists a route that does not exist.
+`go test ./...` fails if a route is missing from the file, or the file lists a route that does not exist (`TestOpenAPIMatchesRoutes` in each service). [`docs/api-reference.md`](docs/api-reference.md) lists every contract and who may call what.
 To browse a file, paste it into https://editor.swagger.io or open it with the OpenAPI plugin in GoLand.
 
 ## CORS (which websites may call the API)
@@ -649,7 +657,7 @@ go test ./...
 go test -race ./...     # the same, with the race detector (needs gcc; CI runs this one)
 ```
 
-CI (`.gitlab-ci.yml`) runs `go build`, `go vet` and `go test -race` on every merge request and on `develop` and `main`.
+CI (`.gitlab-ci.yml`) runs `go build`, `go vet` and `go test -race` on `main`, before the images are built and deployed. On a merge request the job waits for the play button, and it does not run on `develop` (to save runner minutes), so run these on your machine before merging.
 It needs no database or broker: the unit tests use fakes, and the tests that need a real database or RabbitMQ skip themselves.
 
 ### End-to-end test (realtime)
