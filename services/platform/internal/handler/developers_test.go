@@ -598,7 +598,7 @@ func (m *memStore) CreateGame(_ context.Context, developerID, name, description 
 	return g, nil
 }
 
-func (m *memStore) GamesByDeveloper(_ context.Context, developerID string) ([]repository.Game, error) {
+func (m *memStore) GamesOfMember(_ context.Context, developerID string) ([]repository.Game, error) {
 	out := []repository.Game{}
 	for _, g := range m.games {
 		if g.DeveloperID == developerID {
@@ -608,7 +608,7 @@ func (m *memStore) GamesByDeveloper(_ context.Context, developerID string) ([]re
 	return out, nil
 }
 
-func (m *memStore) GameOfDeveloper(_ context.Context, gameID, developerID string) (repository.Game, error) {
+func (m *memStore) GameOfMember(_ context.Context, gameID, developerID string) (repository.Game, error) {
 	for _, g := range m.games {
 		if g.ID == gameID && g.DeveloperID == developerID {
 			return g, nil

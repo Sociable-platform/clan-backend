@@ -66,7 +66,7 @@ func (r *Repository) APIKeysByGame(ctx context.Context, gameID string) ([]APIKey
 	return keys, nil
 }
 
-// RevokeAPIKey revokes the key keyID if it belongs to a game owned by developerID.
+// RevokeAPIKey revokes the key keyID if it belongs to a game developerID is a member of.
 // Revoking a key that is already revoked succeeds and keeps the first revocation time.
 // A key that does not exist and a key of someone else's game both give ErrNotFound.
 func (r *Repository) RevokeAPIKey(ctx context.Context, keyID, developerID string) error {
@@ -75,8 +75,8 @@ func (r *Repository) RevokeAPIKey(ctx context.Context, keyID, developerID string
 	}
 	tag, err := r.db(ctx).Exec(ctx,
 		`update api_keys k set revoked_at = coalesce(k.revoked_at, now())
-		 from games g
-		 where k.id = $1 and g.id = k.game_id and g.developer_id = $2`,
+		 from game_members m
+		 where k.id = $1 and m.game_id = k.game_id and m.developer_id = $2`,
 		keyID, developerID)
 	if err != nil {
 		return fmt.Errorf("revoke api key: %w", err)

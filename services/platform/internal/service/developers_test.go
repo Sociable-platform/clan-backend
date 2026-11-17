@@ -21,6 +21,9 @@ import (
 
 // fakeStore is an in-memory Store. Like the real table, it rejects a second row with the same email.
 type fakeStore struct {
+	// members are the developers added to a game besides the one who registered it, by "gameID|developerID",
+	// with their role. The one who registered a game is its owner (what CreateGame does in the database).
+	members map[string]string
 	byEmail map[string]repository.Developer
 	admins  map[string]repository.Admin // by email
 

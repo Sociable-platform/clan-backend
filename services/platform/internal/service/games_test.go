@@ -33,36 +33,52 @@ func (f *fakeStore) CreateGame(_ context.Context, developerID, name, description
 	n := len(f.games) + 1
 	g := repository.Game{
 		ID:          "00000000-0000-4000-8000-" + strings.Repeat("0", 12-len(strconv.Itoa(n))) + strconv.Itoa(n),
-		DeveloperID: developerID, Name: name, Description: description,
+		DeveloperID: developerID, Role: repository.RoleOwner, Name: name, Description: description,
 		CreatedAt: time.Unix(1_800_000_000+int64(n), 0),
 	}
 	f.games = append(f.games, g)
 	return g, nil
 }
 
-func (f *fakeStore) GamesByDeveloper(_ context.Context, developerID string) ([]repository.Game, error) {
+func (f *fakeStore) GamesOfMember(_ context.Context, developerID string) ([]repository.Game, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	out := []repository.Game{}
 	for i := len(f.games) - 1; i >= 0; i-- { // newest first
-		if f.games[i].DeveloperID == developerID {
-			out = append(out, f.games[i])
+		if g, ok := f.gameAs(f.games[i], developerID); ok {
+			out = append(out, g)
 		}
 	}
 	return out, nil
 }
 
-func (f *fakeStore) GameOfDeveloper(_ context.Context, gameID, developerID string) (repository.Game, error) {
+func (f *fakeStore) GameOfMember(_ context.Context, gameID, developerID string) (repository.Game, error) {
 	if f.err != nil {
 		return repository.Game{}, f.err
 	}
 	for _, g := range f.games {
-		if g.ID == gameID && g.DeveloperID == developerID {
+		if g.ID != gameID {
+			continue
+		}
+		if g, ok := f.gameAs(g, developerID); ok {
 			return g, nil
 		}
 	}
 	return repository.Game{}, repository.ErrNotFound
+}
+
+// gameAs is the game with the role developerID has on it, or false when they do not belong to it.
+func (f *fakeStore) gameAs(g repository.Game, developerID string) (repository.Game, bool) {
+	if role, ok := f.members[g.ID+"|"+developerID]; ok {
+		g.Role = role
+		return g, true
+	}
+	if g.DeveloperID == developerID {
+		g.Role = repository.RoleOwner
+		return g, true
+	}
+	return repository.Game{}, false
 }
 
 // twoDevelopers registers two developers on one service.
@@ -168,7 +184,7 @@ func TestListGames_NoGamesIsEmptyNotNil(t *testing.T) {
 	}
 }
 
-func TestOwnedGame(t *testing.T) {
+func TestMemberGame(t *testing.T) {
 	svc, alice, bob := twoDevelopers(t)
 	ctx := context.Background()
 	aliceGame, err := svc.RegisterGame(ctx, alice.ID, RegisterGameInput{Name: "Space Raiders"})
@@ -177,20 +193,20 @@ func TestOwnedGame(t *testing.T) {
 	}
 
 	t.Run("owner gets the game", func(t *testing.T) {
-		g, err := svc.OwnedGame(ctx, alice.ID, aliceGame.ID)
+		g, err := svc.MemberGame(ctx, alice.ID, aliceGame.ID)
 		if err != nil || g.ID != aliceGame.ID {
 			t.Fatalf("got %+v, %v", g, err)
 		}
 	})
 
 	t.Run("another developer's game is 404", func(t *testing.T) {
-		_, err := svc.OwnedGame(ctx, bob.ID, aliceGame.ID)
+		_, err := svc.MemberGame(ctx, bob.ID, aliceGame.ID)
 		wantError(t, err, http.StatusNotFound, "game_not_found")
 	})
 
 	t.Run("answer is identical for a game that does not exist", func(t *testing.T) {
-		_, errOther := svc.OwnedGame(ctx, bob.ID, aliceGame.ID)
-		_, errMissing := svc.OwnedGame(ctx, bob.ID, "00000000-0000-4000-8000-00000000beef")
+		_, errOther := svc.MemberGame(ctx, bob.ID, aliceGame.ID)
+		_, errMissing := svc.MemberGame(ctx, bob.ID, "00000000-0000-4000-8000-00000000beef")
 		wantError(t, errMissing, http.StatusNotFound, "game_not_found")
 		if errOther.Error() != errMissing.Error() {
 			t.Fatalf("responses differ: %q vs %q", errOther, errMissing)
@@ -199,8 +215,49 @@ func TestOwnedGame(t *testing.T) {
 
 	t.Run("malformed ID is 404 and never reaches the store", func(t *testing.T) {
 		for _, id := range []string{"", "abc", "1; drop table games", aliceGame.ID + "x"} {
-			_, err := svc.OwnedGame(ctx, alice.ID, id)
+			_, err := svc.MemberGame(ctx, alice.ID, id)
 			wantError(t, err, http.StatusNotFound, "game_not_found")
 		}
 	})
+}
+
+// Who belongs to a game, with which role, is the store's answer: the service passes the role on and treats
+// everybody else as a stranger (404), however the membership came about.
+func TestMemberGameAndListGamesCarryTheRole(t *testing.T) {
+	svc, alice, bob := twoDevelopers(t)
+	ctx := context.Background()
+	store := svc.store.(*fakeStore)
+	game, err := svc.RegisterGame(ctx, alice.ID, RegisterGameInput{Name: "Space Raiders"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if game.Role != "owner" {
+		t.Errorf("RegisterGame role = %q, want owner: whoever registers a game owns it", game.Role)
+	}
+
+	if g, err := svc.MemberGame(ctx, alice.ID, game.ID); err != nil || g.Role != "owner" {
+		t.Fatalf("owner: %+v, %v; want the owner role", g, err)
+	}
+	_, err = svc.MemberGame(ctx, bob.ID, game.ID)
+	wantError(t, err, http.StatusNotFound, "game_not_found")
+	if list, err := svc.ListGames(ctx, bob.ID); err != nil || len(list) != 0 {
+		t.Fatalf("a stranger's list = %+v, %v; want none", list, err)
+	}
+
+	// Bob is added as a member: he gets the game, with that role, and it is in his list.
+	store.members = map[string]string{game.ID + "|" + bob.ID: "member"}
+	if g, err := svc.MemberGame(ctx, bob.ID, game.ID); err != nil || g.Role != "member" || g.ID != game.ID {
+		t.Fatalf("member: %+v, %v; want the game with the member role", g, err)
+	}
+	list, err := svc.ListGames(ctx, bob.ID)
+	if err != nil || len(list) != 1 || list[0].ID != game.ID || list[0].Role != "member" {
+		t.Fatalf("a member's list = %+v, %v; want the game with the member role", list, err)
+	}
+	// The owner is unaffected, and the member going takes the access with it.
+	if g, err := svc.MemberGame(ctx, alice.ID, game.ID); err != nil || g.Role != "owner" {
+		t.Fatalf("owner after: %+v, %v", g, err)
+	}
+	delete(store.members, game.ID+"|"+bob.ID)
+	_, err = svc.MemberGame(ctx, bob.ID, game.ID)
+	wantError(t, err, http.StatusNotFound, "game_not_found")
 }

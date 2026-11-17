@@ -1441,7 +1441,7 @@ paths:
         "403":
           $ref: "#/components/responses/OriginNotAllowed"
         "404":
-          description: No such key, or it belongs to another developer's game.
+          description: No such key, or it belongs to a game the developer is not in.
           content:
             application/json:
               schema:

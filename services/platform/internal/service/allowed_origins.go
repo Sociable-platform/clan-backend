@@ -44,7 +44,7 @@ func errInvalidOrigins(message string) *httpx.Error {
 // path, query, fragment or user name, no trailing slash, no wildcard. Hosts are lower-cased and
 // repeats are dropped. An empty list is allowed and clears the setting.
 func (s *Service) SetAllowedOrigins(ctx context.Context, developerID, gameID string, origins []string) (Game, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.MemberGame(ctx, developerID, gameID); err != nil {
 		return Game{}, err
 	}
 	if len(origins) > maxAllowedOrigins {

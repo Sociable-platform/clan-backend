@@ -68,7 +68,7 @@ func newKey() (string, error) {
 // CreateAPIKey makes a new key for a game the developer owns. The full key is in the
 // result and nowhere else: the database gets only its prefix and its hash.
 func (s *Service) CreateAPIKey(ctx context.Context, developerID, gameID string) (NewAPIKey, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.MemberGame(ctx, developerID, gameID); err != nil {
 		return NewAPIKey{}, err
 	}
 	key, err := newKey()
@@ -84,7 +84,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, developerID, gameID string) 
 
 // ListAPIKeys returns the keys (prefix only, active and revoked) of a game the developer owns.
 func (s *Service) ListAPIKeys(ctx context.Context, developerID, gameID string) ([]APIKey, error) {
-	if _, err := s.OwnedGame(ctx, developerID, gameID); err != nil {
+	if _, err := s.MemberGame(ctx, developerID, gameID); err != nil {
 		return nil, err
 	}
 	rows, err := s.store.APIKeysByGame(ctx, gameID)

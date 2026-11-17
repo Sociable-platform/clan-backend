@@ -26,7 +26,10 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 
 // Game is a developer's integration record for an existing game.
 type Game struct {
-	ID          string
+	ID string
+	// Role is the asking developer's role on the game: "owner" or "member" (empty when the game was read
+	// without a developer). It is looked up on every request and is never part of the login token.
+	Role        string
 	Name        string
 	Description string
 	// AllowedOrigins are the websites that may open a WebSocket for the game; never nil.
@@ -67,9 +70,9 @@ func (s *Service) RegisterGame(ctx context.Context, developerID string, in Regis
 	return toGame(g), nil
 }
 
-// ListGames returns only the games owned by developerID, newest first.
+// ListGames returns only the games developerID belongs to, newest first.
 func (s *Service) ListGames(ctx context.Context, developerID string) ([]Game, error) {
-	rows, err := s.store.GamesByDeveloper(ctx, developerID)
+	rows, err := s.store.GamesOfMember(ctx, developerID)
 	if err != nil {
 		return nil, fmt.Errorf("list games of developer %s: %w", developerID, err)
 	}
@@ -80,15 +83,15 @@ func (s *Service) ListGames(ctx context.Context, developerID string) ([]Game, er
 	return games, nil
 }
 
-// OwnedGame returns the game gameID if developerID owns it. Another developer's game,
-// a game that does not exist and a malformed ID all give the same 404, so the answer
-// never reveals whether someone else's game exists. Endpoints under /games/{gameID}
-// call this before doing anything else.
-func (s *Service) OwnedGame(ctx context.Context, developerID, gameID string) (Game, error) {
+// MemberGame returns the game gameID, with developerID's role on it, if developerID belongs to it. A game
+// of other developers, a game that does not exist and a malformed ID all give the same 404, so the answer
+// never reveals whether someone else's game exists. Every endpoint under /games/{gameID} goes through
+// this: the handler's requireGameMember asks it first, and each service method asks it again.
+func (s *Service) MemberGame(ctx context.Context, developerID, gameID string) (Game, error) {
 	if !uuidPattern.MatchString(gameID) {
 		return Game{}, errGameNotFound()
 	}
-	g, err := s.store.GameOfDeveloper(ctx, gameID, developerID)
+	g, err := s.store.GameOfMember(ctx, gameID, developerID)
 	if errors.Is(err, repository.ErrNotFound) {
 		return Game{}, errGameNotFound()
 	}
@@ -103,5 +106,5 @@ func toGame(g repository.Game) Game {
 	if origins == nil {
 		origins = []string{}
 	}
-	return Game{ID: g.ID, Name: g.Name, Description: g.Description, AllowedOrigins: origins, CreatedAt: g.CreatedAt}
+	return Game{ID: g.ID, Role: g.Role, Name: g.Name, Description: g.Description, AllowedOrigins: origins, CreatedAt: g.CreatedAt}
 }
