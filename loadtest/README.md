@@ -12,7 +12,7 @@ developer sign-in endpoints are left out: few people use them, and sign-in is ra
 | `smoke.js` | One player, once: widget config, player token, own profile. Proves the setup. | ready |
 | `widget-open.js` | Players loading a game page: widget config, then a player token. | ready |
 | `social-reads.js` | Players opening their profile, clan, members and friends. | ready |
-| `clan-chat.js` | Players in one clan room over WebSocket, sending and receiving messages. | planned |
+| `clan-chat.js` | Players in their clan's chat room over WebSocket, sending and receiving messages. | ready |
 | `mixed.js` | The three together in realistic proportions. | planned |
 
 ## Before the first run
@@ -79,6 +79,20 @@ hammered to the end. `Ctrl+C` stops it at any time.
 - **`vus`** is how many players were active. To see at which step things turned, watch the live
   line while it runs, or the server's dashboards.
 
+`clan-chat.js` adds its own numbers, because chat is not request and answer:
+
+- **`chat_delivery_ms`**: from one player sending a message to another player's socket receiving
+  it. This is the chat lag a player feels.
+- **`chat_ack_ms`**: from sending to the server confirming the message is stored.
+- **`chat_send_failed`**: the share of messages refused or never confirmed within 5 seconds.
+  `chat_errors` counts the refusals; the realtime service's log says which rule refused them.
+- **`chat_messages_sent` / `chat_messages_received`**: in a clan of 20, each message sent is
+  received about 20 times.
+
+Each player stays connected for a minute and writes every 8 to 12 seconds, so 500 players are
+about 50 messages a second stored and about 1,000 a second delivered. The test game needs clan
+chat on and slow mode off (the defaults); with slow mode on, sends are refused as `slow_mode`.
+
 Write down, per step: players, requests per second (`http_reqs`), p(95) per request kind, and the
 failure rate. The first step where a limit is crossed is the capacity figure; what the server was
 short of at that moment (CPU, database connections, memory) is the thing to fix.
@@ -121,4 +135,5 @@ loadtest/
   smoke.js         the setup check
   widget-open.js   scenario 1
   social-reads.js  scenario 2
+  clan-chat.js     scenario 3
 ```
