@@ -54,7 +54,8 @@ Helm "pre-install" Job would start before the database password Secret exists. R
 golang-migrate takes a lock in Postgres and skips what already ran. A failed migration keeps the pod in `Init:Error`
 (see `kubectl -n clan logs deploy/social -c migrate`) and the old pods keep serving.
 
-**Which version runs:** `image.tag` (default `develop`, the newest build of develop). For a fixed version that you
+**Which version runs:** `image.tag` (the chart's default is `develop`, but no image is built from `develop` any more, so
+always give a tag; CI passes the commit SHA). For a fixed version that you
 can roll back to, use a commit SHA: `--set image.tag=a1b2c3d` (the tags are in GitLab -> Deploy -> Container registry).
 
 The service names are the same as in docker-compose (`postgres`, `rabbitmq`), so the services' URLs do not change.
@@ -178,8 +179,10 @@ kubectl -n clan run curl --rm -i --restart=Never --image=curlimages/curl:8.11.1 
 ## Deploy
 
 **Every merge to `main` is deployed.** The pipeline on `main` runs `test`, then `images` (pushes the images tagged with
-the short commit SHA, for example `56bd0093`), then `deploy`, which runs `deploy/deploy.sh <sha>`. `develop` only tests
-and builds images; it never touches the server. So a release is an MR `develop` -> `main`.
+the short commit SHA, for example `56bd0093`), then `deploy`, which runs `deploy/deploy.sh <sha>`. Nothing runs on
+`develop`: no tests, no images, and it never touches the server. So a release is an MR `develop` -> `main`.
+[`docs/operations.md`](../../../docs/operations.md) has the day-to-day jobs: what is running, rolling back, logs, the
+production database, creating an admin.
 
 `deploy/deploy.sh` copies the chart, the secrets file and the two JWT keys to a private temporary folder on the server,
 runs `helm upgrade --install --wait` there with `image.tag=<sha>`, prints the last revisions and the running images,

@@ -23,7 +23,7 @@ clan-backend/
 ├── deploy/k3s/                # the server's Traefik settings
 ├── deploy/deploy.sh           # what CI runs to deploy main: copies the chart to the server and runs helm there
 ├── openapi/                   # API contracts: platform.yaml, social.yaml, realtime.yaml, realtime-ws.md
-├── docs/                      # overview.md: start here; events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
+├── docs/                      # overview.md: start here; running-locally.md: every part on your computer; operations.md: deploys, rollbacks, logs, the production database, admins; api-reference.md: where each API is described; events.md: how services publish and consume events; event-messages.md: every event message and the clan chat frames; realtime-flow.md: the flows as UML diagrams
 ├── tools/                     # devtoken: test tokens; createadmin: creates an admin account; e2e: end-to-end check of the realtime flow; dlq: list and replay dead events
 ├── .gitlab-ci.yml             # CI: build, vet and test with the race detector, then on main build and push the images and deploy
 ├── pkg/                       # shared code, used by all three services
@@ -629,11 +629,11 @@ With telemetry on, one request is one trace across the services:
 |---|---|
 | platform | `openapi/platform.yaml` |
 | social | `openapi/social.yaml` |
-| realtime | `openapi/realtime.yaml` (REST) and `openapi/realtime-ws.md` (WebSocket frames); the REST endpoints are not built yet, so there is no route test for it yet |
+| realtime | `openapi/realtime.yaml` (REST) and `openapi/realtime-ws.md` (WebSocket frames) |
 
 These files are the contract the dashboard, SDK and demo game build against.
 When you add or change a route, update `Routes()` in the service's `internal/handler/handler.go` **and** its OpenAPI file in the same commit.
-`go test ./...` fails if a route is missing from the file, or the file lists a route that does not exist.
+`go test ./...` fails if a route is missing from the file, or the file lists a route that does not exist (`TestOpenAPIMatchesRoutes` in each service). [`docs/api-reference.md`](docs/api-reference.md) lists every contract and who may call what.
 To browse a file, paste it into https://editor.swagger.io or open it with the OpenAPI plugin in GoLand.
 
 ## CORS (which websites may call the API)
@@ -657,7 +657,7 @@ go test ./...
 go test -race ./...     # the same, with the race detector (needs gcc; CI runs this one)
 ```
 
-CI (`.gitlab-ci.yml`) runs `go build`, `go vet` and `go test -race` on every merge request and on `develop` and `main`.
+CI (`.gitlab-ci.yml`) runs `go build`, `go vet` and `go test -race` on `main`, before the images are built and deployed. On a merge request the job waits for the play button, and it does not run on `develop` (to save runner minutes), so run these on your machine before merging.
 It needs no database or broker: the unit tests use fakes, and the tests that need a real database or RabbitMQ skip themselves.
 
 ### End-to-end test (realtime)
