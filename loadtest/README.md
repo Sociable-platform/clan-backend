@@ -59,6 +59,7 @@ Every scenario ramps through a profile, chosen with `LOADTEST_PROFILE`:
 | --- | --- | --- | --- |
 | `short` (default) | up to 10 | about 2 minutes | checking that a script works |
 | `steps` | 10, 50, 200, then 500, two minutes each | about 11 minutes | the real measurement |
+| `stress` | 1000, 2000, then 4000, one minute each | about 5 minutes | finding where it breaks, once `steps` passes |
 
 ```powershell
 k6 run loadtest/widget-open.js                                    # short

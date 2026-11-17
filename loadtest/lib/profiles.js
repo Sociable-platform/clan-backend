@@ -3,6 +3,7 @@
 //
 //   short  (default)  up to 10 players for about two minutes: to check that a script works
 //   steps             10, 50, 200, then 500 players, two minutes each: the real measurement
+//   stress            1000, 2000, then 4000 players, one minute each: to find where it breaks
 //
 // Each step ramps up for 30 seconds and then holds, so the numbers of a step can be read off the
 // run while it holds steady.
@@ -15,6 +16,7 @@ const hold = (players, duration) => [
 const PROFILES = {
   short: [...hold(10, '1m'), { duration: '15s', target: 0 }],
   steps: [...hold(10, '2m'), ...hold(50, '2m'), ...hold(200, '2m'), ...hold(500, '2m'), { duration: '30s', target: 0 }],
+  stress: [...hold(1000, '1m'), ...hold(2000, '1m'), ...hold(4000, '1m'), { duration: '30s', target: 0 }],
 };
 
 export function stages() {
