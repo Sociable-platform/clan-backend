@@ -420,3 +420,100 @@ func TestClanEventsPassStoreErrorsOn(t *testing.T) {
 		})
 	}
 }
+
+const requestID = "8c1f4d2a-5b6e-4f70-9a81-b2c3d4e5f607"
+
+// A request to join a closed clan tells the members Social named, with the clan, the request and the player.
+func TestClanJoinRequestedTellsTheNamedLeaders(t *testing.T) {
+	store := &memStore{}
+	pushes, err := New(store).ClanJoinRequested(context.Background(), game, strings.ToUpper(wolves), " Wolves ", strings.ToUpper(requestID),
+		Player{ID: rashad, Name: " Rashad "}, []string{ali, strings.ToUpper(emma)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.clanCalls) != 0 {
+		t.Errorf("store calls = %v, want none: a request stores nothing", store.clanCalls)
+	}
+	if len(pushes) != 1 {
+		t.Fatalf("pushes = %d, want one notification for the leaders", len(pushes))
+	}
+	p := pushes[0]
+	if p.GameID != game || p.Type != "notification" || !reflect.DeepEqual(p.PlayerIDs, []string{ali, emma}) {
+		t.Errorf("push = %s to %v in %s, want a notification to the two leaders, IDs in lower case", p.Type, p.PlayerIDs, p.GameID)
+	}
+	want := `{"kind":"clan_join_request","payload":{"clanId":"` + wolves + `","clanName":"Wolves","player":{"id":"` + rashad +
+		`","name":"Rashad"},"requestId":"` + requestID + `"}}`
+	if got := frameJSON(t, p); got != want {
+		t.Errorf("data = %s\nwant   %s", got, want)
+	}
+}
+
+func TestClanJoinRequestedLeavesTheAskerOutAndSendsNothingToNobody(t *testing.T) {
+	asker := Player{ID: rashad, Name: "Rashad"}
+	// A leader who is the asker is not told about their own request.
+	pushes, err := New(&memStore{}).ClanJoinRequested(context.Background(), game, wolves, "Wolves", requestID, asker, []string{rashad, ali})
+	if err != nil || len(pushes) != 1 || !reflect.DeepEqual(pushes[0].PlayerIDs, []string{ali}) {
+		t.Errorf("pushes = %+v, %v; want one, to Ali only", pushes, err)
+	}
+	for _, managers := range [][]string{nil, {}, {rashad}} {
+		pushes, err := New(&memStore{}).ClanJoinRequested(context.Background(), game, wolves, "Wolves", requestID, asker, managers)
+		if err != nil || len(pushes) != 0 {
+			t.Errorf("managers %v: pushes = %+v, %v; want none", managers, pushes, err)
+		}
+	}
+}
+
+func TestClanJoinRequestDeclinedTellsThePlayerWhoAsked(t *testing.T) {
+	store := &memStore{}
+	pushes, err := New(store).ClanJoinRequestDeclined(context.Background(), game, strings.ToUpper(wolves), " Wolves ", Player{ID: strings.ToUpper(rashad), Name: "Rashad"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.clanCalls) != 0 || len(pushes) != 1 {
+		t.Fatalf("store calls %v, pushes %d; want nothing stored and one notification", store.clanCalls, len(pushes))
+	}
+	p := pushes[0]
+	if p.GameID != game || p.Type != "notification" || !reflect.DeepEqual(p.PlayerIDs, []string{rashad}) {
+		t.Errorf("push = %s to %v in %s, want a notification to the player who asked", p.Type, p.PlayerIDs, p.GameID)
+	}
+	want := `{"kind":"clan_join_declined","payload":{"clanId":"` + wolves + `","clanName":"Wolves"}}`
+	if got := frameJSON(t, p); got != want {
+		t.Errorf("data = %s\nwant   %s", got, want)
+	}
+}
+
+func TestClanJoinRequestEventsRefuseBadData(t *testing.T) {
+	ok := Player{ID: rashad, Name: "Rashad"}
+	ctx := context.Background()
+	tests := map[string]func(*Service) ([]Push, error){
+		"requested: game is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, "g-1", wolves, "Wolves", requestID, ok, []string{ali})
+		},
+		"requested: clan is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, game, "x", "Wolves", requestID, ok, []string{ali})
+		},
+		"requested: the request is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, game, wolves, "Wolves", "r-1", ok, []string{ali})
+		},
+		"requested: the player has no name": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, game, wolves, "Wolves", requestID, Player{ID: rashad, Name: " "}, []string{ali})
+		},
+		"requested: a leader is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, game, wolves, "Wolves", requestID, ok, []string{ali, "u-3"})
+		},
+		"declined: clan is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequestDeclined(ctx, game, "x", "Wolves", ok)
+		},
+		"declined: player is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequestDeclined(ctx, game, wolves, "Wolves", Player{ID: "u-1", Name: "Rashad"})
+		},
+	}
+	for name, call := range tests {
+		t.Run(name, func(t *testing.T) {
+			pushes, err := call(New(&memStore{}))
+			if !errors.Is(err, ErrInvalidEvent) || len(pushes) != 0 {
+				t.Errorf("pushes = %v, error = %v; want ErrInvalidEvent and nothing sent", pushes, err)
+			}
+		})
+	}
+}

@@ -27,6 +27,12 @@ type Service interface {
 	DemoteMember(ctx context.Context, gameID, externalID, clanID, playerID string) (service.MemberRole, error)
 	RenameClan(ctx context.Context, gameID, externalID, clanID, name string) (service.Clan, error)
 	MyClan(ctx context.Context, gameID, externalID string) (service.PlayerClan, error)
+	SetJoinPolicy(ctx context.Context, gameID, externalID, clanID, policy string) (service.Clan, error)
+	RequestJoin(ctx context.Context, gameID, externalID, displayName, clanID string) (service.JoinRequest, error)
+	CancelJoinRequest(ctx context.Context, gameID, externalID, clanID string) error
+	ListJoinRequests(ctx context.Context, gameID, externalID, clanID string) ([]service.JoinRequest, error)
+	AcceptJoinRequest(ctx context.Context, gameID, externalID, clanID, requestID string) error
+	DeclineJoinRequest(ctx context.Context, gameID, externalID, clanID, requestID string) error
 	ListMembers(ctx context.Context, gameID, clanID string) ([]service.Member, error)
 	SendFriendRequest(ctx context.Context, gameID, externalID, displayName, playerID string) (service.SendFriendRequestResult, error)
 	AcceptFriendRequest(ctx context.Context, gameID, externalID, displayName, requestID string) (service.Friend, error)
@@ -121,6 +127,11 @@ func (h *Handler) Routes() []Route {
 		{http.MethodPatch, "/api/v1/clans/{clanID}", h.renameClan},
 		{http.MethodPost, "/api/v1/clans/{clanID}/join", h.joinClan},
 		{http.MethodPost, "/api/v1/clans/{clanID}/leave", h.leaveClan},
+		{http.MethodGet, "/api/v1/clans/{clanID}/requests", h.listJoinRequests},
+		{http.MethodPost, "/api/v1/clans/{clanID}/requests", h.requestJoin},
+		{http.MethodDelete, "/api/v1/clans/{clanID}/requests/me", h.cancelJoinRequest},
+		{http.MethodPost, "/api/v1/clans/{clanID}/requests/{requestID}/accept", h.acceptJoinRequest},
+		{http.MethodPost, "/api/v1/clans/{clanID}/requests/{requestID}/decline", h.declineJoinRequest},
 		{http.MethodGet, "/api/v1/clans/{clanID}/members", h.listMembers},
 		{http.MethodDelete, "/api/v1/clans/{clanID}/members/{playerID}", h.kickMember},
 		{http.MethodPost, "/api/v1/clans/{clanID}/members/{playerID}/promote", h.promoteMember},

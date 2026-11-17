@@ -448,6 +448,9 @@ Cancel and decline are two event types because they have different recipients; a
     (`{ id, name }`; absent when the event has none, and never on a `member_left`). `new_owner` is not needed.
   - Member lines are messages with a `kind` other than `text` and an empty body (the widget writes the sentence). They are
     in the history like any message and never count as unread (`openapi/realtime-ws.md`, "Member lines").
+  - `clan.join_requested`: a player asked to join a closed clan. Sends a `clan_join_request` notification to the members the event
+    names in `managers` (Social works out who may decide; Realtime knows no roles). Stores nothing, so a copy is skipped by `HandleOnce`.
+  - `clan.join_request_declined`: sends a `clan_join_declined` notification to the player. An accepted request is a `clan.member_joined`.
   - `clan.disbanded`: deletes the room with its members and messages and sends `conversation.removed` and a `clan_disbanded`
     notification to everybody who was still in it. Social publishes only this event when the last member leaves, so that member is told here.
 - **A copy of an event** (same `event_id`) is skipped (section 9): no rows and no frames. A new event about the same thing

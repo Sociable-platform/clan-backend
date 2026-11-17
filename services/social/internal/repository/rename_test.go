@@ -29,7 +29,7 @@ func TestRenameClanSavesTheNewName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := RenameResult{Clan: Clan{ID: clan, Name: "Grey Wolves", MemberCount: 2}, PreviousName: "Wolves", Changed: true}
+	want := RenameResult{Clan: Clan{ID: clan, Name: "Grey Wolves", MemberCount: 2, JoinPolicy: PolicyOpen}, PreviousName: "Wolves", Changed: true}
 	if got != want {
 		t.Fatalf("got %+v\nwant %+v", got, want)
 	}

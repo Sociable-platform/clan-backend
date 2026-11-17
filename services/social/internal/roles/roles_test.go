@@ -156,3 +156,29 @@ func TestAConfigChangeKeepsEveryoneAndOneOwner(t *testing.T) {
 		t.Fatal("a former co-leader now ranks as member and may not kick an equal")
 	}
 }
+
+// Requests to join a closed clan are decided by the owner and by a role that may remove members.
+func TestCanHandleRequests(t *testing.T) {
+	cases := []struct {
+		name string
+		m    Member
+		want bool
+	}{
+		{"the owner", owner, true},
+		{"a co-leader (may remove members)", coLeader, true},
+		{"an elder (may not)", elder, false},
+		{"a plain member", member, false},
+		{"the owner, whatever role id is stored", Member{RoleID: "boss", IsOwner: true}, true},
+		{"a stored id that is not in the config counts as the first role", Member{RoleID: "veteran"}, false},
+	}
+	for _, c := range cases {
+		if got := arena.CanHandleRequests(c.m); got != c.want {
+			t.Errorf("%s: CanHandleRequests = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// While a game has published no roles, only the owner has the power (the default ladder is member and owner).
+	defaults := NewLadder(nil)
+	if !defaults.CanHandleRequests(owner) || defaults.CanHandleRequests(member) || defaults.CanHandleRequests(coLeader) {
+		t.Error("with the default roles only the owner may decide on requests")
+	}
+}

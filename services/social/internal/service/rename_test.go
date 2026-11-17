@@ -50,7 +50,7 @@ func TestRenameClanCleansTheNameAndPublishes(t *testing.T) {
 	if store.game != gameA || store.external != "u_42" || store.clan != someClan || store.name != "Grey Wolves" {
 		t.Fatalf("store got game=%q caller=%q clan=%q name=%q", store.game, store.external, store.clan, store.name)
 	}
-	if want := (Clan{ID: someClan, Name: "Grey Wolves", MemberCount: 4, MaxMembers: 10}); got != want {
+	if want := (Clan{ID: someClan, Name: "Grey Wolves", MemberCount: 4, MaxMembers: 10, JoinPolicy: "open"}); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 	wantData(t, oneEvent(t, rec, EventClanRenamed), map[string]any{
