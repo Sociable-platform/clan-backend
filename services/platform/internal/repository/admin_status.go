@@ -163,14 +163,25 @@ type GameAccess struct {
 // GameAccessOf returns the statuses that decide whether a game is served, or ErrNotFound for a
 // game that does not exist. It reads the database on every call, so a suspension or a resume
 // takes effect at once.
+//
+// DeveloperStatus is the switch of the game's owners: active while at least one owner's account is active, and
+// otherwise the status of an owner (all of them are off). So a suspended member never stops a game, a suspended
+// owner stops it only when no other owner is active, and a game with a single owner behaves as it did before
+// games had teams. A game with no owner row at all (it cannot happen: a game cannot be left without one) is not served.
 func (r *Repository) GameAccessOf(ctx context.Context, gameID string) (GameAccess, error) {
 	if r.pool == nil {
 		return GameAccess{}, ErrNoDatabase
 	}
 	var a GameAccess
 	err := r.db(ctx).QueryRow(ctx,
-		`select g.status, d.status
-		 from games g join developers d on d.id = g.developer_id
+		`select g.status,
+		        coalesce(
+		            (select d.status from game_members m join developers d on d.id = m.developer_id
+		             where m.game_id = g.id and m.role = 'owner' and d.status = 'active' limit 1),
+		            (select d.status from game_members m join developers d on d.id = m.developer_id
+		             where m.game_id = g.id and m.role = 'owner' order by d.id limit 1),
+		            'suspended')
+		 from games g
 		 where g.id = $1`, gameID,
 	).Scan(&a.GameStatus, &a.DeveloperStatus)
 	if errors.Is(err, pgx.ErrNoRows) {

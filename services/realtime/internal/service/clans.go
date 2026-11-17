@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/repository"
 )
@@ -12,6 +13,10 @@ const (
 	kindClanJoined    = "clan_joined"
 	kindClanKicked    = "clan_kicked"
 	kindClanDisbanded = "clan_disbanded"
+
+	// The requests to join a closed clan (see ClanJoinRequested and ClanJoinRequestDeclined).
+	kindClanJoinRequest  = "clan_join_request"
+	kindClanJoinDeclined = "clan_join_declined"
 )
 
 // ClanCreated handles clan.created: the clan gets its chat room with the owner as its first member,
@@ -33,7 +38,11 @@ func (s *Service) ClanCreated(ctx context.Context, gameID, clanID string, owner 
 // room is made if clan.created was never seen) and gets conversation.added with the room as it is,
 // the whole history included: what was written before they joined, and while they were away if they
 // had been a member before. The other members get a clan_joined notification naming the player.
-// Running it again stores nothing new and sends the same frames again.
+//
+// When the player was not a member yet, a member_joined line is stored in the room and every member,
+// the joiner included, gets it as message.new; the joiner's conversation.added already has it as the
+// last message. Running it again for a member stores nothing new, writes no second line and sends
+// the room and clan_joined again.
 func (s *Service) ClanMemberJoined(ctx context.Context, gameID, clanID string, p Player) ([]Push, error) {
 	gameID, clanID, p, err := cleanClanMember(gameID, clanID, p)
 	if err != nil {
@@ -42,6 +51,14 @@ func (s *Service) ClanMemberJoined(ctx context.Context, gameID, clanID string, p
 	room, err := s.store.JoinClanRoom(ctx, gameID, clanID, repository.Member{PlayerID: p.ID, Name: p.Name})
 	if err != nil {
 		return nil, fmt.Errorf("clan member joined: %w", err)
+	}
+	var line *Push
+	if room.Joined {
+		msg, push, err := s.memberLine(ctx, gameID, room.ConversationID, MessageMemberJoined, p, nil)
+		if err != nil {
+			return nil, fmt.Errorf("clan member joined: %w", err)
+		}
+		room.LastMessage, line = msg, push
 	}
 
 	pushes := []Push{s.clanRoomAdded(gameID, clanID, room, p.ID)}
@@ -60,15 +77,22 @@ func (s *Service) ClanMemberJoined(ctx context.Context, gameID, clanID string, p
 			},
 		})
 	}
+	if line != nil {
+		pushes = append(pushes, *line)
+	}
 	return pushes, nil
 }
 
 // ClanMemberLeft handles clan.member_left: the player stops being a member of the clan's room and
 // gets conversation.removed. The messages stay for the others. When kicked is true (reason kicked)
 // the player also gets a clan_kicked notification; that one is sent even when Realtime has no room
-// for the clan, because the player was removed from the clan all the same. The members who stay are
-// not told: the contract has no frame for it, and their member list is right on the next load.
-func (s *Service) ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool) ([]Push, error) {
+// for the clan, because the player was removed from the clan all the same.
+//
+// When the player was a member, a member_left line (member_kicked when kicked) with the name they had
+// in the room is stored, and the members who stay get it as message.new. A member_kicked line also
+// names who removed the player (kickedBy) when by is not nil; by is ignored when kicked is false.
+// Running it again finds no membership, so it writes no second line.
+func (s *Service) ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool, by *Player) ([]Push, error) {
 	gameID, clanID, err := cleanClan(gameID, clanID)
 	if err != nil {
 		return nil, err
@@ -76,16 +100,35 @@ func (s *Service) ClanMemberLeft(ctx context.Context, gameID, clanID, playerID s
 	if playerID, err = cleanID("player.id", playerID); err != nil {
 		return nil, err
 	}
-	id, found, err := s.store.LeaveClanRoom(ctx, gameID, clanID, playerID)
+	var kickedBy *Player
+	if kicked && by != nil {
+		p, err := cleanPlayer("kicked_by", *by)
+		if err != nil {
+			return nil, err
+		}
+		kickedBy = &p
+	}
+	leave, found, err := s.store.LeaveClanRoom(ctx, gameID, clanID, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("clan member left: %w", err)
+	}
+	var line *Push
+	if found && leave.Left {
+		kind := MessageMemberLeft
+		if kicked {
+			kind = MessageMemberKicked
+		}
+		_, line, err = s.memberLine(ctx, gameID, leave.ConversationID, kind, Player{ID: playerID, Name: leave.Name}, kickedBy)
+		if err != nil {
+			return nil, fmt.Errorf("clan member left: %w", err)
+		}
 	}
 
 	var pushes []Push
 	if found {
 		pushes = append(pushes, Push{
 			GameID: gameID, PlayerIDs: []string{playerID}, Type: frameConversationRemoved,
-			Data: map[string]any{"conversationId": id},
+			Data: map[string]any{"conversationId": leave.ConversationID},
 		})
 	}
 	if kicked {
@@ -94,7 +137,60 @@ func (s *Service) ClanMemberLeft(ctx context.Context, gameID, clanID, playerID s
 			Data: notificationData{Kind: kindClanKicked, Payload: map[string]any{"clanId": clanID}},
 		})
 	}
+	if line != nil {
+		pushes = append(pushes, *line)
+	}
 	return pushes, nil
+}
+
+// ClanJoinRequested handles clan.join_requested: a player asked to join a closed clan. The members named in
+// managers (Social lists the owner and every role that may decide on requests: Realtime knows no roles) get a
+// clan_join_request notification with the clan, the request and the player. Nothing is stored. A manager who
+// is the player is left out, and an event that names nobody sends nothing.
+func (s *Service) ClanJoinRequested(ctx context.Context, gameID, clanID, clanName, requestID string, p Player, managers []string) ([]Push, error) {
+	gameID, clanID, p, err := cleanClanMember(gameID, clanID, p)
+	if err != nil {
+		return nil, err
+	}
+	if requestID, err = cleanID("request_id", requestID); err != nil {
+		return nil, err
+	}
+	to := make([]string, 0, len(managers))
+	for _, m := range managers {
+		if m, err = cleanID("managers", m); err != nil {
+			return nil, err
+		}
+		if m != p.ID {
+			to = append(to, m)
+		}
+	}
+	if len(to) == 0 {
+		return nil, nil
+	}
+	return []Push{{
+		GameID: gameID, PlayerIDs: to, Type: frameNotification,
+		Data: notificationData{
+			Kind:    kindClanJoinRequest,
+			Payload: map[string]any{"clanId": clanID, "clanName": strings.TrimSpace(clanName), "requestId": requestID, "player": playerRef(p)},
+		},
+	}}, nil
+}
+
+// ClanJoinRequestDeclined handles clan.join_request_declined: the player who asked gets a clan_join_declined
+// notification with the clan. (An accepted request is a clan.member_joined, which already gives them the room.)
+// Nothing is stored.
+func (s *Service) ClanJoinRequestDeclined(ctx context.Context, gameID, clanID, clanName string, p Player) ([]Push, error) {
+	gameID, clanID, p, err := cleanClanMember(gameID, clanID, p)
+	if err != nil {
+		return nil, err
+	}
+	return []Push{{
+		GameID: gameID, PlayerIDs: []string{p.ID}, Type: frameNotification,
+		Data: notificationData{
+			Kind:    kindClanJoinDeclined,
+			Payload: map[string]any{"clanId": clanID, "clanName": strings.TrimSpace(clanName)},
+		},
+	}}, nil
 }
 
 // ClanDisbanded handles clan.disbanded: the clan's room is deleted with its messages, and everybody
@@ -138,13 +234,42 @@ func (s *Service) clanRoomAdded(gameID, clanID string, room repository.ClanRoom,
 	for _, m := range room.Members {
 		c.Members = append(c.Members, ConversationMember{ID: m.PlayerID, Name: m.Name, Online: s.online(gameID, m.PlayerID)})
 	}
-	if m := room.LastMessage; m != nil {
-		c.LastMessage = &Message{ID: m.ID, SenderID: m.SenderID, SenderName: m.SenderName, Body: m.Body, CreatedAt: m.CreatedAt.UTC()}
-	}
+	c.LastMessage = toMessage(room.LastMessage)
 	return Push{
 		GameID: gameID, PlayerIDs: []string{to}, Type: frameConversationAdded,
 		Data: map[string]any{"conversation": c},
 	}
+}
+
+// memberLine stores a member line of kind about p in the clan room, and returns it as stored and the
+// message.new frame for the room's members now. The push is nil when nobody is left to tell. kickedBy
+// is who removed p, for a member_kicked line; nil for every other.
+func (s *Service) memberLine(ctx context.Context, gameID, conversationID, kind string, p Player, kickedBy *Player) (*repository.Message, *Push, error) {
+	id, at := s.ids.New()
+	var by *repository.Member
+	if kickedBy != nil {
+		by = &repository.Member{PlayerID: kickedBy.ID, Name: kickedBy.Name}
+	}
+	members, err := s.store.InsertMemberMessage(ctx, gameID, conversationID, repository.MemberMessage{
+		ID: id, Kind: kind, PlayerID: p.ID, PlayerName: p.Name, CreatedAt: at, KickedBy: by,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	stored := &repository.Message{ID: id, Kind: kind, SenderID: p.ID, SenderName: p.Name, CreatedAt: at, KickedBy: by}
+	if len(members) == 0 {
+		return stored, nil, nil
+	}
+	return stored, &Push{
+		GameID: gameID, PlayerIDs: members, Type: frameMessageNew,
+		Data: messageNew{ConversationID: conversationID, Message: *toMessage(stored)},
+	}, nil
+}
+
+// messageNew is the data of a message.new frame (openapi/realtime-ws.md).
+type messageNew struct {
+	ConversationID string  `json:"conversationId"`
+	Message        Message `json:"message"`
 }
 
 func cleanClan(gameID, clanID string) (string, string, error) {

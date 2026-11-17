@@ -97,12 +97,24 @@ func (f *fakeEvents) ClanMemberJoined(_ context.Context, gameID, clanID string, 
 	return f.record(gameID, "clan_joined "+clanID+" "+p.ID+"/"+p.Name)
 }
 
-func (f *fakeEvents) ClanMemberLeft(_ context.Context, gameID, clanID, playerID string, kicked bool) ([]service.Push, error) {
+func (f *fakeEvents) ClanMemberLeft(_ context.Context, gameID, clanID, playerID string, kicked bool, by *service.Player) ([]service.Push, error) {
 	how := "left"
 	if kicked {
 		how = "kicked"
 	}
-	return f.record(gameID, "clan_"+how+" "+clanID+" "+playerID)
+	call := "clan_" + how + " " + clanID + " " + playerID
+	if by != nil {
+		call += " by " + by.ID + "/" + by.Name
+	}
+	return f.record(gameID, call)
+}
+
+func (f *fakeEvents) ClanJoinRequested(_ context.Context, gameID, clanID, clanName, requestID string, p service.Player, managers []string) ([]service.Push, error) {
+	return f.record(gameID, "clan_join_requested "+clanID+"/"+clanName+" "+requestID+" "+p.ID+"/"+p.Name+" to "+strings.Join(managers, ","))
+}
+
+func (f *fakeEvents) ClanJoinRequestDeclined(_ context.Context, gameID, clanID, clanName string, p service.Player) ([]service.Push, error) {
+	return f.record(gameID, "clan_join_declined "+clanID+"/"+clanName+" "+p.ID+"/"+p.Name)
 }
 
 func (f *fakeEvents) ClanDisbanded(_ context.Context, gameID, clanID string) ([]service.Push, error) {
@@ -168,10 +180,19 @@ func TestDispatchRoutesEachEventToItsHandler(t *testing.T) {
 			"clan_left k-1 u-2"},
 		{"clan.member_left, reason kicked",
 			`{"event_id":"e9","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"},"reason":"kicked","kicked_by":{"id":"u-1","name":"Alice"},"new_owner":null}}`,
+			"clan_kicked k-1 u-2 by u-1/Alice"},
+		{"clan.member_left, reason kicked, an older event without kicked_by",
+			`{"event_id":"e9","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"},"reason":"kicked","new_owner":null}}`,
 			"clan_kicked k-1 u-2"},
 		{"clan.member_left, the owner left and someone else owns the clan now",
 			`{"event_id":"e9","type":"clan.member_left","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-1","name":"Alice"},"reason":"left","kicked_by":null,"new_owner":{"id":"u-2","name":"Bob"}}}`,
 			"clan_left k-1 u-1"},
+		{"clan.join_requested",
+			`{"event_id":"e11","type":"clan.join_requested","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"},"request_id":"r-1","managers":["u-1","u-3"]}}`,
+			"clan_join_requested k-1/Wolves r-1 u-2/Bob to u-1,u-3"},
+		{"clan.join_request_declined",
+			`{"event_id":"e12","type":"clan.join_request_declined","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"},"player":{"id":"u-2","name":"Bob"},"declined_by":{"id":"u-1","name":"Alice"}}}`,
+			"clan_join_declined k-1/Wolves u-2/Bob"},
 		{"clan.disbanded",
 			`{"event_id":"e10","type":"clan.disbanded","game_id":"g-1","data":{"clan":{"id":"k-1","name":"Wolves"}}}`,
 			"clan_disbanded k-1"},
@@ -359,7 +380,14 @@ func TestDispatchReadsEventsAsSocialPublishesThem(t *testing.T) {
 			"clan_left k-1 u-2"},
 		{"clan.member_left (kicked)", events.New("clan.member_left", "g-1", map[string]any{
 			"clan": wolves, "player": bob, "reason": "kicked", "kicked_by": alice, "new_owner": nil}),
-			"clan_kicked k-1 u-2"},
+			"clan_kicked k-1 u-2 by u-1/Alice"},
+		// services/social/internal/service/join_requests.go
+		{"clan.join_requested", events.New("clan.join_requested", "g-1", map[string]any{
+			"clan": wolves, "player": bob, "request_id": "r-1", "managers": []string{"u-1"}}),
+			"clan_join_requested k-1/Wolves r-1 u-2/Bob to u-1"},
+		{"clan.join_request_declined", events.New("clan.join_request_declined", "g-1", map[string]any{
+			"clan": wolves, "player": bob, "declined_by": alice}),
+			"clan_join_declined k-1/Wolves u-2/Bob"},
 		{"clan.disbanded", events.New("clan.disbanded", "g-1", map[string]any{"clan": wolves}),
 			"clan_disbanded k-1"},
 	}
@@ -403,19 +431,21 @@ func TestDispatchReadsEveryMessageInTheEventMessagesFile(t *testing.T) {
 		wolves = "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091"
 	)
 	want := map[string]string{ // type -> the call the service must get; "" = ignored
-		"friend.request_sent":      "request_sent " + req + " " + alice + "/Alice -> " + bob,
-		"friend.request_cancelled": "request_cancelled " + req + " " + alice + "/Alice -> " + bob,
-		"friend.request_declined":  "request_declined " + req + " " + alice + "/Alice -> " + bob,
-		"friend.accepted":          "accepted " + req + " " + emma + "/Emma " + oliver + "/Oliver",
-		"friend.removed":           "removed " + emma + "/Emma " + oliver + "/Oliver by " + emma,
-		"player.renamed":           "renamed " + alice + "/Alice Brown",
-		"clan.created":             "clan_created " + wolves + " " + alice + "/Alice",
-		"clan.member_joined":       "clan_joined " + wolves + " " + bob + "/Bob",
-		"clan.member_left":         "clan_left " + wolves + " " + bob,
-		"clan.disbanded":           "clan_disbanded " + wolves,
-		"clan.renamed":             "", // realtime stores no clan names
-		"clan.member_role_changed": "", // realtime stores no roles
-		"player.blocked":           "blocked " + alice + " -> " + bob, "player.unblocked": "unblocked " + alice + " -> " + bob, "config.published": "",
+		"friend.request_sent":        "request_sent " + req + " " + alice + "/Alice -> " + bob,
+		"friend.request_cancelled":   "request_cancelled " + req + " " + alice + "/Alice -> " + bob,
+		"friend.request_declined":    "request_declined " + req + " " + alice + "/Alice -> " + bob,
+		"friend.accepted":            "accepted " + req + " " + emma + "/Emma " + oliver + "/Oliver",
+		"friend.removed":             "removed " + emma + "/Emma " + oliver + "/Oliver by " + emma,
+		"player.renamed":             "renamed " + alice + "/Alice Brown",
+		"clan.created":               "clan_created " + wolves + " " + alice + "/Alice",
+		"clan.member_joined":         "clan_joined " + wolves + " " + bob + "/Bob",
+		"clan.member_left":           "clan_left " + wolves + " " + bob,
+		"clan.disbanded":             "clan_disbanded " + wolves,
+		"clan.join_requested":        "clan_join_requested " + wolves + "/Wolves 8c1f4d2a-5b6e-4f70-9a81-b2c3d4e5f607 " + bob + "/Bob to " + alice + "," + emma,
+		"clan.join_request_declined": "clan_join_declined " + wolves + "/Wolves " + bob + "/Bob",
+		"clan.renamed":               "", // realtime stores no clan names
+		"clan.member_role_changed":   "", // realtime stores no roles
+		"player.blocked":             "blocked " + alice + " -> " + bob, "player.unblocked": "unblocked " + alice + " -> " + bob, "config.published": "",
 		"game.suspended": "", "game.resumed": "", // not handled yet: acknowledged and ignored
 	}
 

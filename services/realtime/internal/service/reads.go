@@ -133,5 +133,9 @@ func toMessage(m *repository.Message) *Message {
 	if m == nil {
 		return nil
 	}
-	return &Message{ID: m.ID, SenderID: m.SenderID, SenderName: m.SenderName, Body: m.Body, CreatedAt: m.CreatedAt.UTC()}
+	msg := &Message{ID: m.ID, Kind: m.Kind, SenderID: m.SenderID, SenderName: m.SenderName, Body: m.Body, CreatedAt: m.CreatedAt.UTC()}
+	if m.KickedBy != nil {
+		msg.KickedBy = &playerRef{ID: m.KickedBy.PlayerID, Name: m.KickedBy.Name}
+	}
+	return msg
 }

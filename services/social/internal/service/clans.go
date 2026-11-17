@@ -44,6 +44,10 @@ type Clan struct {
 	Badge       string
 	MemberCount int
 	MaxMembers  int
+	// JoinPolicy is "open" (anyone joins) or "closed" (a player asks, and a leader accepts).
+	JoinPolicy string
+	// Requested is true in a clan list when the player asking has a pending request to join this clan.
+	Requested bool
 }
 
 // NewClan is what a player sends when they create a clan. Only Name is required.
@@ -51,6 +55,7 @@ type NewClan struct {
 	Name        string
 	Description string
 	Badge       string
+	JoinPolicy  string // "open" (also when empty) or "closed"
 }
 
 // limitText is a positive whole number written with plain digits.
@@ -63,6 +68,9 @@ type ListClansInput struct {
 	Limit    string // 1 to 100; default 100
 	Sort     string // "name" (default) or "members" (most members first)
 	HasSpace string // "true": only clans with a free place; "false" or empty: all clans
+	// ViewerExternalID is the calling player's ID in the game (from the token): their pending requests are
+	// marked on the clans they asked. Not from the URL.
+	ViewerExternalID string
 }
 
 // ListClans returns the clans of gameID, by default sorted by name, at most clanListLimit.
@@ -104,6 +112,7 @@ func (s *Service) ListClans(ctx context.Context, gameID string, in ListClansInpu
 	}
 
 	opts.MaxMembers = s.maxMembers(ctx, gameID)
+	opts.ViewerExternalID = in.ViewerExternalID
 	rows, err := s.store.ListClans(ctx, gameID, q, opts)
 	if err != nil {
 		return nil, fmt.Errorf("list clans: %w", err)
@@ -128,6 +137,7 @@ func (s *Service) ListClans(ctx context.Context, gameID string, in ListClansInpu
 //   - 400 invalid_clan_description: the description is longer than 300 characters or has
 //     invisible characters
 //   - 400 invalid_clan_badge: the badge id is too long or has characters a badge id cannot have
+//   - 400 invalid_join_policy: the join policy is not "open" or "closed"
 //   - 409 clan_name_taken: the game already has a clan with this name (ignoring upper/lower case)
 //   - 409 already_in_clan: the player is already in a clan of this game
 func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayName string, in NewClan) (Clan, error) {
@@ -140,6 +150,10 @@ func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayNam
 		return Clan{}, err
 	}
 	badge, err := cleanClanBadge(in.Badge)
+	if err != nil {
+		return Clan{}, err
+	}
+	policy, err := cleanJoinPolicy(in.JoinPolicy)
 	if err != nil {
 		return Clan{}, err
 	}
@@ -156,6 +170,7 @@ func (s *Service) CreateClan(ctx context.Context, gameID, externalID, displayNam
 			Name:        clean,
 			Description: description,
 			Badge:       badge,
+			JoinPolicy:  policy,
 		})
 		if err != nil {
 			return nil, err
@@ -184,6 +199,10 @@ const (
 	EventClanMemberLeft   = "clan.member_left"   // {clan, player, reason, kicked_by, new_owner}
 	EventClanDisbanded    = "clan.disbanded"     // {clan}: the last member left
 	EventClanRenamed      = "clan.renamed"       // {clan, previous_name}: clan has the new name
+
+	// A closed clan's join requests (TEAM-closed-clans). Accepting one is a clan.member_joined.
+	EventClanJoinRequested       = "clan.join_requested"        // {clan, player, request_id, managers}: managers are the IDs of who may decide
+	EventClanJoinRequestDeclined = "clan.join_request_declined" // {clan, player, declined_by}
 )
 
 // ref is how events name a clan or a player.
@@ -201,7 +220,28 @@ func toClan(c repository.Clan, maxMembers int) Clan {
 		Badge:       c.Badge,
 		MemberCount: c.MemberCount,
 		MaxMembers:  maxMembers,
+		JoinPolicy:  policyOf(c.JoinPolicy),
+		Requested:   c.Requested,
 	}
+}
+
+// policyOf is the policy a clan row has; a row built without one (tests, older code) is open.
+func policyOf(p string) string {
+	if p == repository.PolicyClosed {
+		return repository.PolicyClosed
+	}
+	return repository.PolicyOpen
+}
+
+// cleanJoinPolicy checks the join policy a player sent; empty means open.
+func cleanJoinPolicy(p string) (string, error) {
+	switch strings.TrimSpace(p) {
+	case "", repository.PolicyOpen:
+		return repository.PolicyOpen, nil
+	case repository.PolicyClosed:
+		return repository.PolicyClosed, nil
+	}
+	return "", httpx.NewError(http.StatusBadRequest, "invalid_join_policy", `joinPolicy must be "open" or "closed"`)
 }
 
 // cleanClanName trims the name and turns any run of spaces inside it into one space,
@@ -275,6 +315,7 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 //   - 404 clan_not_found: no such clan in the player's game (a clan of another game counts
 //     as not found, so players cannot learn about other games' clans)
 //   - 409 already_in_clan: the player is already in a clan of this game
+//   - 403 clan_closed: the clan is closed; the player asks to join instead (RequestJoin)
 //   - 409 clan_full: the clan has no free place
 func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName, clanID string) (Clan, error) {
 	if !uuidPattern.MatchString(clanID) {
@@ -302,6 +343,8 @@ func (s *Service) JoinClan(ctx context.Context, gameID, externalID, displayName,
 	switch {
 	case errors.Is(err, repository.ErrClanNotFound):
 		return Clan{}, errClanNotFound()
+	case errors.Is(err, repository.ErrClanClosed):
+		return Clan{}, errClanClosed()
 	case errors.Is(err, repository.ErrAlreadyInClan):
 		return Clan{}, httpx.NewError(http.StatusConflict, "already_in_clan", "You are already in a clan; leave it first")
 	case errors.Is(err, repository.ErrClanFull):

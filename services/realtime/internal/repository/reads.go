@@ -19,7 +19,7 @@ type PlayerConversation struct {
 	ClanID      *string // set for "clan", nil for "dm"
 	Members     []Member
 	LastMessage *Message // the newest message; nil while nobody has written
-	Unread      int      // messages of other players after the player's read position, at most 99
+	Unread      int      // text messages of other players after the player's read position, at most 99
 	ReadOnly    bool     // a DM whose two players are not friends any more: nobody can send (TEAM-283)
 }
 
@@ -34,18 +34,19 @@ func (r *Repository) ListConversations(ctx context.Context, gameID, playerID str
 	// one for the members of those conversations. Both filter by game_id.
 	rows, err := r.db(ctx).Query(ctx, `
 		SELECT c.id, c.kind, c.clan_id, c.read_only_since IS NOT NULL,
-		       lm.id, lm.sender_id, lm.sender_name, lm.body, lm.created_at,
+		       lm.id, lm.kind, lm.sender_id, lm.sender_name, lm.body, lm.created_at, lm.kicked_by_id, lm.kicked_by_name,
 		       (SELECT count(*) FROM (
 		            SELECT 1 FROM messages m
 		            WHERE m.game_id = c.game_id
 		              AND m.conversation_id = c.id
+		              AND m.kind = 'text'
 		              AND m.sender_id <> me.player_id
 		              AND (me.last_read_message_id IS NULL OR m.id > me.last_read_message_id)
 		            LIMIT $3) unread)
 		FROM conversation_members me
 		JOIN conversations c ON c.id = me.conversation_id AND c.game_id = me.game_id
 		LEFT JOIN LATERAL (
-		    SELECT id, sender_id, sender_name, body, created_at
+		    SELECT id, kind, sender_id, sender_name, body, created_at, kicked_by_id, kicked_by_name
 		    FROM messages
 		    WHERE game_id = c.game_id AND conversation_id = c.id
 		    ORDER BY id DESC
@@ -62,14 +63,14 @@ func (r *Repository) ListConversations(ctx context.Context, gameID, playerID str
 	for rows.Next() {
 		var c PlayerConversation
 		var (
-			msgID, msgSender, msgName, msgBody *string
-			msgAt                              *time.Time
+			msgID, msgKind, msgSender, msgName, msgBody, byID, byName *string
+			msgAt                                                     *time.Time
 		)
-		if err := rows.Scan(&c.ID, &c.Kind, &c.ClanID, &c.ReadOnly, &msgID, &msgSender, &msgName, &msgBody, &msgAt, &c.Unread); err != nil {
+		if err := rows.Scan(&c.ID, &c.Kind, &c.ClanID, &c.ReadOnly, &msgID, &msgKind, &msgSender, &msgName, &msgBody, &msgAt, &byID, &byName, &c.Unread); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
 		if msgID != nil {
-			c.LastMessage = &Message{ID: *msgID, SenderID: *msgSender, SenderName: *msgName, Body: *msgBody, CreatedAt: *msgAt}
+			c.LastMessage = &Message{ID: *msgID, Kind: *msgKind, SenderID: *msgSender, SenderName: *msgName, Body: *msgBody, CreatedAt: *msgAt, KickedBy: kickedBy(byID, byName)}
 		}
 		out = append(out, c)
 		ids = append(ids, c.ID)
@@ -145,7 +146,7 @@ func (r *Repository) ListMessages(ctx context.Context, gameID, playerID, convers
 	// One more than asked for tells whether older messages exist. Message IDs are UUIDv7, so
 	// ordering by ID is ordering by time (and uses the (conversation_id, id DESC) index).
 	rows, err := tx.Query(ctx, `
-		SELECT id, sender_id, sender_name, body, created_at
+		SELECT id, kind, sender_id, sender_name, body, created_at, kicked_by_id, kicked_by_name
 		FROM messages
 		WHERE game_id = $1 AND conversation_id = $2 AND ($3::uuid IS NULL OR id < $3::uuid)
 		ORDER BY id DESC
@@ -157,9 +158,11 @@ func (r *Repository) ListMessages(ctx context.Context, gameID, playerID, convers
 	msgs = make([]Message, 0, limit)
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt); err != nil {
+		var byID, byName *string
+		if err := rows.Scan(&m.ID, &m.Kind, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt, &byID, &byName); err != nil {
 			return nil, false, fmt.Errorf("scan message: %w", err)
 		}
+		m.KickedBy = kickedBy(byID, byName)
 		msgs = append(msgs, m)
 	}
 	if err := rows.Err(); err != nil {

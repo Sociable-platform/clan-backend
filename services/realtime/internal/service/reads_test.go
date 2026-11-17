@@ -55,7 +55,7 @@ func TestConversationsBuildsTheListForTheReader(t *testing.T) {
 	clan := "3b0c7a52-6d1e-4f0a-9c2b-1e2d3c4b5a69"
 	store := &memStore{convs: []repository.PlayerConversation{
 		{ID: conv1, Kind: "dm", Members: []repository.Member{{PlayerID: ali, Name: "Ali"}, {PlayerID: rashad, Name: "Rashad"}},
-			LastMessage: &repository.Message{ID: msgA, SenderID: rashad, SenderName: "Rashad", Body: "gg", CreatedAt: at}, Unread: 2},
+			LastMessage: &repository.Message{ID: msgA, Kind: "text", SenderID: rashad, SenderName: "Rashad", Body: "gg", CreatedAt: at}, Unread: 2},
 		{ID: "0193a6b9-0000-7aaa-8bbb-ccccddddeeee", Kind: "clan", ClanID: &clan, Members: []repository.Member{{PlayerID: ali, Name: "Ali"}}},
 	}}
 	got, err := New(store, WithPresence(onlineSet{rashad: true})).Conversations(context.Background(), reader)
@@ -67,7 +67,7 @@ func TestConversationsBuildsTheListForTheReader(t *testing.T) {
 	}
 	want := `[{"id":"` + conv1 + `","kind":"dm","clanId":null,"members":[` +
 		`{"id":"` + ali + `","name":"Ali","online":false},{"id":"` + rashad + `","name":"Rashad","online":true}],` +
-		`"lastMessage":{"id":"` + msgA + `","senderId":"` + rashad + `","senderName":"Rashad","body":"gg","createdAt":"2026-11-09T14:20:00Z"},"unread":2},` +
+		`"lastMessage":{"id":"` + msgA + `","kind":"text","senderId":"` + rashad + `","senderName":"Rashad","body":"gg","createdAt":"2026-11-09T14:20:00Z"},"unread":2},` +
 		`{"id":"0193a6b9-0000-7aaa-8bbb-ccccddddeeee","kind":"clan","clanId":"` + clan + `","members":[{"id":"` + ali + `","name":"Ali","online":false}],` +
 		`"lastMessage":null,"unread":0}]`
 	if s := mustJSON(t, got); s != want {
@@ -111,7 +111,7 @@ func TestConversationsDatabaseFailureIsNotAnHTTPError(t *testing.T) {
 func TestMessagesPageAndQueryChecks(t *testing.T) {
 	at := time.Date(2026, 11, 9, 18, 20, 0, 0, time.UTC)
 	store := &memStore{hasMore: true, msgs: []repository.Message{
-		{ID: msgA, SenderID: rashad, SenderName: "Rashad", Body: "gg", CreatedAt: at},
+		{ID: msgA, Kind: "text", SenderID: rashad, SenderName: "Rashad", Body: "gg", CreatedAt: at},
 	}}
 	upper := strings.ToUpper(msgA)
 	page, err := New(store).Messages(context.Background(), reader, strings.ToUpper(conv1), upper, " 20 ")
@@ -122,7 +122,7 @@ func TestMessagesPageAndQueryChecks(t *testing.T) {
 	if !reflect.DeepEqual(store.readCalls, []string{want}) {
 		t.Errorf("store calls = %v, want [%s] (ids lower-cased, limit parsed)", store.readCalls, want)
 	}
-	if s := mustJSON(t, page); s != `{"messages":[{"id":"`+msgA+`","senderId":"`+rashad+`","senderName":"Rashad","body":"gg","createdAt":"2026-11-09T18:20:00Z"}],"hasMore":true}` {
+	if s := mustJSON(t, page); s != `{"messages":[{"id":"`+msgA+`","kind":"text","senderId":"`+rashad+`","senderName":"Rashad","body":"gg","createdAt":"2026-11-09T18:20:00Z"}],"hasMore":true}` {
 		t.Errorf("page = %s", s)
 	}
 }
@@ -230,4 +230,38 @@ func TestMarkRead(t *testing.T) {
 			t.Errorf("error = %v, want the database error", err)
 		}
 	})
+}
+
+// kickedBy is on a member_kicked message that has it, and nowhere else: not as null, not at all.
+func TestMessagesNameWhoRemovedThePlayerOnlyOnAKick(t *testing.T) {
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	kicked := repository.Message{ID: "m-3", Kind: "member_kicked", SenderID: rashad, SenderName: "Rashad", CreatedAt: at,
+		KickedBy: &repository.Member{PlayerID: ali, Name: "Ali"}}
+	kickedUnknown := repository.Message{ID: "m-2", Kind: "member_kicked", SenderID: rashad, SenderName: "Rashad", CreatedAt: at}
+	text := repository.Message{ID: "m-1", Kind: "text", SenderID: ali, SenderName: "Ali", Body: "gg", CreatedAt: at}
+
+	for name, tt := range map[string]struct {
+		in   repository.Message
+		want string
+	}{
+		"a kick that names who": {kicked, `{"id":"m-3","kind":"member_kicked","senderId":"` + rashad + `","senderName":"Rashad","body":"","createdAt":"2026-11-17T09:00:00Z","kickedBy":{"id":"` + ali + `","name":"Ali"}}`},
+		"a kick that does not":  {kickedUnknown, `{"id":"m-2","kind":"member_kicked","senderId":"` + rashad + `","senderName":"Rashad","body":"","createdAt":"2026-11-17T09:00:00Z"}`},
+		"a text":                {text, `{"id":"m-1","kind":"text","senderId":"` + ali + `","senderName":"Ali","body":"gg","createdAt":"2026-11-17T09:00:00Z"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := mustJSON(t, toMessage(&tt.in)); got != tt.want {
+				t.Errorf("message = %s\nwant      %s", got, tt.want)
+			}
+		})
+	}
+
+	// The same through the history page.
+	store := &memStore{msgs: []repository.Message{kicked, text}}
+	page, err := New(store).Messages(context.Background(), reader, conv1, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(t, page); !strings.Contains(got, `"kickedBy":{"id":"`+ali+`","name":"Ali"}`) || strings.Count(got, "kickedBy") != 1 {
+		t.Errorf("history = %s, want kickedBy on the kick only", got)
+	}
 }

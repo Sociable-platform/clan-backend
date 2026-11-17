@@ -134,6 +134,11 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 				wantKeys(t, object(t, payload["player"], "player"), []string{"id", "name"}, "clan_joined player")
 			case "clan_kicked", "clan_disbanded":
 				wantKeys(t, payload, []string{"clanId"}, kind.(string)+" payload")
+			case "clan_join_request":
+				wantKeys(t, payload, []string{"clanId", "clanName", "requestId", "player"}, "clan_join_request payload")
+				wantKeys(t, object(t, payload["player"], "player"), []string{"id", "name"}, "clan_join_request player")
+			case "clan_join_declined":
+				wantKeys(t, payload, []string{"clanId", "clanName"}, "clan_join_declined payload")
 			default:
 				t.Errorf("notification kind %v is not a clan notification", kind)
 			}
@@ -157,7 +162,26 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 			wantKeys(t, data, jsonKeys(t, messageAckData{}), typ+" data")
 		case "message.new":
 			wantKeys(t, data, jsonKeys(t, messageNewData{}), typ+" data")
-			wantKeys(t, object(t, data["message"], "message"), messageKeys, "message")
+			msg := object(t, data["message"], "message")
+			keys := append([]string(nil), messageKeys...)
+			if by, ok := msg["kickedBy"]; ok {
+				// Only a member_kicked line has kickedBy: who removed the player.
+				if msg["kind"] != service.MessageMemberKicked {
+					t.Errorf("a %v message has kickedBy, only member_kicked does", msg["kind"])
+				}
+				wantKeys(t, object(t, by, "kickedBy"), []string{"id", "name"}, "kickedBy")
+				keys = append(keys, "kickedBy")
+			}
+			wantKeys(t, msg, keys, "message")
+			switch msg["kind"] {
+			case service.MessageText:
+			case service.MessageMemberJoined, service.MessageMemberLeft, service.MessageMemberKicked:
+				if msg["body"] != "" {
+					t.Errorf("a %v line has the body %q, want empty", msg["kind"], msg["body"])
+				}
+			default:
+				t.Errorf("message kind = %v, want text or a member line", msg["kind"])
+			}
 		default:
 			t.Errorf("frame type %q is in the file but not in this test", typ)
 		}

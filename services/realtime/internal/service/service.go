@@ -22,9 +22,13 @@ type Store interface {
 	// changed is false without such a conversation or when it already was read-only. UpsertDM opens it again.
 	MakeDMReadOnly(ctx context.Context, gameID, dmKey string) (dm repository.DM, changed bool, err error)
 	// JoinClanRoom makes the clan's conversation and the player's membership; safe to repeat.
+	// Joined is true only when the player was not a member yet.
 	JoinClanRoom(ctx context.Context, gameID, clanID string, m repository.Member) (repository.ClanRoom, error)
-	// LeaveClanRoom deletes the player's membership; safe to repeat. found is false without a room for the clan.
-	LeaveClanRoom(ctx context.Context, gameID, clanID, playerID string) (conversationID string, found bool, err error)
+	// LeaveClanRoom deletes the player's membership; safe to repeat. found is false without a room for
+	// the clan; Left is true only when the player was a member.
+	LeaveClanRoom(ctx context.Context, gameID, clanID, playerID string) (leave repository.ClanLeave, found bool, err error)
+	// InsertMemberMessage stores a member line (a join or a leave) and returns the members now.
+	InsertMemberMessage(ctx context.Context, gameID, conversationID string, m repository.MemberMessage) ([]string, error)
 	// DeleteClanRoom deletes the clan's conversation and returns who its members were. found is false without one.
 	DeleteClanRoom(ctx context.Context, gameID, clanID string) (conversationID string, memberIDs []string, found bool, err error)
 	// RenamePlayer stores a new display name for the player's memberships in the game; safe to repeat.

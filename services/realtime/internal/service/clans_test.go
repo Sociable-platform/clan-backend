@@ -22,9 +22,18 @@ func (m *memStore) JoinClanRoom(_ context.Context, gameID, clanID string, mem re
 	return m.room, m.clanErr
 }
 
-func (m *memStore) LeaveClanRoom(_ context.Context, gameID, clanID, playerID string) (string, bool, error) {
+func (m *memStore) LeaveClanRoom(_ context.Context, gameID, clanID, playerID string) (repository.ClanLeave, bool, error) {
 	m.clanCalls = append(m.clanCalls, "leave "+gameID+"|"+clanID+"|"+playerID)
-	return m.roomID, m.roomFound, m.clanErr
+	return repository.ClanLeave{ConversationID: m.roomID, Left: m.roomLeft, Name: m.roomLeftName}, m.roomFound, m.clanErr
+}
+
+func (m *memStore) InsertMemberMessage(_ context.Context, gameID, conversationID string, msg repository.MemberMessage) ([]string, error) {
+	if m.lineErr != nil {
+		return nil, m.lineErr
+	}
+	m.lines = append(m.lines, msg)
+	m.lineConvs = append(m.lineConvs, gameID+"|"+conversationID)
+	return m.lineMembers, nil
 }
 
 func (m *memStore) DeleteClanRoom(_ context.Context, gameID, clanID string) (string, []string, bool, error) {
@@ -79,7 +88,7 @@ func TestClanMemberJoinedGivesTheRoomWithItsHistoryAndTellsTheOthers(t *testing.
 		Members: []repository.Member{
 			{PlayerID: ali, Name: "Ali"}, {PlayerID: emma, Name: "Emma"}, {PlayerID: rashad, Name: "Rashad"},
 		},
-		LastMessage: &repository.Message{ID: "m-7", SenderID: ali, SenderName: "Ali", Body: "practice at 8", CreatedAt: last},
+		LastMessage: &repository.Message{ID: "m-7", Kind: "text", SenderID: ali, SenderName: "Ali", Body: "practice at 8", CreatedAt: last},
 		Unread:      map[string]int{ali: 0, emma: 3, rashad: 5},
 	}}
 	svc := New(store, WithPresence(onlineSet{ali: true, rashad: true}))
@@ -90,6 +99,10 @@ func TestClanMemberJoinedGivesTheRoomWithItsHistoryAndTellsTheOthers(t *testing.
 	}
 	if want := []string{"join " + game + "|" + wolves + "|" + rashad + "|Rashad"}; !reflect.DeepEqual(store.clanCalls, want) {
 		t.Errorf("store calls = %v, want %v", store.clanCalls, want)
+	}
+	// The player was a member already (Joined false, a repeated event): no member line.
+	if len(store.lines) != 0 {
+		t.Errorf("member lines = %+v, want none for a player who already was a member", store.lines)
 	}
 	if len(pushes) != 2 {
 		t.Fatalf("pushes = %d, want conversation.added for the joiner and clan_joined for the others", len(pushes))
@@ -104,7 +117,7 @@ func TestClanMemberJoinedGivesTheRoomWithItsHistoryAndTellsTheOthers(t *testing.
 		`{"id":"` + ali + `","name":"Ali","online":true},` +
 		`{"id":"` + emma + `","name":"Emma","online":false},` +
 		`{"id":"` + rashad + `","name":"Rashad","online":true}],` +
-		`"lastMessage":{"id":"m-7","senderId":"` + ali + `","senderName":"Ali","body":"practice at 8","createdAt":"2026-11-10T09:30:41.207Z"},` +
+		`"lastMessage":{"id":"m-7","kind":"text","senderId":"` + ali + `","senderName":"Ali","body":"practice at 8","createdAt":"2026-11-10T09:30:41.207Z"},` +
 		`"unread":5}}`
 	if got := frameJSON(t, added); got != want {
 		t.Errorf("conversation.added data = %s\nwant                      %s", got, want)
@@ -132,39 +145,170 @@ func TestClanMemberJoinedAloneTellsNobodyElse(t *testing.T) {
 	}
 }
 
+const lineID = "0193a6c0-1111-7222-8333-944455556666" // the ID fixedIDs gives every new message
+
+func TestClanMemberJoinedWritesOneJoinedLine(t *testing.T) {
+	store := &memStore{
+		room: repository.ClanRoom{
+			ConversationID: "c-9",
+			Members:        []repository.Member{{PlayerID: ali, Name: "Ali"}, {PlayerID: rashad, Name: "Rashad"}},
+			LastMessage:    &repository.Message{ID: "m-7", Kind: "text", SenderID: ali, SenderName: "Ali", Body: "practice at 8", CreatedAt: testNow},
+			Unread:         map[string]int{ali: 0, rashad: 0},
+			Joined:         true,
+		},
+		lineMembers: []string{ali, rashad},
+	}
+	svc := New(store, WithIDs(fixedIDs{id: lineID, at: testNow}))
+
+	pushes, err := svc.ClanMemberJoined(context.Background(), game, wolves, Player{ID: rashad, Name: "Rashad"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLine := repository.MemberMessage{ID: lineID, Kind: "member_joined", PlayerID: rashad, PlayerName: "Rashad", CreatedAt: testNow}
+	if !reflect.DeepEqual(store.lines, []repository.MemberMessage{wantLine}) || !reflect.DeepEqual(store.lineConvs, []string{game + "|c-9"}) {
+		t.Errorf("member lines = %+v in %v, want one member_joined line for Rashad in c-9", store.lines, store.lineConvs)
+	}
+
+	line := `{"id":"` + lineID + `","kind":"member_joined","senderId":"` + rashad + `","senderName":"Rashad","body":"","createdAt":"2026-11-10T08:00:00Z"}`
+	var got []string
+	for _, p := range pushes {
+		got = append(got, p.Type+" "+strings.Join(p.PlayerIDs, ","))
+	}
+	want := []string{"conversation.added " + rashad, "notification " + ali, "message.new " + ali + "," + rashad}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pushes = %v\nwant     %v", got, want)
+	}
+	// The joiner's room already ends with the line, and it is not unread.
+	if added := frameJSON(t, pushes[0]); !strings.Contains(added, `"lastMessage":`+line+`,"unread":0}`) {
+		t.Errorf("conversation.added = %s\nwant the joined line as the last message and nothing unread", added)
+	}
+	if got, want := frameJSON(t, pushes[2]), `{"conversationId":"c-9","message":`+line+`}`; got != want {
+		t.Errorf("message.new data = %s\nwant             %s", got, want)
+	}
+}
+
 func TestClanMemberLeft(t *testing.T) {
 	removed := `{"conversationId":"c-9"}`
 	kickedNote := `{"kind":"clan_kicked","payload":{"clanId":"` + wolves + `"}}`
+	// line is the message.new data of a member line about Rashad; byAli adds who removed him.
+	line := func(kind string, byAli bool) string {
+		by := ""
+		if byAli {
+			by = `,"kickedBy":{"id":"` + ali + `","name":"Ali"}`
+		}
+		return `{"conversationId":"c-9","message":{"id":"` + lineID + `","kind":"` + kind + `","senderId":"` + rashad +
+			`","senderName":"Rashad","body":"","createdAt":"2026-11-10T08:00:00Z"` + by + `}}`
+	}
+	aliRef := &Player{ID: ali, Name: "Ali"}
 	tests := []struct {
-		name   string
-		found  bool
-		kicked bool
-		want   []string // "type data"
+		name      string
+		found     bool
+		left      bool     // the player was a member
+		stay      []string // the members after the leave
+		kicked    bool
+		by        *Player  // kicked_by of the event
+		want      []string // "type to data"
+		wantLines []string // kinds of the stored member lines
+		wantBy    *Player  // who the stored line says removed the player
 	}{
-		{"left", true, false, []string{"conversation.removed " + removed}},
-		{"kicked", true, true, []string{"conversation.removed " + removed, "notification " + kickedNote}},
-		{"left a clan realtime has no room for", false, false, nil},
-		{"kicked from a clan realtime has no room for still hears it", false, true, []string{"notification " + kickedNote}},
+		{name: "left", found: true, left: true, stay: []string{ali, emma}, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+			"message.new " + ali + "," + emma + " " + line("member_left", false),
+		}, wantLines: []string{"member_left"}},
+		{name: "kicked by Ali", found: true, left: true, stay: []string{ali}, kicked: true, by: aliRef, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+			"notification " + rashad + " " + kickedNote,
+			"message.new " + ali + " " + line("member_kicked", true),
+		}, wantLines: []string{"member_kicked"}, wantBy: aliRef},
+		{name: "kicked by nobody the event names: the line has no kickedBy", found: true, left: true, stay: []string{ali}, kicked: true, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+			"notification " + rashad + " " + kickedNote,
+			"message.new " + ali + " " + line("member_kicked", false),
+		}, wantLines: []string{"member_kicked"}},
+		{name: "a leave never names a kicker, even if the event carries one", found: true, left: true, stay: []string{ali}, by: aliRef, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+			"message.new " + ali + " " + line("member_left", false),
+		}, wantLines: []string{"member_left"}},
+		{name: "left again: not a member any more, no second line", found: true, stay: []string{ali}, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+		}},
+		{name: "kicked again: not a member any more, no second line", found: true, stay: []string{ali}, kicked: true, by: aliRef, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+			"notification " + rashad + " " + kickedNote,
+		}},
+		{name: "left with nobody staying: the line is stored, nobody to tell", found: true, left: true, want: []string{
+			"conversation.removed " + rashad + " " + removed,
+		}, wantLines: []string{"member_left"}},
+		{name: "left a clan realtime has no room for"},
+		{name: "kicked from a clan realtime has no room for still hears it", kicked: true, by: aliRef, want: []string{
+			"notification " + rashad + " " + kickedNote,
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := &memStore{roomID: "c-9", roomFound: tt.found}
-			pushes, err := New(store).ClanMemberLeft(context.Background(), game, wolves, rashad, tt.kicked)
+			store := &memStore{roomID: "c-9", roomFound: tt.found, roomLeft: tt.left, roomLeftName: "Rashad", lineMembers: tt.stay}
+			pushes, err := New(store, WithIDs(fixedIDs{id: lineID, at: testNow})).ClanMemberLeft(context.Background(), game, wolves, rashad, tt.kicked, tt.by)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if want := []string{"leave " + game + "|" + wolves + "|" + rashad}; !reflect.DeepEqual(store.clanCalls, want) {
 				t.Errorf("store calls = %v, want %v", store.clanCalls, want)
 			}
+			var kinds []string
+			for i, l := range store.lines {
+				// The name is the one the player had in the room.
+				if l.PlayerID != rashad || l.PlayerName != "Rashad" || store.lineConvs[i] != game+"|c-9" {
+					t.Errorf("member line = %+v in %s, want Rashad's in c-9", l, store.lineConvs[i])
+				}
+				switch {
+				case tt.wantBy == nil && l.KickedBy != nil:
+					t.Errorf("the line says %+v removed the player, want nobody", *l.KickedBy)
+				case tt.wantBy != nil && (l.KickedBy == nil || l.KickedBy.PlayerID != tt.wantBy.ID || l.KickedBy.Name != tt.wantBy.Name):
+					t.Errorf("the line says %+v removed the player, want %+v", l.KickedBy, *tt.wantBy)
+				}
+				kinds = append(kinds, l.Kind)
+			}
+			if !reflect.DeepEqual(kinds, tt.wantLines) {
+				t.Errorf("member lines = %v, want %v", kinds, tt.wantLines)
+			}
 			var got []string
 			for _, p := range pushes {
-				if p.GameID != game || !reflect.DeepEqual(p.PlayerIDs, []string{rashad}) {
-					t.Errorf("%s goes to %v in %s, want only the player who left", p.Type, p.PlayerIDs, p.GameID)
+				if p.GameID != game {
+					t.Errorf("%s goes to game %s, want %s", p.Type, p.GameID, game)
 				}
-				got = append(got, p.Type+" "+frameJSON(t, p))
+				got = append(got, p.Type+" "+strings.Join(p.PlayerIDs, ",")+" "+frameJSON(t, p))
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("frames = %v\nwant     %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A member line that cannot be stored fails the event: the consumer tries it again, and nothing is sent.
+func TestClanMemberLinesPassStoreErrorsOn(t *testing.T) {
+	errDB := errors.New("database down")
+	calls := map[string]func(*Service) ([]Push, error){
+		"joined": func(s *Service) ([]Push, error) {
+			return s.ClanMemberJoined(context.Background(), game, wolves, Player{ID: rashad, Name: "Rashad"})
+		},
+		"left": func(s *Service) ([]Push, error) {
+			return s.ClanMemberLeft(context.Background(), game, wolves, rashad, false, nil)
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			store := &memStore{
+				room:   repository.ClanRoom{ConversationID: "c-9", Joined: true},
+				roomID: "c-9", roomFound: true, roomLeft: true, roomLeftName: "Rashad",
+				lineErr: errDB,
+			}
+			pushes, err := call(New(store))
+			if !errors.Is(err, errDB) || errors.Is(err, ErrInvalidEvent) {
+				t.Errorf("error = %v, want the database error, not ErrInvalidEvent", err)
+			}
+			if len(pushes) != 0 {
+				t.Errorf("pushes = %v, want none", pushes)
 			}
 		})
 	}
@@ -223,10 +367,16 @@ func TestClanEventsRefuseBadData(t *testing.T) {
 		}},
 		{"joined: clan missing", func(s *Service) ([]Push, error) { return s.ClanMemberJoined(context.Background(), game, "", ok) }},
 		{"left: player is not a UUID", func(s *Service) ([]Push, error) {
-			return s.ClanMemberLeft(context.Background(), game, wolves, "", false)
+			return s.ClanMemberLeft(context.Background(), game, wolves, "", false, nil)
 		}},
 		{"left: clan is not a UUID", func(s *Service) ([]Push, error) {
-			return s.ClanMemberLeft(context.Background(), game, "x", ali, true)
+			return s.ClanMemberLeft(context.Background(), game, "x", ali, true, nil)
+		}},
+		{"left: kicked_by is not a player", func(s *Service) ([]Push, error) {
+			return s.ClanMemberLeft(context.Background(), game, wolves, ali, true, &Player{ID: "u-1", Name: "Emma"})
+		}},
+		{"left: kicked_by has no name", func(s *Service) ([]Push, error) {
+			return s.ClanMemberLeft(context.Background(), game, wolves, ali, true, &Player{ID: emma, Name: " "})
 		}},
 		{"disbanded: clan is not a UUID", func(s *Service) ([]Push, error) { return s.ClanDisbanded(context.Background(), game, "x") }},
 		{"disbanded: game is not a UUID", func(s *Service) ([]Push, error) { return s.ClanDisbanded(context.Background(), "", wolves) }},
@@ -253,7 +403,7 @@ func TestClanEventsPassStoreErrorsOn(t *testing.T) {
 		"created": func(s *Service) ([]Push, error) { return s.ClanCreated(context.Background(), game, wolves, p) },
 		"joined":  func(s *Service) ([]Push, error) { return s.ClanMemberJoined(context.Background(), game, wolves, p) },
 		"left": func(s *Service) ([]Push, error) {
-			return s.ClanMemberLeft(context.Background(), game, wolves, ali, true)
+			return s.ClanMemberLeft(context.Background(), game, wolves, ali, true, nil)
 		},
 		"disbanded": func(s *Service) ([]Push, error) { return s.ClanDisbanded(context.Background(), game, wolves) },
 	}
@@ -266,6 +416,103 @@ func TestClanEventsPassStoreErrorsOn(t *testing.T) {
 			}
 			if len(pushes) != 0 {
 				t.Errorf("pushes = %v, want none when nothing was stored", pushes)
+			}
+		})
+	}
+}
+
+const requestID = "8c1f4d2a-5b6e-4f70-9a81-b2c3d4e5f607"
+
+// A request to join a closed clan tells the members Social named, with the clan, the request and the player.
+func TestClanJoinRequestedTellsTheNamedLeaders(t *testing.T) {
+	store := &memStore{}
+	pushes, err := New(store).ClanJoinRequested(context.Background(), game, strings.ToUpper(wolves), " Wolves ", strings.ToUpper(requestID),
+		Player{ID: rashad, Name: " Rashad "}, []string{ali, strings.ToUpper(emma)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.clanCalls) != 0 {
+		t.Errorf("store calls = %v, want none: a request stores nothing", store.clanCalls)
+	}
+	if len(pushes) != 1 {
+		t.Fatalf("pushes = %d, want one notification for the leaders", len(pushes))
+	}
+	p := pushes[0]
+	if p.GameID != game || p.Type != "notification" || !reflect.DeepEqual(p.PlayerIDs, []string{ali, emma}) {
+		t.Errorf("push = %s to %v in %s, want a notification to the two leaders, IDs in lower case", p.Type, p.PlayerIDs, p.GameID)
+	}
+	want := `{"kind":"clan_join_request","payload":{"clanId":"` + wolves + `","clanName":"Wolves","player":{"id":"` + rashad +
+		`","name":"Rashad"},"requestId":"` + requestID + `"}}`
+	if got := frameJSON(t, p); got != want {
+		t.Errorf("data = %s\nwant   %s", got, want)
+	}
+}
+
+func TestClanJoinRequestedLeavesTheAskerOutAndSendsNothingToNobody(t *testing.T) {
+	asker := Player{ID: rashad, Name: "Rashad"}
+	// A leader who is the asker is not told about their own request.
+	pushes, err := New(&memStore{}).ClanJoinRequested(context.Background(), game, wolves, "Wolves", requestID, asker, []string{rashad, ali})
+	if err != nil || len(pushes) != 1 || !reflect.DeepEqual(pushes[0].PlayerIDs, []string{ali}) {
+		t.Errorf("pushes = %+v, %v; want one, to Ali only", pushes, err)
+	}
+	for _, managers := range [][]string{nil, {}, {rashad}} {
+		pushes, err := New(&memStore{}).ClanJoinRequested(context.Background(), game, wolves, "Wolves", requestID, asker, managers)
+		if err != nil || len(pushes) != 0 {
+			t.Errorf("managers %v: pushes = %+v, %v; want none", managers, pushes, err)
+		}
+	}
+}
+
+func TestClanJoinRequestDeclinedTellsThePlayerWhoAsked(t *testing.T) {
+	store := &memStore{}
+	pushes, err := New(store).ClanJoinRequestDeclined(context.Background(), game, strings.ToUpper(wolves), " Wolves ", Player{ID: strings.ToUpper(rashad), Name: "Rashad"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.clanCalls) != 0 || len(pushes) != 1 {
+		t.Fatalf("store calls %v, pushes %d; want nothing stored and one notification", store.clanCalls, len(pushes))
+	}
+	p := pushes[0]
+	if p.GameID != game || p.Type != "notification" || !reflect.DeepEqual(p.PlayerIDs, []string{rashad}) {
+		t.Errorf("push = %s to %v in %s, want a notification to the player who asked", p.Type, p.PlayerIDs, p.GameID)
+	}
+	want := `{"kind":"clan_join_declined","payload":{"clanId":"` + wolves + `","clanName":"Wolves"}}`
+	if got := frameJSON(t, p); got != want {
+		t.Errorf("data = %s\nwant   %s", got, want)
+	}
+}
+
+func TestClanJoinRequestEventsRefuseBadData(t *testing.T) {
+	ok := Player{ID: rashad, Name: "Rashad"}
+	ctx := context.Background()
+	tests := map[string]func(*Service) ([]Push, error){
+		"requested: game is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, "g-1", wolves, "Wolves", requestID, ok, []string{ali})
+		},
+		"requested: clan is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, game, "x", "Wolves", requestID, ok, []string{ali})
+		},
+		"requested: the request is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, game, wolves, "Wolves", "r-1", ok, []string{ali})
+		},
+		"requested: the player has no name": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, game, wolves, "Wolves", requestID, Player{ID: rashad, Name: " "}, []string{ali})
+		},
+		"requested: a leader is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequested(ctx, game, wolves, "Wolves", requestID, ok, []string{ali, "u-3"})
+		},
+		"declined: clan is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequestDeclined(ctx, game, "x", "Wolves", ok)
+		},
+		"declined: player is not a UUID": func(s *Service) ([]Push, error) {
+			return s.ClanJoinRequestDeclined(ctx, game, wolves, "Wolves", Player{ID: "u-1", Name: "Rashad"})
+		},
+	}
+	for name, call := range tests {
+		t.Run(name, func(t *testing.T) {
+			pushes, err := call(New(&memStore{}))
+			if !errors.Is(err, ErrInvalidEvent) || len(pushes) != 0 {
+				t.Errorf("pushes = %v, error = %v; want ErrInvalidEvent and nothing sent", pushes, err)
 			}
 		})
 	}

@@ -45,7 +45,7 @@ func TestSendMessageStoresAndReturnsTheMembers(t *testing.T) {
 		t.Errorf("insert =\n%+v\nwant\n%+v (body trimmed, conversation ID in lower case, game and sender from the Sender)", got, want)
 	}
 
-	wantMsg := Message{ID: "0193a6c0-1111-7222-8333-944455556666", SenderID: ali, SenderName: "Ali", Body: "gg wp", CreatedAt: testNow}
+	wantMsg := Message{ID: "0193a6c0-1111-7222-8333-944455556666", Kind: "text", SenderID: ali, SenderName: "Ali", Body: "gg wp", CreatedAt: testNow}
 	if sent.Message != wantMsg {
 		t.Errorf("message = %+v, want %+v", sent.Message, wantMsg)
 	}

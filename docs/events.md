@@ -66,7 +66,7 @@ What each hop guarantees:
 | Where Social publishes the events of a player deletion | `services/social/internal/service/player_deletion.go` (`deletionEvents`): only existing types, see "Player deletion" under `player.renamed` |
 | Where Social publishes clan events | `services/social/internal/service/clans.go` (leave and kick both go through `publishLeave`; `clan.renamed` from `RenameClan`); `clan.member_role_changed` in `services/social/internal/service/roles.go` |
 | Where Platform publishes `config.published` | `services/platform/internal/service/widget.go` (`addWidgetVersion`), wired in `services/platform/cmd/main.go` |
-| Where Platform publishes `game.suspended` / `game.resumed` | `services/platform/internal/service/admin_status.go` (`SetGameStatus`, `SetDeveloperStatus`); Realtime handles them in `services/realtime/internal/consumer/dispatch.go` (`gameStatusChanged`) |
+| Where Platform publishes `game.suspended` / `game.resumed` | `services/platform/internal/service/admin_status.go` (`SetGameStatus`, `SetDeveloperStatus`) and `game_team.go` (`changeTeam`); Realtime handles them in `services/realtime/internal/consumer/dispatch.go` (`gameStatusChanged`) |
 | Social wiring (`SOCIAL_RABBITMQ_URL`) | `services/social/cmd/main.go` |
 | Exchange, queue and bindings | `deploy/rabbitmq/definitions.json`, applied by the `rabbitmq-setup` job in `docker-compose.yml` |
 | Consumer loop (connect, ack, retry, reconnect) | `services/realtime/internal/consumer/consumer.go` |
@@ -390,16 +390,22 @@ Cancel and decline are two event types because they have different recipients; a
 
 ### `game.suspended` and `game.resumed`
 
-- **Published by Platform** when an admin suspends or resumes a game, or a whole developer: written to Platform's outbox in
-  the transaction of the change and its audit row (`services/platform/internal/service/admin_status.go`), and sent by its
-  relay after the commit. The full messages are in [`event-messages.md`](event-messages.md).
+- **Published by Platform** when an admin suspends or resumes a game, or a whole developer, and (TEAM-308) when a change to a
+  game's team changes whether the game is served: written to Platform's outbox in the transaction of the change and its audit row
+  (`services/platform/internal/service/admin_status.go`, and `changeTeam` in `service/game_team.go`), and sent by its relay after
+  the commit. The full messages are in [`event-messages.md`](event-messages.md).
 - **`data`:** `status`, `suspended` or `active`: the game's **effective** status after the change, the same word as `status` in
   `GET /internal/v1/games/{gameID}/config`. Never the reason or the admin's note.
 - **When it is published:** only when a change was saved, so a repeated request publishes nothing. A game is served when the game
-  **and** its developer are both active, so an event goes out only when that answer flips:
-  - a game-level change publishes one event for that game, unless its developer is suspended (the game was off before and stays off);
-  - a developer-level change publishes one event for each game of theirs whose own switch is on. A game that was suspended on its own
-    is skipped: it is off before and after, and a `game.resumed` for it would let it through.
+  is active **and at least one of its owners has an active account** (a game has a team: owners and members; only owners count, and
+  a game with one owner behaves as it did before teams), so an event goes out only when that answer flips:
+  - a game-level change publishes one event for that game, unless every owner is suspended (the game was off before and stays off);
+  - a developer-level change publishes one event for each game they **own** whose own switch is on and that has **no other owner with
+    an active account**. A game that was suspended on its own is skipped: it is off before and after, and a `game.resumed` for it
+    would let it through. Games they are only a member of, and games they share with an active owner, keep being served and publish
+    nothing;
+  - a **team change** (an owner leaves, is removed or demoted; a member is made an owner) publishes one event for the game when it
+    flips the answer, for example the last active owner leaving a game whose other owner is suspended: `game.suspended`.
 - **If the broker is down** the admin's request still succeeds; the event waits in Platform's outbox and reaches Realtime once
   the broker is back. If the event cannot be written, or the developer's status cannot be read to decide on it, the whole change
   fails and the admin can try again. The internal config says the same thing as the event, so a consumer that wants the truth
@@ -438,10 +444,19 @@ Cancel and decline are two event types because they have different recipients; a
   - `clan.member_joined`: adds the `player` (and makes the room if `clan.created` was never seen), sends `conversation.added` to
     the player and a `clan_joined` notification to the other members. The room comes with its **whole history**: what was written
     before the player joined, and while they were away if they were a member before. Their read position went with their
-    membership, so the other members' messages count as unread.
+    membership, so the other members' messages count as unread. When the player was not a member yet, a `member_joined`
+    member line is stored in the room and sent as `message.new` to every member, the joiner included (TEAM-291); a repeated
+    event finds the membership and writes no second line.
   - `clan.member_left`: deletes the player's membership (the messages stay) and sends `conversation.removed` to that player;
-    when `reason` is `kicked`, also a `clan_kicked` notification (even if Realtime never had the room). `kicked_by` and
-    `new_owner` are not needed. The members who stay are not told.
+    when `reason` is `kicked`, also a `clan_kicked` notification (even if Realtime never had the room). When the player was a
+    member, a `member_left` line (`member_kicked` for a kick) with the name they had in the room is stored and sent as
+    `message.new` to the members who stay. A `member_kicked` line also keeps `kicked_by` of the event as `kickedBy`
+    (`{ id, name }`; absent when the event has none, and never on a `member_left`). `new_owner` is not needed.
+  - Member lines are messages with a `kind` other than `text` and an empty body (the widget writes the sentence). They are
+    in the history like any message and never count as unread (`openapi/realtime-ws.md`, "Member lines").
+  - `clan.join_requested`: a player asked to join a closed clan. Sends a `clan_join_request` notification to the members the event
+    names in `managers` (Social works out who may decide; Realtime knows no roles). Stores nothing, so a copy is skipped by `HandleOnce`.
+  - `clan.join_request_declined`: sends a `clan_join_declined` notification to the player. An accepted request is a `clan.member_joined`.
   - `clan.disbanded`: deletes the room with its members and messages and sends `conversation.removed` and a `clan_disbanded`
     notification to everybody who was still in it. Social publishes only this event when the last member leaves, so that member is told here.
 - **A copy of an event** (same `event_id`) is skipped (section 9): no rows and no frames. A new event about the same thing
@@ -662,7 +677,7 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | Clan rooms are not backfilled | A clan made before Realtime ran, or whose `clan.created` / `clan.member_joined` was lost, has no room (or misses that member) until the next join; a lost `clan.member_left` leaves the player in the room | A backfill like the friendships one: needs an internal Social endpoint that lists clan members (Social has none yet), then a clan pass in `REALTIME_BACKFILL`. |
-| The members who stay in a clan are not told when someone leaves | Open tabs list the old members until they reload the conversations | A frame for it, if the SDK needs it live (the contract has none). |
+| The members who stay in a clan get only the `member_left` / `member_kicked` line when someone leaves, not a new member list | Open tabs list the old members until they reload the conversations, unless the SDK reloads them when the line arrives | A members frame, if the SDK needs more than the line. |
 | `player.renamed` sends no frame | Open tabs show the old name until they reload the conversations | A frame for it, if the SDK needs it live. |
 | A lost `player.blocked` (only at consume time now: Social writes it through the outbox) | The blocked player can still message the blocker | Replay it from the dead-letter queue (`go run ./tools/dlq replay`), and a backfill of the blocks: Social stores them now (TEAM-154) but has no internal endpoint that lists them, like `/internal/v1/friendships` (the friendships backfill of TEAM-151 does not cover blocks). |
 | Slow mode and the rate limit are in the memory of the one Realtime process | A restart gives everybody a fresh start | Fine while Realtime is one process. |

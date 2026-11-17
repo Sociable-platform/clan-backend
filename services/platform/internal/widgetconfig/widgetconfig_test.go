@@ -257,6 +257,51 @@ func TestRejectsALabelKeyThatIsNotInTheContract(t *testing.T) {
 	wantIssue(t, issuesOf(t, m), "/texts/labels", "additionalProperties")
 }
 
+// The clan chat's member lines (TEAM-293) can be worded by the game; {player} is the player's name, and {by}
+// (in memberKickedBy, the line of a kick that says who removed the player) is that player's name.
+func TestAcceptsTheMemberLineLabels(t *testing.T) {
+	m := arena(t)
+	labels := obj(m, "texts", "labels")
+	labels["memberJoined"] = "Welcome, {player}!"
+	labels["memberLeft"] = "{player} left the {clan}"
+	labels["memberKicked"] = "{player} was removed"
+	labels["memberKickedBy"] = "{by} removed {player}"
+	if issues := issuesOf(t, m); len(issues) != 0 {
+		t.Fatalf("issues = %+v, want none", issues)
+	}
+}
+
+// canHandleRequests (TEAM-300) is optional on any role, the first one included; when given it is a boolean.
+func TestRolesMayChooseWhoHandlesRequests(t *testing.T) {
+	m := arena(t)
+	roles := obj(m, "clan")["roles"].([]any)
+	roles[0].(map[string]any)["canHandleRequests"] = true
+	roles[1].(map[string]any)["canHandleRequests"] = false
+	if issues := issuesOf(t, m); len(issues) != 0 {
+		t.Fatalf("issues = %+v, want none", issues)
+	}
+	roles[0].(map[string]any)["canHandleRequests"] = "yes"
+	wantIssue(t, issuesOf(t, m), "/clan/roles/0/canHandleRequests", "type")
+}
+
+// memberKickedBy follows the rules of every label: 1 to 40 characters, no markup.
+func TestRejectsABadMemberKickedByLabel(t *testing.T) {
+	for name, text := range map[string]string{
+		"empty":    "",
+		"too long": "{player} was removed from the {clan} by {by} just now",
+		"markup":   "<b>{by}</b> removed {player}",
+		"a link":   "{by} removed {player} https://example.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := arena(t)
+			obj(m, "texts", "labels")["memberKickedBy"] = text
+			if issues := issuesOf(t, m); len(issues) == 0 {
+				t.Errorf("%q was accepted, want an issue", text)
+			}
+		})
+	}
+}
+
 func TestRejectsAConfigWithEverythingDisabled(t *testing.T) {
 	m := arena(t)
 	obj(m, "friends")["enabled"] = false

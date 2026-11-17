@@ -1,0 +1,3105 @@
+{
+  "info": {
+    "name": "Clan realtime - member lines: join, leave and kick in the clan chat (TEAM-291)",
+    "description": "Member lines (TEAM-291): when a player joins, leaves or is kicked, Realtime stores a message with a `kind` (member_joined, member_left, member_kicked) in the clan's room and sends it to the members as message.new. The player is the sender and the body is empty (the widget writes the sentence). They are in the history, are returned with `kind` by GET /api/v1/conversations and the history, and never count as unread. A member_kicked line also has `kickedBy` ({ id, name }), the player who removed them, so the widget can write 'Bob was removed by Alice'; no other message has that field.\n\nHOW TO RUN\n1. Start everything: docker compose up -d (platform 8081, social 8082, realtime 8083, postgres, rabbitmq). Variables: baseUrl (platform), socialUrl, realtimeUrl, wsUrl.\n2. Run folders 1 and 2 with the Runner (or request by request). They make a developer, a game with clans and clan chat on, four players (Alice, Bob, Carol, Dave) and Alice's clan.\n3. STEP A (folder 3) is manual: it shows two WebSocket URLs (Alice and Bob). Open the tabs, then run folder 4.\n4. Folder 4: Bob and Carol join. STEP B (folder 5) is manual: Bob sends two messages. Then run folders 6, 7, 8.\n5. Folder 9 puts three events on RabbitMQ by hand (management API): set the collection variables rabbitUser and rabbitPassword (RABBITMQ_USER and RABBITMQ_PASSWORD of your .env). Skip it without them.\n6. Folder 10 needs only folder 2.\n\nRequests that wait for an event ask again by themselves (up to 8 times). Postman collections cannot hold WebSocket requests, so the two STEP requests only show the frames in the Visualize tab.\n\nThe members of a fresh game, in order: Alice (owner) creates the clan, Bob joins, Carol joins, Bob writes two texts, Carol leaves, Alice kicks Bob, Carol joins again, a redelivery check, Carol leaves again.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1 Setup (platform and social)",
+      "item": [
+        {
+          "name": "Setup - register developer (201)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "register"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{devEmail}}\",\n  \"password\": \"{{devPassword}}\",\n  \"name\": \"Dev\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('devEmail', `dev+${Date.now()}@example.com`);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup - login developer (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/developers/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "developers",
+                "login"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{devEmail}}\",\n  \"password\": \"{{devPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('devToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup - register a game (201)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Wolves Arena\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('gameId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup - create an API key (201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/api-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "api-keys"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('apiKey', pm.response.json().key);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup - turn clans and clan chat on: save the draft (200)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "draft"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"config\": {\n    \"schemaVersion\": 1,\n    \"game_id\": \"{{gameId}}\",\n    \"theme\": {\n      \"mode\": \"light\",\n      \"fonts\": {\n        \"heading\": {\n          \"family\": \"Fredoka\",\n          \"source\": \"google\"\n        },\n        \"body\": {\n          \"family\": \"Nunito\",\n          \"source\": \"google\"\n        }\n      },\n      \"frame\": {\n        \"style\": \"none\",\n        \"width\": 1,\n        \"color\": \"#D9DBD5\",\n        \"corners\": \"round\"\n      },\n      \"buttons\": {\n        \"style\": \"outline\",\n        \"case\": \"normal\"\n      },\n      \"panel\": {\n        \"opacity\": 0.9,\n        \"blur\": true\n      },\n      \"colors\": {\n        \"brand\": \"#2E8B57\",\n        \"background\": \"#FFFFFF\",\n        \"surface\": \"#F2F3F1\",\n        \"text\": \"#000000\",\n        \"muted\": \"#5B5D56\"\n      },\n      \"textures\": {}\n    },\n    \"layout\": {\n      \"position\": \"bottom-left\",\n      \"startCollapsed\": false\n    },\n    \"friends\": {\n      \"enabled\": true\n    },\n    \"clan\": {\n      \"enabled\": true,\n      \"maxMembers\": 10,\n      \"descriptionMax\": 140,\n      \"roles\": [\n        {\n          \"id\": \"member\",\n          \"name\": \"Member\",\n          \"canPromote\": false,\n          \"canKick\": false\n        },\n        {\n          \"id\": \"leader\",\n          \"name\": \"Leader\",\n          \"canPromote\": true,\n          \"canKick\": true\n        }\n      ],\n      \"badges\": {\n        \"source\": \"developer\",\n        \"allowed\": []\n      },\n      \"screens\": {\n        \"discover\": {\n          \"enabled\": false\n        },\n        \"create\": {\n          \"enabled\": false\n        },\n        \"home\": {\n          \"enabled\": false,\n          \"header\": \"compact\",\n          \"showStats\": false\n        },\n        \"members\": {\n          \"enabled\": false\n        }\n      }\n    },\n    \"chat\": {\n      \"enabled\": true,\n      \"layout\": \"bubbles\",\n      \"directMessages\": true,\n      \"clanChat\": true,\n      \"maxMessageLength\": 500,\n      \"slowModeSeconds\": 0,\n      \"profanityFilter\": false,\n      \"historyLimit\": 50\n    },\n    \"texts\": {\n      \"terms\": {\n        \"clan\": \"Clan\",\n        \"clans\": \"Clans\"\n      },\n      \"labels\": {}\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "A complete config with clan.enabled and chat.clanChat on (the same one tools/e2e uses). Without them Social has no clans and Realtime refuses clan chat."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Setup - turn clans and clan chat on: publish (200 or 201)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/games/{{gameId}}/widget/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "games",
+                "{{gameId}}",
+                "widget",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{devToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Platform publishes config.published; Realtime fetches the config on demand."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue token - Alice (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_alice\",\n  \"displayName\": \"Alice\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "What the game's own server does after logging its player in."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('aliceToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue token - Bob (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_bob\",\n  \"displayName\": \"Bob\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "What the game's own server does after logging its player in."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('bobToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue token - Carol (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_carol\",\n  \"displayName\": \"Carol\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "What the game's own server does after logging its player in."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('carolToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Issue token - Dave (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/players/auth",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "auth"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"externalPlayerId\": \"u_dave\",\n  \"displayName\": \"Dave\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "What the game's own server does after logging its player in."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('daveToken', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Social - Alice's own ID (200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/players/me",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Social creates the player on first sight; the ID is what the member lines name."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('a social ID and the display name', () => { pm.expect(j.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/); pm.expect(j.displayName).to.eql('Alice'); });",
+                  "pm.collectionVariables.set('aliceId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Social - Bob's own ID (200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/players/me",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Social creates the player on first sight; the ID is what the member lines name."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('a social ID and the display name', () => { pm.expect(j.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/); pm.expect(j.displayName).to.eql('Bob'); });",
+                  "pm.collectionVariables.set('bobId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Social - Carol's own ID (200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/players/me",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Social creates the player on first sight; the ID is what the member lines name."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('a social ID and the display name', () => { pm.expect(j.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/); pm.expect(j.displayName).to.eql('Carol'); });",
+                  "pm.collectionVariables.set('carolId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Social - Dave's own ID (200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/players/me",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{daveToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Social creates the player on first sight; the ID is what the member lines name."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('a social ID and the display name', () => { pm.expect(j.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/); pm.expect(j.displayName).to.eql('Dave'); });",
+                  "pm.collectionVariables.set('daveId', j.id);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2 The clan and its room",
+      "item": [
+        {
+          "name": "Alice creates the clan (201)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/clans",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "clans"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Wolves\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Social publishes clan.created; Realtime makes the clan's chat room with the owner in it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('clanId', pm.response.json().id);",
+                  "pm.test('the clan has an id', () => pm.expect(pm.collectionVariables.get('clanId')).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Alice (200): her clan room, no member line for the owner",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "The owner's room starts empty: clan.created writes no member line, only clan.member_joined does. Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return !!room(j); })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const r = room(j);",
+                  "  pm.test('Alice has the clan room', () => pm.expect(r).to.be.an('object'));",
+                  "  pm.test('a clan conversation with Alice as its only member', () => { pm.expect(r.kind).to.eql('clan'); pm.expect(r.members.map(m => m.id)).to.eql([v('aliceId')]); });",
+                  "  pm.test('the owner starts without a member line: lastMessage null, unread 0', () => { pm.expect(r.lastMessage).to.be.null; pm.expect(r.unread).to.eql(0); });",
+                  "  pm.collectionVariables.set('clanConvId', r.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Alice (200): the new room is empty",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('no messages and no member line yet', () => { pm.expect(j.messages).to.eql([]); pm.expect(j.hasMore).to.eql(false); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3 STEP A - WebSocket tabs (manual, before folder 4)",
+      "item": [
+        {
+          "name": "STOP - STEP A: open two WebSocket tabs before the joins (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Postman collections cannot hold WebSocket requests, so this step is manual. Send this request, open the Visualize tab: it shows the two WebSocket URLs and what each tab should receive while folders 4, 7 and 8 run. Open the tabs now, before folder 4."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const view = { wsAlice: v('wsUrl') + '/api/v1/ws?token=' + v('aliceToken'), wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken') };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} td,th{border:1px solid #ccc;padding:4px 8px;text-align:left;vertical-align:top} table{border-collapse:collapse}</style>",
+                  "<h2>STEP A - watch the member lines arrive live (do this by hand, then run folder 4)</h2>",
+                  "<p>In Postman: <b>New &gt; WebSocket</b> (two tabs), <b>Connect</b> in each. The first frame in each tab is <code>hello</code>. Bob is not in the clan yet; his tab still gets his own frames.</p>",
+                  "<h3>Tab 1 - Alice (the owner)</h3><pre>{{wsAlice}}</pre>",
+                  "<h3>Tab 2 - Bob</h3><pre>{{wsBob}}</pre>",
+                  "<h3>What each tab should receive while you run the next folders</h3>",
+                  "<table><tr><th>When</th><th>Alice's tab</th><th>Bob's tab</th></tr>",
+                  "<tr><td>Folder 4: Bob joins</td><td><code>notification</code> clan_joined, <code>message.new</code> with <code>message.kind = member_joined</code> (senderName Bob, body empty)</td><td><code>conversation.added</code> (the room, lastMessage = the joined line, unread 0), <code>message.new</code> member_joined</td></tr>",
+                  "<tr><td>Folder 4: Carol joins (she has no tab)</td><td><code>message.new</code> member_joined, senderName Carol</td><td>the same <code>message.new</code></td></tr>",
+                  "<tr><td>Folder 7: Carol leaves</td><td><code>message.new</code> member_left, senderName Carol</td><td>the same <code>message.new</code></td></tr>",
+                  "<tr><td>Folder 7: Alice kicks Bob</td><td><code>message.new</code> member_kicked, senderName Bob</td><td><code>conversation.removed</code> and <code>notification</code> clan_kicked, <b>no</b> member line (it is for the members who stay)</td></tr>",
+                  "</table>",
+                  "<p>Every <code>message.new</code> has <code>data.message.kind</code>.</p>",
+                  "<p>Then run folder 4. Folder 5 (STEP B) comes after it.</p>`, view);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4 Joins: member_joined lines",
+      "item": [
+        {
+          "name": "Bob joins the clan (200)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/clans/{{clanId}}/join",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "clans",
+                "{{clanId}}",
+                "join"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Social saves the membership and publishes clan.member_joined. Realtime adds the player to the room, stores a member_joined line and sends it as message.new to every member."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Bob (200): the room, its last message is his own member_joined line",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return !!room(j); })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const r = room(j);",
+                  "  pm.test('Bob has the clan room with Alice and himself', () => { pm.expect(r).to.be.an('object'); pm.expect(r.members.map(m => m.id)).to.eql([v('aliceId'), v('bobId')]); });",
+                  "  pm.test('lastMessage is the member_joined line of Bob: ' + lineText(r.lastMessage), () => pm.expect(isLine(r.lastMessage, 'member_joined', 'bob', 'Bob')).to.eql(true));",
+                  "  pm.test('a member line has every message field', () => pm.expect(r.lastMessage).to.have.all.keys(...KEYS));",
+                  "  pm.test('his own join line is not unread', () => pm.expect(r.unread).to.eql(0));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Alice (200): one line, member_joined Bob",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('exactly one message', () => pm.expect(j.messages).to.have.lengthOf(1));",
+                  "pm.test('it is member_joined with Bob as sender and an empty body: ' + lineText(j.messages[0]), () => pm.expect(isLine(j.messages[0], 'member_joined', 'bob', 'Bob')).to.eql(true));",
+                  "pm.test('every message has id, kind, senderId, senderName, body, createdAt', () => j.messages.forEach(m => pm.expect(m).to.have.all.keys(...KEYS)));",
+                  "pm.test('nothing older', () => pm.expect(j.hasMore).to.eql(false));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Alice (200): a join gives her no unread badge",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { const r = room(j); return !!r && !!r.lastMessage; })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const r = room(j);",
+                  "  pm.test('lastMessage is the member_joined line of Bob', () => pm.expect(isLine(r.lastMessage, 'member_joined', 'bob', 'Bob')).to.eql(true));",
+                  "  pm.test('unread is 0: member lines never count as unread', () => pm.expect(r.unread).to.eql(0));",
+                  "  pm.test('both members are listed', () => pm.expect(r.members.map(m => m.id)).to.eql([v('aliceId'), v('bobId')]));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Carol joins the clan (200)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/clans/{{clanId}}/join",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "clans",
+                "{{clanId}}",
+                "join"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Social saves the membership and publishes clan.member_joined. Realtime adds the player to the room, stores a member_joined line and sends it as message.new to every member. Carol has no WebSocket open: she will see the line in her history."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Carol (200): the room, its last message is her member_joined line",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return !!room(j); })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const r = room(j);",
+                  "  pm.test('Carol has the clan room with the three members', () => pm.expect(r.members.map(m => m.id)).to.eql([v('aliceId'), v('bobId'), v('carolId')]));",
+                  "  pm.test('lastMessage is the member_joined line of Carol: ' + lineText(r.lastMessage), () => pm.expect(isLine(r.lastMessage, 'member_joined', 'carol', 'Carol')).to.eql(true));",
+                  "  pm.test('the history before she joined is not unread', () => pm.expect(r.unread).to.eql(0));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Alice (200): newest first, Carol's line then Bob's",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Alice was in the room the whole time, so the history is the same for her as for a member who joined later: the lines are stored, not only sent."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('two lines, newest first: ' + j.messages.map(lineText).join(' | '), () => {",
+                  "  pm.expect(j.messages).to.have.lengthOf(2);",
+                  "  pm.expect(isLine(j.messages[0], 'member_joined', 'carol', 'Carol')).to.eql(true);",
+                  "  pm.expect(isLine(j.messages[1], 'member_joined', 'bob', 'Bob')).to.eql(true);",
+                  "});",
+                  "pm.test('ids sort in time order (UUIDv7)', () => pm.expect(j.messages[0].id > j.messages[1].id).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Bob (200): Carol's join gave him no badge either",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { const r = room(j); return !!r && !!r.lastMessage && r.lastMessage.senderId === v('carolId'); })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const r = room(j);",
+                  "  pm.test('lastMessage is the member_joined line of Carol', () => pm.expect(isLine(r.lastMessage, 'member_joined', 'carol', 'Carol')).to.eql(true));",
+                  "  pm.test('unread is 0', () => pm.expect(r.unread).to.eql(0));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5 STEP B - Bob writes (manual)",
+      "item": [
+        {
+          "name": "STOP - STEP B: Bob writes two messages in the clan room (see the Visualize tab)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/health",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Manual step: Bob writes in the clan room over his WebSocket (one honest message and one that tries to pass itself off as a member line). Then run folder 6."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const send = (id, extra) => JSON.stringify({ type: 'message.send', id, data: Object.assign({ conversationId: v('clanConvId') }, extra) });",
+                  "const view = { wsBob: v('wsUrl') + '/api/v1/ws?token=' + v('bobToken'), m1: send('b-1', { body: 'gg wolves' }), m2: send('b-2', { body: 'not a line', kind: 'member_joined' }) };",
+                  "pm.visualizer.set(`<style>body{font-family:sans-serif;font-size:13px} pre{background:#f4f4f4;padding:8px;white-space:pre-wrap;word-break:break-all} h3{margin:14px 0 4px} td,th{border:1px solid #ccc;padding:4px 8px;text-align:left;vertical-align:top} table{border-collapse:collapse}</style>",
+                  "<h2>STEP B - text messages and a spoofed member line (do this by hand, then run folder 6)</h2>",
+                  "<p>Use the Bob tab from STEP A, or open a new one:</p><pre>{{wsBob}}</pre>",
+                  "<h3>Send these two frames in Bob's tab (Message type: JSON), one by one</h3><pre>{{m1}}</pre><pre>{{m2}}</pre>",
+                  "<h3>What you should see</h3>",
+                  "<ul><li>Bob gets <code>message.ack</code> for each, then <code>message.new</code> for each (Alice's tab gets the two <code>message.new</code> too)</li>",
+                  "<li>both <code>message.new</code> have <code>data.message.kind = \"text\"</code>: a player cannot send a member line. The extra <code>kind</code> in the second frame is ignored</li>",
+                  "<li>the bodies are exactly <code>gg wolves</code> and <code>not a line</code></li></ul>",
+                  "<p>Carol has no tab: she gets the two messages from her history, and they are the only things unread for her.</p>`, view);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6 After the texts (run after STEP B): lines are not unread",
+      "item": [
+        {
+          "name": "History - Alice (200): two texts on top of the two join lines",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Run after STEP B. Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return (j.messages || []).length >= 4; })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const m = j.messages;",
+                  "  pm.test('four messages, newest first: ' + m.map(lineText).join(' | '), () => pm.expect(m).to.have.lengthOf(4));",
+                  "  pm.test('the spoofed frame was stored as plain text from Bob', () => { pm.expect(m[0].kind).to.eql('text'); pm.expect(m[0].senderId).to.eql(v('bobId')); pm.expect(m[0].body).to.eql('not a line'); });",
+                  "  pm.test('the honest message is text from Bob', () => { pm.expect(m[1].kind).to.eql('text'); pm.expect(m[1].senderId).to.eql(v('bobId')); pm.expect(m[1].body).to.eql('gg wolves'); });",
+                  "  pm.test('under them the two member_joined lines', () => { pm.expect(isLine(m[2], 'member_joined', 'carol', 'Carol')).to.eql(true); pm.expect(isLine(m[3], 'member_joined', 'bob', 'Bob')).to.eql(true); });",
+                  "  pm.test('every message has id, kind, senderId, senderName, body, createdAt', () => m.forEach(x => pm.expect(x).to.have.all.keys(...KEYS)));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Alice (200): unread 2, the two texts only",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const r = room(pm.response.json());",
+                  "pm.test('lastMessage is Bob\\'s text: ' + lineText(r.lastMessage), () => { pm.expect(r.lastMessage.kind).to.eql('text'); pm.expect(r.lastMessage.body).to.eql('not a line'); });",
+                  "pm.test('unread is 2: the two texts count, the two member lines do not (four messages came after nothing read)', () => pm.expect(r.unread).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Bob (200): unread 0, his own texts and Carol's line",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const r = room(pm.response.json());",
+                  "pm.test('unread is 0', () => pm.expect(r.unread).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Carol (200): unread 2, she was offline",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const r = room(pm.response.json());",
+                  "pm.test('unread is 2: Bob\\'s two texts; her own join line is not counted', () => pm.expect(r.unread).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7 Leave and kick: member_left and member_kicked",
+      "item": [
+        {
+          "name": "Carol leaves the clan (204)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/clans/{{clanId}}/leave",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "clans",
+                "{{clanId}}",
+                "leave"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Social publishes clan.member_left (reason left). Realtime removes Carol from the room, stores a member_left line with the name she had, and sends it to the members who stay."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Alice (200): member_left Carol on top",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return (j.messages || []).length > 0 && j.messages[0].kind === 'member_left'; })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const m = j.messages;",
+                  "  pm.test('five messages, newest first: ' + m.map(lineText).join(' | '), () => pm.expect(m).to.have.lengthOf(5));",
+                  "  pm.test('the newest is member_left with Carol as sender and an empty body', () => pm.expect(isLine(m[0], 'member_left', 'carol', 'Carol')).to.eql(true));",
+                  "  pm.test('the texts and the join lines are all still there', () => pm.expect(m.slice(1).map(x => x.kind)).to.eql(['text', 'text', 'member_joined', 'member_joined']));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Carol (200): the room left her list",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "She does not get her own member_left line: it is for the members who stay. Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return !room(j); })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  pm.test('Carol has no clan room any more', () => pm.expect(room(j)).to.be.undefined);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Alice (200): still unread 2, the leave is not a badge",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const r = room(pm.response.json());",
+                  "pm.test('lastMessage is the member_left line of Carol', () => pm.expect(isLine(r.lastMessage, 'member_left', 'carol', 'Carol')).to.eql(true));",
+                  "pm.test('unread is still 2', () => pm.expect(r.unread).to.eql(2));",
+                  "pm.test('Carol is not a member any more', () => pm.expect(r.members.map(m => m.id)).to.eql([v('aliceId'), v('bobId')]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Bob (200): he stayed, so he has Carol's member_left line too",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const m = pm.response.json().messages;",
+                  "pm.test('the newest is member_left Carol: ' + lineText(m[0]), () => pm.expect(isLine(m[0], 'member_left', 'carol', 'Carol')).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Alice kicks Bob (204)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/clans/{{clanId}}/members/{{bobId}}",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "clans",
+                "{{clanId}}",
+                "members",
+                "{{bobId}}"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "The owner removes a member. Social publishes clan.member_left with reason kicked: Realtime stores member_kicked (not member_left), sends it to the members who stay, and tells Bob with conversation.removed and clan_kicked."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Alice (200): member_kicked Bob on top",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return (j.messages || []).length > 0 && j.messages[0].kind === 'member_kicked'; })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const m = j.messages;",
+                  "  pm.test('six messages, newest first: ' + m.map(lineText).join(' | '), () => pm.expect(m).to.have.lengthOf(6));",
+                  "  pm.test('the newest is member_kicked with Bob as sender and an empty body (not member_left)', () => pm.expect(isLine(m[0], 'member_kicked', 'bob', 'Bob')).to.eql(true));",
+                  "  pm.test('the kick says who removed Bob: kickedBy is Alice, with her id and name', () => pm.expect(kickedBy(m[0], 'alice', 'Alice')).to.eql(true));",
+                  "  pm.test('the kick line has the message fields and kickedBy, nothing else', () => pm.expect(m[0]).to.have.all.keys(...KEYS, 'kickedBy'));",
+                  "  pm.test('under it, Carol\\'s member_left, which has no kickedBy', () => { pm.expect(isLine(m[1], 'member_left', 'carol', 'Carol')).to.eql(true); pm.expect(noKicker(m[1])).to.eql(true); });",
+                  "  pm.test('no other message has kickedBy', () => pm.expect(m.slice(1).every(noKicker)).to.eql(true));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Bob (200): the room left his list",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{bobToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return !room(j); })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  pm.test('Bob has no clan room any more', () => pm.expect(room(j)).to.be.undefined);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Alice (200): still unread 2, the kick is not a badge",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const r = room(pm.response.json());",
+                  "pm.test('lastMessage is the member_kicked line of Bob', () => pm.expect(isLine(r.lastMessage, 'member_kicked', 'bob', 'Bob')).to.eql(true));",
+                  "pm.test('and it says Alice removed him (kickedBy is in the conversation list too)', () => pm.expect(kickedBy(r.lastMessage, 'alice', 'Alice')).to.eql(true));",
+                  "pm.test('unread is still 2', () => pm.expect(r.unread).to.eql(2));",
+                  "pm.test('Alice is the only member', () => pm.expect(r.members.map(m => m.id)).to.eql([v('aliceId')]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8 Join again: the whole history",
+      "item": [
+        {
+          "name": "Carol joins the clan again (200)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/clans/{{clanId}}/join",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "clans",
+                "{{clanId}}",
+                "join"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "A player who left can join again. It is a new membership, so a new member_joined line is written."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Carol (200): the room is back, her new line is the last message",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return !!room(j); })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const r = room(j);",
+                  "  pm.test('the room is back with Alice and Carol', () => pm.expect(r.members.map(m => m.id)).to.eql([v('aliceId'), v('carolId')]));",
+                  "  pm.test('lastMessage is a new member_joined line of Carol: ' + lineText(r.lastMessage), () => pm.expect(isLine(r.lastMessage, 'member_joined', 'carol', 'Carol')).to.eql(true));",
+                  "  pm.test('a rejoiner starts with nothing unread, the texts she missed included', () => pm.expect(r.unread).to.eql(0));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Carol (200): the whole history, member lines in between",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Carol was away for the texts, the kick and her own leave. All of it is history for her now."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const m = pm.response.json().messages;",
+                  "pm.test('seven messages: ' + m.map(lineText).join(' | '), () => pm.expect(m).to.have.lengthOf(7));",
+                  "pm.test('kinds, newest first', () => pm.expect(m.map(x => x.kind)).to.eql(['member_joined', 'member_kicked', 'member_left', 'text', 'text', 'member_joined', 'member_joined']));",
+                  "pm.test('who, newest first', () => pm.expect(m.map(x => x.senderName)).to.eql(['Carol', 'Bob', 'Carol', 'Bob', 'Bob', 'Carol', 'Bob']));",
+                  "pm.test('member lines have an empty body, texts do not', () => m.forEach(x => pm.expect(x.body === '').to.eql(x.kind !== 'text')));",
+                  "pm.test('only the kick has kickedBy, and it is Alice', () => {",
+                  "  pm.expect(kickedBy(m[1], 'alice', 'Alice')).to.eql(true);",
+                  "  pm.expect(m.filter((x, i) => i !== 1).every(noKicker)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Alice (200): still unread 2 after the new join",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const r = room(pm.response.json());",
+                  "pm.test('lastMessage is the member_joined line of Carol', () => pm.expect(isLine(r.lastMessage, 'member_joined', 'carol', 'Carol')).to.eql(true));",
+                  "pm.test('unread is still 2', () => pm.expect(r.unread).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9 Redelivered events write no second line (needs RabbitMQ credentials)",
+      "item": [
+        {
+          "name": "Redeliver clan.member_joined for Carol with a new event ID (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{rabbitUrl}}/api/exchanges/%2F/socialkit.events/publish",
+              "host": [
+                "{{rabbitUrl}}"
+              ],
+              "path": [
+                "api",
+                "exchanges",
+                "%2F",
+                "socialkit.events",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPassword}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{payload}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Carol is a member already, so Realtime finds the membership and writes no second member_joined line. Needs rabbitUser and rabbitPassword (RABBITMQ_USER / RABBITMQ_PASSWORD of your .env)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const ev = { event_id: (pm.collectionVariables.set('dupEventId', pm.variables.replaceIn('{{$guid}}')), pm.collectionVariables.get('dupEventId')), type: 'clan.member_joined', occurred_at: new Date().toISOString(), game_id: v('gameId'),",
+                  "  data: { clan: { id: v('clanId'), name: 'Wolves' }, player: { id: v('carolId'), name: 'Carol' } } };",
+                  "pm.variables.set('payload', JSON.stringify({ properties: { content_type: 'application/json', delivery_mode: 2 }, routing_key: 'clan.member_joined', payload: JSON.stringify(ev), payload_encoding: 'string' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the exchange routed it to a queue', () => pm.expect(pm.response.json().routed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Deliver the same clan.member_joined event again, same event ID (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{rabbitUrl}}/api/exchanges/%2F/socialkit.events/publish",
+              "host": [
+                "{{rabbitUrl}}"
+              ],
+              "path": [
+                "api",
+                "exchanges",
+                "%2F",
+                "socialkit.events",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPassword}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{payload}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "A copy of an event Realtime handled before (delivery is at least once): it is skipped."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const ev = { event_id: pm.collectionVariables.get('dupEventId'), type: 'clan.member_joined', occurred_at: new Date().toISOString(), game_id: v('gameId'),",
+                  "  data: { clan: { id: v('clanId'), name: 'Wolves' }, player: { id: v('carolId'), name: 'Carol' } } };",
+                  "pm.variables.set('payload', JSON.stringify({ properties: { content_type: 'application/json', delivery_mode: 2 }, routing_key: 'clan.member_joined', payload: JSON.stringify(ev), payload_encoding: 'string' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the exchange routed it to a queue', () => pm.expect(pm.response.json().routed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Redeliver clan.member_left for Bob, who is not a member any more (200)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{rabbitUrl}}/api/exchanges/%2F/socialkit.events/publish",
+              "host": [
+                "{{rabbitUrl}}"
+              ],
+              "path": [
+                "api",
+                "exchanges",
+                "%2F",
+                "socialkit.events",
+                "publish"
+              ]
+            },
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{rabbitUser}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{rabbitPassword}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{payload}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Bob was kicked already. A leave of a player who is not in the room writes no line."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const ev = { event_id: (pm.collectionVariables.set('dupEventId', pm.variables.replaceIn('{{$guid}}')), pm.collectionVariables.get('dupEventId')), type: 'clan.member_left', occurred_at: new Date().toISOString(), game_id: v('gameId'),",
+                  "  data: { clan: { id: v('clanId'), name: 'Wolves' }, player: { id: v('bobId'), name: 'Bob' }, reason: 'left', kicked_by: null, new_owner: null } };",
+                  "pm.variables.set('payload', JSON.stringify({ properties: { content_type: 'application/json', delivery_mode: 2 }, routing_key: 'clan.member_left', payload: JSON.stringify(ev), payload_encoding: 'string' }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the exchange routed it to a queue', () => pm.expect(pm.response.json().routed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Carol leaves the clan again (204): the positive control",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{socialUrl}}/api/v1/clans/{{clanId}}/leave",
+              "host": [
+                "{{socialUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "clans",
+                "{{clanId}}",
+                "leave"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{carolToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Realtime handles events in order, so when this leave shows up as a line, the three events above were handled before it."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// let the redelivered events get there first",
+                  "const end = Date.now() + 1500; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "History - Alice (200): exactly one new line, from the real leave",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{aliceToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Needs the three redelivery requests above. Retries by itself (up to 8 times) while the event is still on its way."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// give the event a moment to travel: social -> rabbitmq -> realtime",
+                  "const wait = Number(pm.collectionVariables.get('tries') || 0) > 0 ? 700 : 400;",
+                  "const end = Date.now() + wait; while (Date.now() < end) {}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "const tries = Number(v('tries') || 0);",
+                  "const j = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const ready = (() => { return (j.messages || []).length > 0 && j.messages[0].kind === 'member_left'; })();",
+                  "if (!ready && tries < 8) {",
+                  "  pm.collectionVariables.set('tries', tries + 1);",
+                  "  postman.setNextRequest(pm.info.requestName); // ask again",
+                  "} else {",
+                  "  pm.collectionVariables.set('tries', 0);",
+                  "  pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "  const m = j.messages;",
+                  "  const count = (kind, name) => m.filter(x => x.kind === kind && x.senderName === name).length;",
+                  "  pm.test('eight messages in all, newest first: ' + m.map(lineText).join(' | '), () => pm.expect(m).to.have.lengthOf(8));",
+                  "  pm.test('the newest is the real leave of Carol', () => pm.expect(isLine(m[0], 'member_left', 'carol', 'Carol')).to.eql(true));",
+                  "  pm.test('Carol has two member_joined lines (the redelivered joins wrote none)', () => pm.expect(count('member_joined', 'Carol')).to.eql(2));",
+                  "  pm.test('Carol has two member_left lines', () => pm.expect(count('member_left', 'Carol')).to.eql(2));",
+                  "  pm.test('Bob has one member_joined and one member_kicked, and no member_left', () => { pm.expect(count('member_joined', 'Bob')).to.eql(1); pm.expect(count('member_kicked', 'Bob')).to.eql(1); pm.expect(count('member_left', 'Bob')).to.eql(0); });",
+                  "  pm.test('a leave has no kickedBy, and the redelivered events did not add one: only the one real kick has it', () => { pm.expect(noKicker(m[0])).to.eql(true); pm.expect(m.filter(x => 'kickedBy' in x)).to.have.lengthOf(1); });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10 Errors and security",
+      "item": [
+        {
+          "name": "History - Dave is not a member (403 not_member)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations/{{clanConvId}}/messages",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations",
+                "{{clanConvId}}",
+                "messages"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{daveToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "description": "Dave never joined the clan. The member lines are as private as any message of the room."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('the error code is not_member', () => pm.expect(pm.response.json().error.code).to.eql('not_member'));",
+                  "pm.test('no message, member line or anything else leaks', () => pm.expect(pm.response.text()).to.not.include('member_'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List conversations - Dave (200): no clan room",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{realtimeUrl}}/api/v1/conversations",
+              "host": [
+                "{{realtimeUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "conversations"
+              ]
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{daveToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const v = k => pm.collectionVariables.get(k);",
+                  "const room = j => (j.conversations || []).find(c => c.kind === 'clan' && c.clanId === v('clanId'));",
+                  "const KEYS = ['id', 'kind', 'senderId', 'senderName', 'body', 'createdAt'];",
+                  "// A member line: a message with that kind, the player as sender, and an empty body (the widget writes the sentence).",
+                  "const isLine = (m, kind, who, name) => !!m && m.kind === kind && m.senderId === v(who + 'Id') && m.senderName === name && m.body === '';",
+                  "const lineText = m => m ? m.kind + ' ' + m.senderName + (m.body ? ' \"' + m.body + '\"' : '') + (m.kickedBy ? ' by ' + m.kickedBy.name : '') : 'none';",
+                  "// Only a member_kicked line has kickedBy, and then it is { id, name }: who removed the player. No other message has the field, not even as null.",
+                  "const noKicker = m => !!m && !('kickedBy' in m);",
+                  "const kickedBy = (m, who, name) => !!m && !!m.kickedBy && m.kickedBy.id === v(who + 'Id') && m.kickedBy.name === name && Object.keys(m.kickedBy).length === 2;",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('Dave has no conversations at all', () => pm.expect(j.conversations).to.eql([]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "socialUrl",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "realtimeUrl",
+      "value": "http://localhost:8083"
+    },
+    {
+      "key": "wsUrl",
+      "value": "ws://localhost:8083"
+    },
+    {
+      "key": "devPassword",
+      "value": "correct horse"
+    },
+    {
+      "key": "devEmail",
+      "value": ""
+    },
+    {
+      "key": "devToken",
+      "value": ""
+    },
+    {
+      "key": "gameId",
+      "value": ""
+    },
+    {
+      "key": "apiKey",
+      "value": ""
+    },
+    {
+      "key": "aliceToken",
+      "value": ""
+    },
+    {
+      "key": "bobToken",
+      "value": ""
+    },
+    {
+      "key": "carolToken",
+      "value": ""
+    },
+    {
+      "key": "daveToken",
+      "value": ""
+    },
+    {
+      "key": "aliceId",
+      "value": ""
+    },
+    {
+      "key": "bobId",
+      "value": ""
+    },
+    {
+      "key": "carolId",
+      "value": ""
+    },
+    {
+      "key": "daveId",
+      "value": ""
+    },
+    {
+      "key": "clanId",
+      "value": ""
+    },
+    {
+      "key": "clanConvId",
+      "value": ""
+    },
+    {
+      "key": "rabbitUrl",
+      "value": "http://localhost:15672"
+    },
+    {
+      "key": "rabbitUser",
+      "value": ""
+    },
+    {
+      "key": "rabbitPassword",
+      "value": ""
+    },
+    {
+      "key": "dupEventId",
+      "value": ""
+    },
+    {
+      "key": "tries",
+      "value": "0"
+    }
+  ]
+}

@@ -31,6 +31,8 @@ const (
 	typeClanMemberJoined       = "clan.member_joined"
 	typeClanMemberLeft         = "clan.member_left"
 	typeClanDisbanded          = "clan.disbanded"
+	typeClanJoinRequested      = "clan.join_requested"
+	typeClanJoinDeclined       = "clan.join_request_declined"
 
 	// Realtime reads these two but has nothing to do for them: it stores neither the clan's name nor
 	// the members' roles, and the contract has no frame for either.
@@ -56,8 +58,10 @@ type Events interface {
 	PlayerUnblocked(ctx context.Context, gameID, blockerID, blockedID string) ([]service.Push, error)
 	ClanCreated(ctx context.Context, gameID, clanID string, owner service.Player) ([]service.Push, error)
 	ClanMemberJoined(ctx context.Context, gameID, clanID string, p service.Player) ([]service.Push, error)
-	ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool) ([]service.Push, error)
+	ClanMemberLeft(ctx context.Context, gameID, clanID, playerID string, kicked bool, by *service.Player) ([]service.Push, error)
 	ClanDisbanded(ctx context.Context, gameID, clanID string) ([]service.Push, error)
+	ClanJoinRequested(ctx context.Context, gameID, clanID, clanName, requestID string, p service.Player, managers []string) ([]service.Push, error)
+	ClanJoinRequestDeclined(ctx context.Context, gameID, clanID, clanName string, p service.Player) ([]service.Push, error)
 	// HandleOnce runs fn unless the event was handled before (handled is false), recording it in the
 	// same transaction as what fn stores. fn's error is returned as it is.
 	HandleOnce(ctx context.Context, gameID, eventID string, fn func(ctx context.Context) error) (handled bool, err error)
@@ -179,12 +183,29 @@ type clanMemberData struct {
 	Player playerData `json:"player"`
 }
 
-// clanMemberLeftData is the data of clan.member_left. kicked_by and new_owner are in the event too;
-// Realtime does not need them.
+// clanMemberLeftData is the data of clan.member_left. new_owner is in the event too; Realtime does not
+// need it. kicked_by is who removed the player: set with reason "kicked", otherwise null.
 type clanMemberLeftData struct {
+	Clan     clanRef     `json:"clan"`
+	Player   playerData  `json:"player"`
+	Reason   string      `json:"reason"` // "left" or "kicked"
+	KickedBy *playerData `json:"kicked_by"`
+}
+
+// clanJoinRequestedData is the data of clan.join_requested: a player asked to join a closed clan, and managers
+// are the IDs of the members who may decide on it (the owner and every role that may decide on requests).
+type clanJoinRequestedData struct {
+	Clan      clanRef    `json:"clan"`
+	Player    playerData `json:"player"`
+	RequestID string     `json:"request_id"`
+	Managers  []string   `json:"managers"`
+}
+
+// clanJoinDeclinedData is the data of clan.join_request_declined. declined_by is in the event too; Realtime
+// does not need it.
+type clanJoinDeclinedData struct {
 	Clan   clanRef    `json:"clan"`
 	Player playerData `json:"player"`
-	Reason string     `json:"reason"` // "left" or "kicked"
 }
 
 // clanDisbandedData is the data of clan.disbanded.
@@ -269,7 +290,8 @@ func handledOnce(typ string) bool {
 	switch typ {
 	case typeFriendRequestSent, typeFriendRequestCancelled, typeFriendRequestDeclined, typeFriendAccepted,
 		typeFriendRemoved, typePlayerRenamed, typePlayerBlocked, typePlayerUnblocked,
-		typeClanCreated, typeClanMemberJoined, typeClanMemberLeft, typeClanDisbanded:
+		typeClanCreated, typeClanMemberJoined, typeClanMemberLeft, typeClanDisbanded,
+		typeClanJoinRequested, typeClanJoinDeclined:
 		return true
 	}
 	return false
@@ -332,7 +354,24 @@ func (d *Dispatcher) store(ctx context.Context, env events.Event) ([]service.Pus
 		if err := decode(env.Data, &data); err != nil {
 			return nil, err
 		}
-		return d.events.ClanMemberLeft(ctx, env.GameID, data.Clan.ID, data.Player.ID, data.Reason == reasonKicked)
+		var by *service.Player
+		if data.KickedBy != nil {
+			p := player(*data.KickedBy)
+			by = &p
+		}
+		return d.events.ClanMemberLeft(ctx, env.GameID, data.Clan.ID, data.Player.ID, data.Reason == reasonKicked, by)
+	case typeClanJoinRequested:
+		var data clanJoinRequestedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.events.ClanJoinRequested(ctx, env.GameID, data.Clan.ID, data.Clan.Name, data.RequestID, player(data.Player), data.Managers)
+	case typeClanJoinDeclined:
+		var data clanJoinDeclinedData
+		if err := decode(env.Data, &data); err != nil {
+			return nil, err
+		}
+		return d.events.ClanJoinRequestDeclined(ctx, env.GameID, data.Clan.ID, data.Clan.Name, player(data.Player))
 	case typeClanDisbanded:
 		var data clanDisbandedData
 		if err := decode(env.Data, &data); err != nil {

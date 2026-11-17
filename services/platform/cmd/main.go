@@ -150,6 +150,7 @@ func run() error {
 	}
 	dashboardURL := strings.TrimRight(config.String("PLATFORM_DASHBOARD_URL", "http://localhost:5173"), "/")
 	svc.WithPasswordReset(resetMailer{sender: sender, log: log}, dashboardURL)
+	svc.WithInvites(inviteMailer{verificationMailer{sender: sender, log: log, dashboardURL: dashboardURL}})
 
 	// Email verification: with it on, registering creates the developer only after the 6-digit code
 	// from the email was entered. Off (the default), register creates the developer at once.

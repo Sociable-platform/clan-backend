@@ -77,8 +77,9 @@ paths:
         one direct-message conversation per friend and one for the caller's clan, if any.
         The list is not paged.
 
-        Each conversation carries its last message (null while empty), the number of unread messages
-        and the members with their online status (`online` stays true for 10 seconds after
+        Each conversation carries its last message (null while empty; in a clan room it can be a member
+        line, see `Message.kind`), the number of unread messages (text messages only) and the members
+        with their online status (`online` stays true for 10 seconds after
         a member closed their last WebSocket).
 
         The SDK calls this once after the WebSocket `hello` frame and then keeps the list up to date from
@@ -106,6 +107,7 @@ paths:
                         online: false
                     lastMessage:
                       id: 0193a6c0-1111-7222-8333-944455556666
+                      kind: text
                       senderId: 5a2b3c4d-1e2f-4a3b-8c9d-0e1f2a3b4c5d
                       senderName: Rashad
                       body: gg, again tomorrow?
@@ -118,7 +120,13 @@ paths:
                       - id: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
                         name: Ali
                         online: true
-                    lastMessage: null
+                    lastMessage:
+                      id: 0193a6bd-2222-7333-8444-555566667777
+                      kind: member_joined
+                      senderId: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+                      senderName: Ali
+                      body: ""
+                      createdAt: "2026-11-09T17:02:31Z"
                     unread: 0
         "401":
           $ref: "#/components/responses/Unauthorized"
@@ -181,11 +189,13 @@ paths:
               example:
                 messages:
                   - id: 0193a6c0-1111-7222-8333-944455556666
+                    kind: text
                     senderId: 5a2b3c4d-1e2f-4a3b-8c9d-0e1f2a3b4c5d
                     senderName: Rashad
                     body: gg, again tomorrow?
                     createdAt: "2026-11-09T18:20:00Z"
                   - id: 0193a6bf-aaaa-7bbb-8ccc-ddddeeeeffff
+                    kind: text
                     senderId: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
                     senderName: Ali
                     body: good match
@@ -299,21 +309,43 @@ components:
           description: Has at least one open WebSocket, or closed the last one less than 10 seconds ago (a page refresh does not flash offline).
     Message:
       type: object
-      required: [id, senderId, senderName, body, createdAt]
+      required: [id, kind, senderId, senderName, body, createdAt]
       properties:
         id:
           type: string
           format: uuid
           description: UUIDv7, so IDs sort in time order.
+        kind:
+          type: string
+          enum: [text, member_joined, member_left, member_kicked]
+          description: |
+            `text` is a message a player wrote. The others are member lines Realtime writes in a clan room
+            when a player joins, leaves or is kicked: `senderId` / `senderName` are that player, `body` is
+            empty, and the widget writes the sentence. Member lines never count as unread, and players
+            cannot send them (`message.send` always stores `text`). A client should skip a kind it does not know.
         senderId:
           type: string
           format: uuid
+          description: The sender; for a member line, the player who joined or left.
         senderName:
           type: string
           description: The sender's name when the message was sent; later renames do not change it.
         body:
           type: string
-          description: Plain text, after the game's profanity filter if it is on.
+          description: Plain text, after the game's profanity filter if it is on. Empty for a member line.
+        kickedBy:
+          type: object
+          description: |
+            Only on a `member_kicked` line, and only when Social's event said who removed the player: that
+            player (`id`, and the `name` they had at the time, like `senderName`). Every other message has no
+            `kickedBy` at all, not even as null. The widget can write "Ali was removed by Emma".
+          required: [id, name]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
         createdAt:
           type: string
           format: date-time

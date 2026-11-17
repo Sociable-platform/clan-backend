@@ -384,6 +384,7 @@ classDiagram
     }
     class Message {
         +string id
+        +string kind
         +string senderId
         +string senderName
         +string body

@@ -158,7 +158,7 @@ func (s *Service) SendMessage(ctx context.Context, from Sender, conversationID, 
 		return Sent{}, fmt.Errorf("send message: %w", err)
 	}
 	return Sent{
-		Message: Message{ID: id, SenderID: from.ID, SenderName: from.Name, Body: body, CreatedAt: at},
+		Message: Message{ID: id, Kind: MessageText, SenderID: from.ID, SenderName: from.Name, Body: body, CreatedAt: at},
 		Members: members,
 	}, nil
 }

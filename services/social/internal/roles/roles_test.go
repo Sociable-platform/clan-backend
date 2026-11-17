@@ -156,3 +156,59 @@ func TestAConfigChangeKeepsEveryoneAndOneOwner(t *testing.T) {
 		t.Fatal("a former co-leader now ranks as member and may not kick an equal")
 	}
 }
+
+// Requests to join a closed clan are decided by the owner and by a role that may remove members.
+func TestCanHandleRequests(t *testing.T) {
+	cases := []struct {
+		name string
+		m    Member
+		want bool
+	}{
+		{"the owner", owner, true},
+		{"a co-leader (may remove members)", coLeader, true},
+		{"an elder (may not)", elder, false},
+		{"a plain member", member, false},
+		{"the owner, whatever role id is stored", Member{RoleID: "boss", IsOwner: true}, true},
+		{"a stored id that is not in the config counts as the first role", Member{RoleID: "veteran"}, false},
+	}
+	for _, c := range cases {
+		if got := arena.CanHandleRequests(c.m); got != c.want {
+			t.Errorf("%s: CanHandleRequests = %v, want %v", c.name, got, c.want)
+		}
+	}
+	// While a game has published no roles, only the owner has the power (the default ladder is member and owner).
+	defaults := NewLadder(nil)
+	if !defaults.CanHandleRequests(owner) || defaults.CanHandleRequests(member) || defaults.CanHandleRequests(coLeader) {
+		t.Error("with the default roles only the owner may decide on requests")
+	}
+}
+
+// TEAM-300: a game chooses per role who decides on requests with canHandleRequests. A role the config says
+// nothing about keeps the rule above (canKick), so configs published before the field work as they did.
+func TestCanHandleRequestsFollowsTheConfig(t *testing.T) {
+	yes, no := true, false
+	ladder := NewLadder([]Role{
+		{ID: "member", Name: "Member", CanHandleRequests: &yes},                     // the lowest role may too
+		{ID: "elder", Name: "Elder"},                                                // says nothing, no canKick
+		{ID: "veteran", Name: "Veteran", CanKick: true},                             // says nothing, canKick
+		{ID: "co-leader", Name: "Co-leader", CanKick: true, CanHandleRequests: &no}, // kicks, but not this
+		{ID: "leader", Name: "Leader", CanPromote: true, CanKick: true, CanHandleRequests: &no},
+	})
+	cases := []struct {
+		name string
+		m    Member
+		want bool
+	}{
+		{"the lowest role, given the power", Member{PlayerID: "p1", RoleID: "member"}, true},
+		{"a role without the field and without canKick", Member{PlayerID: "p2", RoleID: "elder"}, false},
+		{"a role without the field, with canKick", Member{PlayerID: "p3", RoleID: "veteran"}, true},
+		{"a kicking role the game kept out of requests", Member{PlayerID: "p4", RoleID: "co-leader"}, false},
+		{"the owner, even when the owner's role says no", owner, true},
+		{"an unknown stored id counts as the first role", Member{PlayerID: "p5", RoleID: "gone"}, true},
+	}
+	for _, c := range cases {
+		if got := ladder.CanHandleRequests(c.m); got != c.want {
+			t.Errorf("%s: CanHandleRequests = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

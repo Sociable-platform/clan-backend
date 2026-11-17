@@ -60,7 +60,53 @@ func (f fakeService) RenameClan(context.Context, string, string, string, string)
 	return service.Clan{}, f.err
 }
 
+func (f fakeService) SetJoinPolicy(context.Context, string, string, string, string) (service.Clan, error) {
+	return service.Clan{}, f.err
+}
+
+func (f fakeService) RequestJoin(context.Context, string, string, string, string) (service.JoinRequest, error) {
+	return service.JoinRequest{}, f.err
+}
+
+func (f fakeService) CancelJoinRequest(context.Context, string, string, string) error { return f.err }
+
+func (f fakeService) ListJoinRequests(context.Context, string, string, string) ([]service.JoinRequest, error) {
+	return nil, f.err
+}
+
+func (f fakeService) AcceptJoinRequest(context.Context, string, string, string, string) error {
+	return f.err
+}
+
+func (f fakeService) DeclineJoinRequest(context.Context, string, string, string, string) error {
+	return f.err
+}
+
 func (s *recordingService) LeaveClan(context.Context, string, string, string) error { return s.err }
+
+func (s *recordingService) SetJoinPolicy(context.Context, string, string, string, string) (service.Clan, error) {
+	return service.Clan{}, s.err
+}
+
+func (s *recordingService) RequestJoin(context.Context, string, string, string, string) (service.JoinRequest, error) {
+	return service.JoinRequest{}, s.err
+}
+
+func (s *recordingService) CancelJoinRequest(context.Context, string, string, string) error {
+	return s.err
+}
+
+func (s *recordingService) ListJoinRequests(context.Context, string, string, string) ([]service.JoinRequest, error) {
+	return nil, s.err
+}
+
+func (s *recordingService) AcceptJoinRequest(context.Context, string, string, string, string) error {
+	return s.err
+}
+
+func (s *recordingService) DeclineJoinRequest(context.Context, string, string, string, string) error {
+	return s.err
+}
 
 func (s *recordingService) KickMember(context.Context, string, string, string, string) error {
 	return s.err
@@ -128,16 +174,16 @@ func callClans(t *testing.T, svc Service, rawQuery string) *httptest.ResponseRec
 }
 
 func TestListClansUsesGameFromTokenAndQFromURL(t *testing.T) {
-	svc := &clanService{clans: []service.Clan{{ID: "c-1", Name: "Wolves", MemberCount: 3, MaxMembers: 10}}}
+	svc := &clanService{clans: []service.Clan{{ID: "c-1", Name: "Wolves", MemberCount: 3, MaxMembers: 10, JoinPolicy: "open"}}}
 	// a game_id in the URL must be ignored: only the token decides the game
 	rec := callClans(t, svc, "?q="+url.QueryEscape("Wol f")+"&game_id=99999999-9999-4999-8999-999999999999")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
 	}
-	if svc.gameID != tokenGame || svc.in != (service.ListClansInput{Query: "Wol f"}) {
+	if svc.gameID != tokenGame || svc.in != (service.ListClansInput{Query: "Wol f", ViewerExternalID: "u_42"}) {
 		t.Fatalf("service got game=%q in=%+v", svc.gameID, svc.in)
 	}
-	want := `{"clans":[{"id":"c-1","name":"Wolves","memberCount":3,"maxMembers":10}]}`
+	want := `{"clans":[{"id":"c-1","name":"Wolves","memberCount":3,"maxMembers":10,"joinPolicy":"open"}]}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("body\n got %s\nwant %s", got, want)
 	}
@@ -190,6 +236,7 @@ func (s *creatingService) CreateClan(_ context.Context, gameID, externalID, play
 		Badge:       in.Badge,
 		MemberCount: 1,
 		MaxMembers:  10,
+		JoinPolicy:  "open",
 	}, nil
 }
 
@@ -224,7 +271,7 @@ func TestCreateClanReturns201WithTheClan(t *testing.T) {
 		t.Fatalf("service got game=%q player=%q name=%q clan=%q; want the token's game and player, and the body's name",
 			svc.gameID, svc.externalID, svc.playerName, svc.in.Name)
 	}
-	want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10}`
+	want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10,"joinPolicy":"open"}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("body\n got %s\nwant %s", got, want)
 	}
@@ -290,7 +337,7 @@ func (s *joiningService) JoinClan(_ context.Context, gameID, externalID, playerN
 	if s.err != nil {
 		return service.Clan{}, s.err
 	}
-	return service.Clan{ID: clanID, Name: "Wolves", MemberCount: 2, MaxMembers: 10}, nil
+	return service.Clan{ID: clanID, Name: "Wolves", MemberCount: 2, MaxMembers: 10, JoinPolicy: "open"}, nil
 }
 
 // postJoin sends POST path with a real player token for tokenGame, unless noToken is set.
@@ -324,7 +371,7 @@ func TestJoinClanReturns200WithTheClan(t *testing.T) {
 		t.Fatalf("service got game=%q player=%q name=%q clan=%q; want the token's game and player, and the URL's clan",
 			svc.gameID, svc.externalID, svc.playerName, svc.clanID)
 	}
-	want := `{"id":"` + joinClanID + `","name":"Wolves","memberCount":2,"maxMembers":10}`
+	want := `{"id":"` + joinClanID + `","name":"Wolves","memberCount":2,"maxMembers":10,"joinPolicy":"open"}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("body\n got %s\nwant %s", got, want)
 	}
@@ -446,7 +493,7 @@ func (s *readingService) MyClan(_ context.Context, gameID, externalID string) (s
 	if s.err != nil {
 		return service.PlayerClan{}, s.err
 	}
-	return service.PlayerClan{Clan: service.Clan{ID: joinClanID, Name: "Wolves", MemberCount: 2, MaxMembers: 10}, Role: "owner"}, nil
+	return service.PlayerClan{Clan: service.Clan{ID: joinClanID, Name: "Wolves", MemberCount: 2, MaxMembers: 10, JoinPolicy: "open"}, Role: "owner"}, nil
 }
 
 func (s *readingService) ListMembers(_ context.Context, gameID, clanID string) ([]service.Member, error) {
@@ -470,7 +517,7 @@ func TestGetMyClan(t *testing.T) {
 	if svc.gameID != tokenGame || svc.externalID != "u_42" {
 		t.Fatalf("service got game=%q player=%q, want the token's", svc.gameID, svc.externalID)
 	}
-	want := `{"clan":{"id":"` + joinClanID + `","name":"Wolves","memberCount":2,"maxMembers":10},"role":"owner"}`
+	want := `{"clan":{"id":"` + joinClanID + `","name":"Wolves","memberCount":2,"maxMembers":10,"joinPolicy":"open"},"role":"owner"}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("body\n got %s\nwant %s", got, want)
 	}
@@ -522,13 +569,13 @@ func TestListClansPassesLimitSortAndHasSpace(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
 	}
-	want := service.ListClansInput{Limit: "3", Sort: "members", HasSpace: "true"}
+	want := service.ListClansInput{Limit: "3", Sort: "members", HasSpace: "true", ViewerExternalID: "u_42"}
 	if svc.in != want {
 		t.Fatalf("service got %+v, want %+v", svc.in, want)
 	}
 
 	callClans(t, svc, "?q=nova")
-	if svc.in != (service.ListClansInput{Query: "nova"}) {
+	if svc.in != (service.ListClansInput{Query: "nova", ViewerExternalID: "u_42"}) {
 		t.Fatalf("a search alone must not set the other options, got %+v", svc.in)
 	}
 }
@@ -553,7 +600,7 @@ func TestCreateClanPassesTheDescriptionAndBadge(t *testing.T) {
 	if svc.in.Description != "Casual farmers" || svc.in.Badge != "wolf" {
 		t.Fatalf("service got %+v; want the body's description and badge", svc.in)
 	}
-	want := `{"id":"c-9","name":"Wolves","description":"Casual farmers","badge":"wolf","memberCount":1,"maxMembers":10}`
+	want := `{"id":"c-9","name":"Wolves","description":"Casual farmers","badge":"wolf","memberCount":1,"maxMembers":10,"joinPolicy":"open"}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("body\n got %s\nwant %s", got, want)
 	}
@@ -569,7 +616,7 @@ func TestCreateClanIgnoresATag(t *testing.T) {
 			if rec.Code != http.StatusCreated {
 				t.Fatalf("status %d, body %s; want 201", rec.Code, rec.Body.String())
 			}
-			want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10}`
+			want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10,"joinPolicy":"open"}`
 			if got := strings.TrimSpace(rec.Body.String()); got != want {
 				t.Fatalf("body\n got %s\nwant %s", got, want)
 			}
@@ -582,7 +629,7 @@ func TestCreateClanIgnoresATag(t *testing.T) {
 func TestCreateClanWithoutTheOptionalFieldsLeavesThemOut(t *testing.T) {
 	svc := &creatingService{}
 	rec := postClan(t, svc, `{"name":"Wolves"}`, false)
-	want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10}`
+	want := `{"id":"c-9","name":"Wolves","memberCount":1,"maxMembers":10,"joinPolicy":"open"}`
 	if got := strings.TrimSpace(rec.Body.String()); got != want {
 		t.Fatalf("body\n got %s\nwant %s", got, want)
 	}

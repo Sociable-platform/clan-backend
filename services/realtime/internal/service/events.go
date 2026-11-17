@@ -36,6 +36,7 @@ const (
 	frameConversationRemoved = "conversation.removed"
 	frameConversationUpdated = "conversation.updated"
 	framePresenceUpdate      = "presence.update"
+	frameMessageNew          = "message.new"
 
 	kindDM   = "dm"
 	kindClan = "clan"
@@ -80,11 +81,24 @@ type ConversationMember struct {
 // Message is a chat message as the SDK sees it.
 type Message struct {
 	ID         string    `json:"id"`
-	SenderID   string    `json:"senderId"`
+	Kind       string    `json:"kind"`     // MessageText, or a member line: MessageMemberJoined, MessageMemberLeft, MessageMemberKicked
+	SenderID   string    `json:"senderId"` // for a member line, the player who joined or left
 	SenderName string    `json:"senderName"`
-	Body       string    `json:"body"`
+	Body       string    `json:"body"` // empty for a member line: the widget writes the sentence
 	CreatedAt  time.Time `json:"createdAt"`
+	// KickedBy is who removed the player, on a MessageMemberKicked line when the event said who. Every
+	// other message has no kickedBy at all. The name is the one they had at the time, like SenderName.
+	KickedBy *playerRef `json:"kickedBy,omitempty"`
 }
+
+// The kinds of a Message (openapi/realtime.yaml). Players write MessageText; Realtime writes the
+// member lines in a clan room when a player joins, leaves or is kicked. Member lines are never unread.
+const (
+	MessageText         = "text"
+	MessageMemberJoined = "member_joined"
+	MessageMemberLeft   = "member_left"
+	MessageMemberKicked = "member_kicked"
+)
 
 type notificationData struct {
 	Kind    string `json:"kind"`
@@ -330,9 +344,7 @@ func (s *Service) dmConversation(gameID string, dm repository.DM, a, b Player, u
 		Unread:   unread,
 		ReadOnly: dm.ReadOnly,
 	}
-	if m := dm.LastMessage; m != nil {
-		c.LastMessage = &Message{ID: m.ID, SenderID: m.SenderID, SenderName: m.SenderName, Body: m.Body, CreatedAt: m.CreatedAt.UTC()}
-	}
+	c.LastMessage = toMessage(dm.LastMessage)
 	return c
 }
 

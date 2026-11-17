@@ -32,7 +32,7 @@ func (s *renamingService) RenameClan(_ context.Context, gameID, externalID, clan
 	if s.err != nil {
 		return service.Clan{}, s.err
 	}
-	return service.Clan{ID: clanID, Name: name, MemberCount: 4, MaxMembers: 10}, nil
+	return service.Clan{ID: clanID, Name: name, MemberCount: 4, MaxMembers: 10, JoinPolicy: "open"}, nil
 }
 
 // sendRename sends method path with body and a real player token for tokenGame, unless noToken.
@@ -70,7 +70,7 @@ func TestRenameClanReturns200WithTheClan(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if want := (clanResponse{ID: joinClanID, Name: "Grey Wolves", MemberCount: 4, MaxMembers: 10}); got != want {
+	if want := (clanResponse{ID: joinClanID, Name: "Grey Wolves", MemberCount: 4, MaxMembers: 10, JoinPolicy: "open"}); got != want {
 		t.Fatalf("body %+v, want %+v", got, want)
 	}
 }

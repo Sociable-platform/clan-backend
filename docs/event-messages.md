@@ -232,6 +232,62 @@
 }
 ```
 
+## clan.join_requested
+
+A player asked to join a closed clan. `managers` are the IDs of the members who may decide on it: the owner and every
+role with `canHandleRequests` (`canKick` when the config does not say). Social lists them because Realtime knows no roles.
+
+```json
+{
+  "event_id": "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+  "type": "clan.join_requested",
+  "occurred_at": "2026-11-17T09:12:00.000Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "clan": {
+      "id": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "name": "Wolves"
+    },
+    "player": {
+      "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "name": "Bob"
+    },
+    "request_id": "8c1f4d2a-5b6e-4f70-9a81-b2c3d4e5f607",
+    "managers": [
+      "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+      "2c33a1b2-c3d4-4e5f-8061-728394a5b6c7"
+    ]
+  }
+}
+```
+
+## clan.join_request_declined
+
+A leader declined the request. An accepted request is a `clan.member_joined`. Taking a request back publishes nothing.
+
+```json
+{
+  "event_id": "0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d",
+  "type": "clan.join_request_declined",
+  "occurred_at": "2026-11-17T09:20:00.000Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "clan": {
+      "id": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "name": "Wolves"
+    },
+    "player": {
+      "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "name": "Bob"
+    },
+    "declined_by": {
+      "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+      "name": "Alice"
+    }
+  }
+}
+```
+
 ## clan.member_role_changed
 
 ```json
@@ -392,6 +448,7 @@
       ],
       "lastMessage": {
         "id": "0193a6b8-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "kind": "text",
         "senderId": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
         "senderName": "Alice",
         "body": "Wolves practice tonight at 8",
@@ -472,6 +529,47 @@
 }
 ```
 
+## notification clan_join_request: to the clan's leaders (clan.join_requested)
+
+```json
+{
+  "event_id": "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a",
+  "type": "notification",
+  "occurred_at": "2026-11-17T09:12:00.000Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "kind": "clan_join_request",
+    "payload": {
+      "clanId": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "clanName": "Wolves",
+      "requestId": "8c1f4d2a-5b6e-4f70-9a81-b2c3d4e5f607",
+      "player": {
+        "id": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+        "name": "Bob"
+      }
+    }
+  }
+}
+```
+
+## notification clan_join_declined: to the player who asked (clan.join_request_declined)
+
+```json
+{
+  "event_id": "9e8d7c6b-5a4f-4e3d-a2c1-b0a9f8e7d6c5",
+  "type": "notification",
+  "occurred_at": "2026-11-17T09:20:00.000Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "kind": "clan_join_declined",
+    "payload": {
+      "clanId": "3b0c4d5e-6f70-4812-9a3b-4c5d6e7f8091",
+      "clanName": "Wolves"
+    }
+  }
+}
+```
+
 ## message.send: client to server, clan chat (frames the client sends have no envelope)
 
 ```json
@@ -513,10 +611,65 @@
     "conversationId": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
     "message": {
       "id": "0193a6c0-1111-7222-8333-944455556666",
+      "kind": "text",
       "senderId": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
       "senderName": "Alice",
       "body": "See you at 8",
       "createdAt": "2026-11-10T09:45:12.314Z"
+    }
+  }
+}
+```
+
+## message.new: a member line in the clan room (clan.member_joined, clan.member_left)
+
+When a player joins, Realtime stores a `member_joined` line and sends it to every member, the joiner included.
+When a player leaves or is kicked, the line is `member_left` or `member_kicked` and goes to the members who stay.
+`senderId` / `senderName` are the player who joined or left, and `body` is empty: the widget writes the sentence.
+A `member_kicked` line also has `kickedBy` (`{ id, name }`), the player who removed them, when the event says who
+(`kicked_by` of `clan.member_left`); no other message has the field. A member line is never unread.
+
+```json
+{
+  "event_id": "5b7e0f6c-2a4d-4e1b-9c3f-8d6a1e2b4c70",
+  "type": "message.new",
+  "occurred_at": "2026-11-10T09:43:10.455Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "conversationId": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
+    "message": {
+      "id": "0193a6bd-2222-7333-8444-555566667777",
+      "kind": "member_joined",
+      "senderId": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "senderName": "Bob",
+      "body": "",
+      "createdAt": "2026-11-10T09:43:10.461Z"
+    }
+  }
+}
+```
+
+## message.new: a member_kicked line with who removed the player (clan.member_left with reason kicked)
+
+```json
+{
+  "event_id": "9e2a7d41-6c58-4b0e-a3f9-1d7c5b8e2f64",
+  "type": "message.new",
+  "occurred_at": "2026-11-10T09:50:02.118Z",
+  "game_id": "11111111-1111-4111-8111-111111111111",
+  "data": {
+    "conversationId": "0193a6b9-0000-7aaa-8bbb-ccccddddeeee",
+    "message": {
+      "id": "0193a6c3-4444-7555-8666-777788889999",
+      "kind": "member_kicked",
+      "senderId": "7d2f9e10-3b4c-4d5e-8f60-718293a4b5c6",
+      "senderName": "Bob",
+      "body": "",
+      "createdAt": "2026-11-10T09:50:02.121Z",
+      "kickedBy": {
+        "id": "c1a2f3b4-5d6e-4f70-8a91-b2c3d4e5f607",
+        "name": "Alice"
+      }
     }
   }
 }

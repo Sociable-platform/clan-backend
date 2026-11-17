@@ -30,7 +30,7 @@ func (f *fakeStore) SetAllowedOrigins(_ context.Context, gameID, developerID str
 		return repository.Game{}, f.err
 	}
 	for i, g := range f.games {
-		if g.ID == gameID && g.DeveloperID == developerID {
+		if g.ID == gameID && f.team(gameID)[developerID] == repository.RoleOwner {
 			f.games[i].AllowedOrigins = origins
 			return f.games[i], nil
 		}

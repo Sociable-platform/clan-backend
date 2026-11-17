@@ -82,6 +82,29 @@ func TestRulesOfAPublishedConfig(t *testing.T) {
 	}
 }
 
+// canHandleRequests is optional: true and false are kept, a role without it reads as nil (Social then
+// follows canKick; see roles.Ladder.CanHandleRequests).
+func TestRolesKeepCanHandleRequests(t *testing.T) {
+	body := `{"version":4,"config":{"schemaVersion":1,"clan":{"maxMembers":30,"roles":[` +
+		`{"id":"member","name":"Member","canPromote":false,"canKick":false,"canHandleRequests":true},` +
+		`{"id":"elder","name":"Elder","canPromote":false,"canKick":true},` +
+		`{"id":"leader","name":"Leader","canPromote":true,"canKick":true,"canHandleRequests":false}]}}}`
+	c, _, _, _ := newClient(t, http.StatusOK, body)
+	got := c.Rules(context.Background(), game).Roles
+	if len(got) != 3 {
+		t.Fatalf("roles = %+v, want 3", got)
+	}
+	if got[0].CanHandleRequests == nil || !*got[0].CanHandleRequests {
+		t.Errorf("member: CanHandleRequests = %v, want true", got[0].CanHandleRequests)
+	}
+	if got[1].CanHandleRequests != nil {
+		t.Errorf("elder: CanHandleRequests = %v, want nil (not in the config)", *got[1].CanHandleRequests)
+	}
+	if got[2].CanHandleRequests == nil || *got[2].CanHandleRequests {
+		t.Errorf("leader: CanHandleRequests = %v, want false", got[2].CanHandleRequests)
+	}
+}
+
 func TestNotPublishedGivesTheDefaults(t *testing.T) {
 	c, _, _, logs := newClient(t, http.StatusNotFound,
 		`{"error":{"code":"widget_not_published","message":"This game has no published widget yet"}}`)

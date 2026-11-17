@@ -18,10 +18,12 @@ type Member struct {
 // Message is a row of the messages table.
 type Message struct {
 	ID         string
-	SenderID   string
+	Kind       string // "text", or a member line: "member_joined", "member_left", "member_kicked"
+	SenderID   string // for a member line, the player who joined or left
 	SenderName string
-	Body       string
+	Body       string // empty for a member line
 	CreatedAt  time.Time
+	KickedBy   *Member // on a member_kicked line, who removed the player; nil when the event did not say
 }
 
 // DM is a direct-message conversation after UpsertDM or MakeDMReadOnly.
@@ -214,23 +216,34 @@ type queryer interface {
 
 func lastMessage(ctx context.Context, q queryer, gameID, conversationID string) (*Message, error) {
 	var m Message
+	var byID, byName *string
 	err := q.QueryRow(ctx, `
-		SELECT id, sender_id, sender_name, body, created_at
+		SELECT id, kind, sender_id, sender_name, body, created_at, kicked_by_id, kicked_by_name
 		FROM messages
 		WHERE game_id = $1 AND conversation_id = $2
 		ORDER BY id DESC
-		LIMIT 1`, gameID, conversationID).Scan(&m.ID, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt)
+		LIMIT 1`, gameID, conversationID).Scan(&m.ID, &m.Kind, &m.SenderID, &m.SenderName, &m.Body, &m.CreatedAt, &byID, &byName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load last message: %w", err)
 	}
+	m.KickedBy = kickedBy(byID, byName)
 	return &m, nil
 }
 
+// kickedBy builds Message.KickedBy from the two nullable columns; they are NULL together.
+func kickedBy(id, name *string) *Member {
+	if id == nil || name == nil {
+		return nil
+	}
+	return &Member{PlayerID: *id, Name: *name}
+}
+
 // unreadCounts returns, for every member, how many messages from other players come after the
-// member's last read message. Counting stops at maxUnread.
+// member's last read message. Counting stops at maxUnread. Member lines (a join or a leave) are not
+// counted: only kind "text".
 func unreadCounts(ctx context.Context, q queryer, gameID, conversationID string) (map[string]int, error) {
 	rows, err := q.Query(ctx, `
 		SELECT cm.player_id,
@@ -238,6 +251,7 @@ func unreadCounts(ctx context.Context, q queryer, gameID, conversationID string)
 		            SELECT 1 FROM messages m
 		            WHERE m.game_id = cm.game_id
 		              AND m.conversation_id = cm.conversation_id
+		              AND m.kind = 'text'
 		              AND m.sender_id <> cm.player_id
 		              AND (cm.last_read_message_id IS NULL OR m.id > cm.last_read_message_id)
 		            LIMIT $3) unread)

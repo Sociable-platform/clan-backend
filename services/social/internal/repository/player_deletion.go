@@ -91,6 +91,9 @@ func (r *Repository) DeletePlayer(ctx context.Context, gameID, externalID, delet
 	if res.Blocks, err = dropBlocks(ctx, tx, gameID, res.Player.ID); err != nil {
 		return PlayerDeletion{}, fmt.Errorf("delete player: %w", err)
 	}
+	if err := dropJoinRequests(ctx, tx, gameID, res.Player.ID); err != nil {
+		return PlayerDeletion{}, fmt.Errorf("delete player: %w", err)
+	}
 
 	_, err = tx.Exec(ctx,
 		`update players set display_name = $2, deleted_at = now() where id = $1`,

@@ -14,6 +14,14 @@ type ClanRoom struct {
 	Members        []Member       // every member, the one who just joined included, in the order they joined
 	LastMessage    *Message       // the newest message; nil while nobody has written
 	Unread         map[string]int // player ID -> unread messages (at most 99), for every member
+	Joined         bool           // the player became a member in this call; false when they already were one
+}
+
+// ClanLeave is what LeaveClanRoom did.
+type ClanLeave struct {
+	ConversationID string
+	Left           bool   // the player was a member and is not any more; false when they were not one
+	Name           string // the name the player had in the room; set when Left
 }
 
 // JoinClanRoom makes sure the clan has its conversation in the game and that the player is a member
@@ -21,7 +29,8 @@ type ClanRoom struct {
 // use it, so a joiner whose clan.created was never seen still gets the room.
 //
 // It can run any number of times for the same player: the second run changes nothing (except a
-// renamed player's name). The messages of the room stay as long as the clan does, so a player who
+// renamed player's name) and reports Joined = false, so the caller writes one "joined" line per
+// real join. The messages of the room stay as long as the clan does, so a player who
 // joins (or left and joins again) gets the whole history, also what was written while they were
 // away. A new member starts with the newest message as their read position: what was written before
 // they joined is history, not unread, so the SDK shows no "New messages" line and no unread count.
@@ -47,12 +56,14 @@ func (r *Repository) JoinClanRoom(ctx context.Context, gameID, clanID string, m 
 	}
 
 	// A new member has read up to the newest message (NULL in an empty room). A member who is there
-	// already keeps their joined_at and read position.
-	_, err = tx.Exec(ctx, `
+	// already keeps their joined_at and read position. xmax is 0 only on a row this statement
+	// inserted; an updated row has the updating transaction's ID there.
+	err = tx.QueryRow(ctx, `
 		INSERT INTO conversation_members (conversation_id, game_id, player_id, display_name, last_read_message_id)
 		VALUES ($1, $2, $3, $4, (SELECT id FROM messages WHERE game_id = $2 AND conversation_id = $1 ORDER BY id DESC LIMIT 1))
-		ON CONFLICT (conversation_id, player_id) DO UPDATE SET display_name = EXCLUDED.display_name`,
-		room.ConversationID, gameID, m.PlayerID, m.Name)
+		ON CONFLICT (conversation_id, player_id) DO UPDATE SET display_name = EXCLUDED.display_name
+		RETURNING xmax = 0`,
+		room.ConversationID, gameID, m.PlayerID, m.Name).Scan(&room.Joined)
 	if err != nil {
 		return ClanRoom{}, fmt.Errorf("upsert clan member: %w", err)
 	}
@@ -74,13 +85,14 @@ func (r *Repository) JoinClanRoom(ctx context.Context, gameID, clanID string, m 
 
 // LeaveClanRoom deletes the player's membership of the clan's conversation. The conversation and
 // its messages stay for the members who are still there (and for the player, should they join
-// again). It returns the conversation's ID, or found = false when the game has no conversation
-// for the clan. Running it again, or for a player who was not a member, changes nothing and still
-// reports the conversation.
-func (r *Repository) LeaveClanRoom(ctx context.Context, gameID, clanID, playerID string) (conversationID string, found bool, err error) {
+// again). found is false when the game has no conversation for the clan. Running it again, or for a
+// player who was not a member, changes nothing, still reports the conversation and has Left = false,
+// so the caller writes one "left" line per real leave.
+func (r *Repository) LeaveClanRoom(ctx context.Context, gameID, clanID, playerID string) (leave ClanLeave, found bool, err error) {
 	if r.pool == nil {
-		return "", false, ErrNoDatabase
+		return ClanLeave{}, false, ErrNoDatabase
 	}
+	var name *string
 	err = r.db(ctx).QueryRow(ctx, `
 		WITH room AS (
 		    SELECT id FROM conversations
@@ -88,15 +100,19 @@ func (r *Repository) LeaveClanRoom(ctx context.Context, gameID, clanID, playerID
 		gone AS (
 		    DELETE FROM conversation_members cm
 		    USING room
-		    WHERE cm.game_id = $1 AND cm.conversation_id = room.id AND cm.player_id = $3)
-		SELECT id FROM room`, gameID, clanID, playerID).Scan(&conversationID)
+		    WHERE cm.game_id = $1 AND cm.conversation_id = room.id AND cm.player_id = $3
+		    RETURNING cm.display_name)
+		SELECT room.id, (SELECT display_name FROM gone) FROM room`, gameID, clanID, playerID).Scan(&leave.ConversationID, &name)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
+		return ClanLeave{}, false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("leave clan room: %w", err)
+		return ClanLeave{}, false, fmt.Errorf("leave clan room: %w", err)
 	}
-	return conversationID, true, nil
+	if name != nil {
+		leave.Left, leave.Name = true, *name
+	}
+	return leave, true, nil
 }
 
 // DeleteClanRoom deletes the clan's conversation with its members and messages, and returns the

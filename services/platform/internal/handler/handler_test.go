@@ -48,6 +48,25 @@ type fakeService struct {
 
 	registerGame func(developerID string, in service.RegisterGameInput) (service.Game, error)
 	listGames    func(developerID string) ([]service.Game, error)
+	// memberGame decides whether a developer belongs to a game (requireGameMember); nil means every developer
+	// belongs to every game, so the tests of the endpoints themselves need not set it. The membership tests do.
+	memberGame func(developerID, gameID string) (service.Game, error)
+	// gameMembers answers GET /games/{id}/members.
+	gameMembers func(developerID, gameID string) ([]service.GameMember, error)
+
+	removeGameMember  func(developerID, gameID, memberID string) error
+	leaveGame         func(developerID, gameID string) error
+	setMemberRole     func(developerID, gameID, memberID, role string) (service.GameMember, error)
+	transferOwnership func(developerID, gameID, toID string) (service.Game, error)
+	adminGameDetail   func(gameID string) (service.AdminGameDetail, error)
+	adminTeamLog      func(gameID string, limit int, cursor string) (service.TeamLogPage, error)
+
+	inviteToGame     func(developerID, gameID, email string) (service.GameInvite, error)
+	gameInvites      func(developerID, gameID string) ([]service.GameInvite, error)
+	cancelGameInvite func(developerID, gameID, inviteID string) error
+	myInvites        func(developerID string) ([]service.GameInvite, error)
+	acceptInvite     func(developerID, inviteID string) (service.Game, error)
+	declineInvite    func(developerID, inviteID string) error
 
 	createAPIKey func(developerID, gameID string) (service.NewAPIKey, error)
 	listAPIKeys  func(developerID, gameID string) ([]service.APIKey, error)
@@ -208,6 +227,65 @@ func (f fakeService) RegisterGame(_ context.Context, developerID string, in serv
 
 func (f fakeService) ListGames(_ context.Context, developerID string) ([]service.Game, error) {
 	return f.listGames(developerID)
+}
+
+func (f fakeService) MemberGame(_ context.Context, developerID, gameID string) (service.Game, error) {
+	if f.memberGame == nil {
+		return service.Game{ID: gameID, Role: "owner"}, nil
+	}
+	return f.memberGame(developerID, gameID)
+}
+
+func (f fakeService) GameMembers(_ context.Context, developerID, gameID string) ([]service.GameMember, error) {
+	return f.gameMembers(developerID, gameID)
+}
+
+func (f fakeService) RemoveGameMember(_ context.Context, developerID, gameID, memberID string) error {
+	return f.removeGameMember(developerID, gameID, memberID)
+}
+
+func (f fakeService) LeaveGame(_ context.Context, developerID, gameID string) error {
+	return f.leaveGame(developerID, gameID)
+}
+
+func (f fakeService) SetMemberRole(_ context.Context, developerID, gameID, memberID, role string) (service.GameMember, error) {
+	return f.setMemberRole(developerID, gameID, memberID, role)
+}
+
+func (f fakeService) TransferOwnership(_ context.Context, developerID, gameID, toID string) (service.Game, error) {
+	return f.transferOwnership(developerID, gameID, toID)
+}
+
+func (f fakeService) AdminTeamLog(_ context.Context, gameID string, limit int, cursor string) (service.TeamLogPage, error) {
+	return f.adminTeamLog(gameID, limit, cursor)
+}
+
+func (f fakeService) AdminGameDetail(_ context.Context, gameID string) (service.AdminGameDetail, error) {
+	return f.adminGameDetail(gameID)
+}
+
+func (f fakeService) InviteToGame(_ context.Context, developerID, gameID, email string) (service.GameInvite, error) {
+	return f.inviteToGame(developerID, gameID, email)
+}
+
+func (f fakeService) GameInvites(_ context.Context, developerID, gameID string) ([]service.GameInvite, error) {
+	return f.gameInvites(developerID, gameID)
+}
+
+func (f fakeService) CancelGameInvite(_ context.Context, developerID, gameID, inviteID string) error {
+	return f.cancelGameInvite(developerID, gameID, inviteID)
+}
+
+func (f fakeService) MyInvites(_ context.Context, developerID string) ([]service.GameInvite, error) {
+	return f.myInvites(developerID)
+}
+
+func (f fakeService) AcceptInvite(_ context.Context, developerID, inviteID string) (service.Game, error) {
+	return f.acceptInvite(developerID, inviteID)
+}
+
+func (f fakeService) DeclineInvite(_ context.Context, developerID, inviteID string) error {
+	return f.declineInvite(developerID, inviteID)
 }
 
 func (f fakeService) CreateAPIKey(_ context.Context, developerID, gameID string) (service.NewAPIKey, error) {

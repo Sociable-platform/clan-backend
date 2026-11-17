@@ -102,6 +102,22 @@ func (l Ladder) CanKick(actor, target Member) bool {
 	return l.can(actor, target, func(r Role) bool { return r.CanKick })
 }
 
+// CanHandleRequests reports whether the member may accept and decline the requests to join their clan, and
+// see them. The owner always may. Any other role, the first one included (a request acts on no lower
+// member), may when the game gave it canHandleRequests. A role the config says nothing about follows
+// canKick: a request is a decision about who belongs to the clan, the same kind of power as removing
+// someone, and configs published before canHandleRequests keep working as they did.
+func (l Ladder) CanHandleRequests(m Member) bool {
+	if m.IsOwner {
+		return true
+	}
+	r := l.Of(m)
+	if r.CanHandleRequests != nil {
+		return *r.CanHandleRequests
+	}
+	return r.CanKick
+}
+
 // Promote returns the role target gets one step up. The new role must stay below the actor's
 // own, so nobody can make someone their equal, and nobody is promoted to owner.
 func (l Ladder) Promote(actor, target Member) (Role, error) {

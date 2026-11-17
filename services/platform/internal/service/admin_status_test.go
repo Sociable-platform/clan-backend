@@ -73,7 +73,8 @@ func TestSetDeveloperStatus_ResumeNeedsNoReason(t *testing.T) {
 func TestSetGameStatus(t *testing.T) {
 	svc, store, _ := newTestService(t)
 	store.statusGame = repository.AdminGame{ID: devID2, Name: "Farm", Status: "suspended", StatusReason: "abuse"}
-	store.games = []repository.Game{{ID: devID2, DeveloperID: devID1}} // the game the change finds, for the access check
+	store.games = []repository.Game{{ID: devID2}} // the game the change finds, for the access check
+	store.setRole(devID2, devID1, repository.RoleOwner)
 
 	g, err := svc.SetGameStatus(context.Background(), "system:billing", devID2, SetStatusInput{Status: "suspended", Reason: "abuse"})
 	if err != nil {

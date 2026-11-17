@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +22,9 @@ import (
 
 // fakeStore is an in-memory Store. Like the real table, it rejects a second row with the same email.
 type fakeStore struct {
+	// members are the developers added to a game besides the one who registered it, by "gameID|developerID",
+	// with their role. The one who registered a game is its owner (what CreateGame does in the database).
+	members map[string]string
 	byEmail map[string]repository.Developer
 	admins  map[string]repository.Admin // by email
 
@@ -67,6 +71,14 @@ type fakeStore struct {
 	refreshSessions int
 	// pendingRegs holds the pending registrations by email, like the real table.
 	pendingRegs map[string]repository.PendingRegistration
+	// teamLog is the table game_team_log. AddTeamLog adds to it inside a transaction, and InTx drops what a transaction
+	// that failed added, so a rolled-back change leaves no row, like the database.
+	teamLog []fakeTeamLogRow
+	// addLogErr, when set, is what AddTeamLog returns.
+	addLogErr error
+	// invites and inviteLog are the tables game_invites and game_invite_log.
+	invites   []repository.GameInvite
+	inviteLog []fakeInviteLog
 }
 
 func (f *fakeStore) SavePendingRegistration(_ context.Context, p repository.PendingRegistration, now time.Time) error {
@@ -247,12 +259,13 @@ func (f *fakeStore) ResetPassword(_ context.Context, tokenHash, passwordHash str
 }
 
 func (f *fakeStore) InTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	start := len(f.pending)
+	start, logStart := len(f.pending), len(f.teamLog)
 	f.depth++
 	err := fn(ctx)
 	f.depth--
 	if err != nil {
 		f.pending = f.pending[:start]
+		f.teamLog = f.teamLog[:logStart]
 		return err
 	}
 	if f.depth == 0 {
@@ -288,7 +301,7 @@ func (f *fakeStore) CreateDeveloper(_ context.Context, email, hash, name string)
 	if _, ok := f.byEmail[email]; ok {
 		return repository.Developer{}, repository.ErrEmailTaken
 	}
-	d := repository.Developer{ID: "dev-" + strconv.Itoa(len(f.byEmail)+1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now(), Status: "active"}
+	d := repository.Developer{ID: fakeDeveloperID(len(f.byEmail) + 1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now(), Status: "active"}
 	f.byEmail[email] = d
 	return d, nil
 }
@@ -564,3 +577,7 @@ func TestMe(t *testing.T) {
 	_, err = svc.Me(context.Background(), "dev-gone")
 	wantError(t, err, http.StatusUnauthorized, "unauthorized")
 }
+
+// fakeDeveloperID is the ID the fake store gives the nth developer: shaped like the UUIDs of the real table, which
+// the service checks IDs against.
+func fakeDeveloperID(n int) string { return fmt.Sprintf("00000000-0000-4000-a000-%012d", n) }
