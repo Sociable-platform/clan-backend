@@ -10,7 +10,7 @@ developer sign-in endpoints are left out: few people use them, and sign-in is ra
 | Script | What it does | Status |
 | --- | --- | --- |
 | `smoke.js` | One player, once: widget config, player token, own profile. Proves the setup. | ready |
-| `widget-open.js` | Players loading a game page: widget config, then a player token. | planned |
+| `widget-open.js` | Players loading a game page: widget config, then a player token. | ready |
 | `social-reads.js` | Players opening their profile, clan, members and friends. | planned |
 | `clan-chat.js` | Players in one clan room over WebSocket, sending and receiving messages. | planned |
 | `mixed.js` | The three together in realistic proportions. | planned |
@@ -51,6 +51,37 @@ developer sign-in endpoints are left out: few people use them, and sign-in is ra
    Three green checks mean the game ID, the key and the addresses are right. A red check says
    which of them to look at.
 
+## Running a scenario
+
+Every scenario ramps through a profile, chosen with `LOADTEST_PROFILE`:
+
+| Profile | Players | Length | For |
+| --- | --- | --- | --- |
+| `short` (default) | up to 10 | about 2 minutes | checking that a script works |
+| `steps` | 10, 50, 200, then 500, two minutes each | about 11 minutes | the real measurement |
+
+```powershell
+k6 run loadtest/widget-open.js                                    # short
+$env:LOADTEST_PROFILE = "steps"; k6 run loadtest/widget-open.js   # the real one
+```
+
+A run stops by itself when more than 5% of requests fail, so a stack that is already down is not
+hammered to the end. `Ctrl+C` stops it at any time.
+
+### Reading the result
+
+- **THRESHOLDS** at the top is the verdict: a green tick per limit, a red cross where one was crossed.
+  The limits are in each script's `options.thresholds`.
+- **`http_req_duration{name:...}` p(95)** is the time within which 95 of 100 requests of that kind
+  were answered. Compare it with the smoke test's few milliseconds: that gap is the cost of load.
+- **`http_req_failed`** is the share of requests that got an error or no answer.
+- **`vus`** is how many players were active. To see at which step things turned, watch the live
+  line while it runs, or the server's dashboards.
+
+Write down, per step: players, requests per second (`http_reqs`), p(95) per request kind, and the
+failure rate. The first step where a limit is crossed is the capacity figure; what the server was
+short of at that moment (CPU, database connections, memory) is the thing to fix.
+
 ## Rules for running against the server
 
 The server is also where the product is shown, and a load test is meant to find the point where
@@ -78,5 +109,7 @@ There is no delete-game endpoint yet.
 loadtest/
   lib/config.js    addresses, game ID and API key, read from the environment
   lib/players.js   player numbering and the player-token request
+  lib/profiles.js  the ramp profiles (short, steps) and the stop-when-failing rule
   smoke.js         the setup check
+  widget-open.js   scenario 1
 ```
