@@ -497,8 +497,11 @@ paths:
     patch:
       tags: [clans]
       operationId: renameClan
-      summary: Rename a clan (owner only)
+      summary: Rename a clan, or open or close it (owner only)
       description: |
+        Send `{ "joinPolicy": "open" | "closed" }` instead of a name to open or close the clan (owner only,
+        400 invalid_join_policy for anything else; 403 not_clan_owner). It writes no event.
+
         The clan's owner gives the clan a new name. The name is cleaned and checked like on
         create (trimmed, runs of spaces become one space, 3 to 20 visible characters) and must
         not be taken by another clan of the game, ignoring upper/lower case.
@@ -589,7 +592,9 @@ paths:
       operationId: joinClan
       summary: Join a clan
       description: |
-        Adds the caller to the clan as a member. Every clan is open for now.
+        Adds the caller to the clan as a member. Only an **open** clan can be joined like this: a
+        closed clan answers 403 `clan_closed` and the caller asks to join instead
+        (`POST /api/v1/clans/{clanID}/requests`). Joining a clan ends the caller's pending requests.
         The clan must belong to the caller's game (the game in the player token); a clan of
         another game answers 404 like a clan that does not exist. The clan row is locked
         while joining, so two players can never take the same last place.
@@ -619,7 +624,17 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: |
+            The clan is closed (clan_closed): ask to join instead. Also the shared 403 of every
+            endpoint (origin_not_allowed, and so on).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_closed
+                  message: This clan is closed; ask to join instead
         "404":
           description: No such clan in the caller's game (clan_not_found).
           content:
@@ -697,6 +712,186 @@ paths:
                 error:
                   code: not_in_clan
                   message: You are not a member of this clan
+  /api/v1/clans/{clanID}/requests:
+    get:
+      tags: [clans]
+      operationId: listJoinRequests
+      summary: The pending requests to join a closed clan (leaders only)
+      description: |
+        The players who asked to join the clan, oldest first. Only a leader of the clan may look: its owner,
+        or a member whose role may remove members (`canKick` in the game's `clan.roles`). Anyone else, also
+        a player who is not in the clan, gets 403 `not_allowed`.
+      security:
+        - playerToken: []
+      parameters:
+        - $ref: "#/components/parameters/ClanRequestClanID"
+      responses:
+        "200":
+          description: The pending requests (an empty list when there are none).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinRequestList"
+              example:
+                requests:
+                  - id: 8c1f4d2a-5b6e-4f70-9a81-b2c3d4e5f607
+                    playerId: 5a2b3c4d-1e2f-4a3b-8c9d-0e1f2a3b4c5d
+                    displayName: Rashad
+                    createdAt: "2026-11-17T09:12:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ClanRequestNotAllowed"
+        "404":
+          $ref: "#/components/responses/ClanRequestClanNotFound"
+    post:
+      tags: [clans]
+      operationId: requestJoin
+      summary: Ask to join a closed clan
+      description: |
+        The caller asks to join a **closed** clan. A leader accepts or declines the request. Social publishes
+        `clan.join_requested`, and Realtime tells the leaders with a `clan_join_request` notification.
+        The clan row is locked, so the checks below hold until the request is saved. No request body is needed.
+
+        A player can have 5 pending requests, and a clan 50. Joining any clan ends the player's requests.
+      security:
+        - playerToken: []
+      parameters:
+        - $ref: "#/components/parameters/ClanRequestClanID"
+      responses:
+        "201":
+          description: The request was sent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinRequest"
+              example:
+                id: 8c1f4d2a-5b6e-4f70-9a81-b2c3d4e5f607
+                playerId: 5a2b3c4d-1e2f-4a3b-8c9d-0e1f2a3b4c5d
+                displayName: Rashad
+                createdAt: "2026-11-17T09:12:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ClanRequestClanNotFound"
+        "409":
+          description: |
+            `clan_open`: the clan is open, join it directly. `already_in_clan`. `already_requested`: a request
+            to this clan is pending. `clan_full`: the clan has no free place. `clan_requests_full`: the clan has
+            50 pending requests. `too_many_requests`: the caller has 5 pending requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: already_requested
+                  message: You already asked to join this clan
+  /api/v1/clans/{clanID}/requests/me:
+    delete:
+      tags: [clans]
+      operationId: cancelJoinRequest
+      summary: Take back the caller's request to join a clan
+      description: |
+        Deletes the caller's pending request to this clan. It writes no event: the leaders' list is right
+        the next time they open it.
+      security:
+        - playerToken: []
+      parameters:
+        - $ref: "#/components/parameters/ClanRequestClanID"
+      responses:
+        "204":
+          description: The request is gone. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No such clan in the caller's game (clan_not_found), or the caller has no pending request to it (request_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: request_not_found
+                  message: This join request does not exist any more
+  /api/v1/clans/{clanID}/requests/{requestID}/accept:
+    post:
+      tags: [clans]
+      operationId: acceptJoinRequest
+      summary: Accept a request to join (leaders only)
+      description: |
+        The player becomes a member with the game's first role, in one transaction with the clan row locked
+        (so the last free place goes to one player), and all their pending requests end. Social publishes
+        `clan.member_joined`, so the player gets the clan and its chat and the members see a join line.
+        Only a leader may (the owner, or a role with `canKick`). No request body is needed.
+      security:
+        - playerToken: []
+      parameters:
+        - $ref: "#/components/parameters/ClanRequestClanID"
+        - $ref: "#/components/parameters/RequestID"
+      responses:
+        "204":
+          description: The player is a member now. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ClanRequestNotAllowed"
+        "404":
+          description: No such clan (clan_not_found), or no such pending request in it (request_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: request_not_found
+                  message: This join request does not exist any more
+        "409":
+          description: |
+            `clan_full`: no free place, the request stays. `already_in_clan`: the player joined another clan
+            meanwhile, the request is gone.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: clan_full
+                  message: This clan has no free places
+  /api/v1/clans/{clanID}/requests/{requestID}/decline:
+    post:
+      tags: [clans]
+      operationId: declineJoinRequest
+      summary: Decline a request to join (leaders only)
+      description: |
+        Deletes the request. Social publishes `clan.join_request_declined` and Realtime tells the player
+        with a `clan_join_declined` notification. The player may ask again. Only a leader may. No request body.
+      security:
+        - playerToken: []
+      parameters:
+        - $ref: "#/components/parameters/ClanRequestClanID"
+        - $ref: "#/components/parameters/RequestID"
+      responses:
+        "204":
+          description: The request is gone. No body.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/ClanRequestNotAllowed"
+        "404":
+          description: No such clan (clan_not_found), or no such pending request in it (request_not_found).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: request_not_found
+                  message: This join request does not exist any more
   /api/v1/clans/{clanID}/members:
     get:
       tags: [clans]
@@ -1432,7 +1627,7 @@ components:
           description: When the player was first seen.
     Clan:
       type: object
-      required: [id, name, memberCount, maxMembers]
+      required: [id, name, memberCount, maxMembers, joinPolicy]
       properties:
         id:
           type: string
@@ -1463,6 +1658,43 @@ components:
             published widget config (10 before the first publish). The same for every clan of
             the game. After the developer lowers it, a clan can show `memberCount` above
             `maxMembers`: nobody is removed, the clan just takes no one new.
+        joinPolicy:
+          type: string
+          enum: [open, closed]
+          description: |
+            `open`: anyone can join (`POST /api/v1/clans/{clanID}/join`). `closed`: a player asks
+            (`POST /api/v1/clans/{clanID}/requests`) and a leader of the clan accepts or declines. Every
+            clan made before closed clans existed is `open`.
+        requested:
+          type: boolean
+          description: |
+            Only in `GET /api/v1/clans`, and only `true`: the caller has a pending request to join this
+            clan. Left out otherwise.
+    JoinRequest:
+      type: object
+      required: [id, playerId, displayName, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        playerId:
+          type: string
+          format: uuid
+          description: Social's own ID of the player who asks (the one a member list uses).
+        displayName:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    JoinRequestList:
+      type: object
+      required: [requests]
+      properties:
+        requests:
+          type: array
+          description: The pending requests of the clan, oldest first.
+          items:
+            $ref: "#/components/schemas/JoinRequest"
     CreateClanRequest:
       type: object
       required: [name]
@@ -1488,6 +1720,12 @@ components:
             not looked up in that config: Studio decides which badges a game has and the clan
             form offers only those, so a game whose config cannot be read at this moment can
             still create clans. Social never stores the picture.
+        joinPolicy:
+          type: string
+          enum: [open, closed]
+          description: |
+            Optional, `open` when left out. A `closed` clan takes players only after a leader accepts their
+            request. Anything else gives 400 invalid_join_policy.
         tag:
           deprecated: true
           description: |
@@ -1495,14 +1733,21 @@ components:
             an older SDK that still sends it is not refused as an unknown field. Do not send it.
     RenameClanRequest:
       type: object
-      required: [name]
       additionalProperties: false
+      description: One of `name` or `joinPolicy`, not both (400 invalid_clan_update).
       properties:
         name:
           type: string
           minLength: 3
           maxLength: 20
           description: The clan's new name, 3 to 20 characters after trimming.
+        joinPolicy:
+          type: string
+          enum: [open, closed]
+          description: |
+            Open or close the clan. Closing changes nothing for its members. Opening a clan that has
+            pending requests keeps them (a leader can still accept them), and a player who joins it
+            directly loses theirs.
     MyClan:
       type: object
       required: [clan, role]
@@ -1755,7 +2000,46 @@ components:
             message:
               type: string
               description: Human-readable explanation.
+  parameters:
+    ClanRequestClanID:
+      name: clanID
+      in: path
+      required: true
+      description: The ID of the clan (from the clan list).
+      schema:
+        type: string
+        format: uuid
+    RequestID:
+      name: requestID
+      in: path
+      required: true
+      description: The ID of the join request (from the list of requests).
+      schema:
+        type: string
+        format: uuid
   responses:
+    ClanRequestNotAllowed:
+      description: |
+        The caller is not in the clan, or their role may not decide on join requests (not_allowed). Only the
+        owner and a role that may remove members (`canKick`) may.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: not_allowed
+              message: Your clan role does not allow this
+    ClanRequestClanNotFound:
+      description: No such clan in the caller's game (clan_not_found).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: clan_not_found
+              message: Clan not found
     Unauthorized:
       description: |
         No valid player token. Every /api/v1 endpoint needs `Authorization: Bearer <player token>`.

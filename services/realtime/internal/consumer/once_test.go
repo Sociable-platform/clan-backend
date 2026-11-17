@@ -112,6 +112,7 @@ func TestEveryHandledOnceTypeIsStored(t *testing.T) {
 		typeFriendRequestSent, typeFriendRequestCancelled, typeFriendRequestDeclined, typeFriendAccepted,
 		typeFriendRemoved, typePlayerRenamed, typePlayerBlocked, typePlayerUnblocked,
 		typeClanCreated, typeClanMemberJoined, typeClanMemberLeft, typeClanDisbanded,
+		typeClanJoinRequested, typeClanJoinDeclined,
 	} {
 		if !handledOnce(typ) {
 			t.Errorf("%s is not handled once", typ)

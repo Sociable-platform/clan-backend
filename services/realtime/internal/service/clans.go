@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"gitlab.com/clan-platform/clan-backend/services/realtime/internal/repository"
 )
@@ -12,6 +13,10 @@ const (
 	kindClanJoined    = "clan_joined"
 	kindClanKicked    = "clan_kicked"
 	kindClanDisbanded = "clan_disbanded"
+
+	// The requests to join a closed clan (see ClanJoinRequested and ClanJoinRequestDeclined).
+	kindClanJoinRequest  = "clan_join_request"
+	kindClanJoinDeclined = "clan_join_declined"
 )
 
 // ClanCreated handles clan.created: the clan gets its chat room with the owner as its first member,
@@ -136,6 +141,56 @@ func (s *Service) ClanMemberLeft(ctx context.Context, gameID, clanID, playerID s
 		pushes = append(pushes, *line)
 	}
 	return pushes, nil
+}
+
+// ClanJoinRequested handles clan.join_requested: a player asked to join a closed clan. The members named in
+// managers (Social lists the owner and every role that may remove members: Realtime knows no roles) get a
+// clan_join_request notification with the clan, the request and the player. Nothing is stored. A manager who
+// is the player is left out, and an event that names nobody sends nothing.
+func (s *Service) ClanJoinRequested(ctx context.Context, gameID, clanID, clanName, requestID string, p Player, managers []string) ([]Push, error) {
+	gameID, clanID, p, err := cleanClanMember(gameID, clanID, p)
+	if err != nil {
+		return nil, err
+	}
+	if requestID, err = cleanID("request_id", requestID); err != nil {
+		return nil, err
+	}
+	to := make([]string, 0, len(managers))
+	for _, m := range managers {
+		if m, err = cleanID("managers", m); err != nil {
+			return nil, err
+		}
+		if m != p.ID {
+			to = append(to, m)
+		}
+	}
+	if len(to) == 0 {
+		return nil, nil
+	}
+	return []Push{{
+		GameID: gameID, PlayerIDs: to, Type: frameNotification,
+		Data: notificationData{
+			Kind:    kindClanJoinRequest,
+			Payload: map[string]any{"clanId": clanID, "clanName": strings.TrimSpace(clanName), "requestId": requestID, "player": playerRef(p)},
+		},
+	}}, nil
+}
+
+// ClanJoinRequestDeclined handles clan.join_request_declined: the player who asked gets a clan_join_declined
+// notification with the clan. (An accepted request is a clan.member_joined, which already gives them the room.)
+// Nothing is stored.
+func (s *Service) ClanJoinRequestDeclined(ctx context.Context, gameID, clanID, clanName string, p Player) ([]Push, error) {
+	gameID, clanID, p, err := cleanClanMember(gameID, clanID, p)
+	if err != nil {
+		return nil, err
+	}
+	return []Push{{
+		GameID: gameID, PlayerIDs: []string{p.ID}, Type: frameNotification,
+		Data: notificationData{
+			Kind:    kindClanJoinDeclined,
+			Payload: map[string]any{"clanId": clanID, "clanName": strings.TrimSpace(clanName)},
+		},
+	}}, nil
 }
 
 // ClanDisbanded handles clan.disbanded: the clan's room is deleted with its messages, and everybody

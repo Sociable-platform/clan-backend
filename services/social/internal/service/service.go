@@ -28,6 +28,16 @@ type Store interface {
 		decide func(actor, target repository.MemberRole) (string, error)) (repository.RoleChange, error)
 	RenameClan(ctx context.Context, gameID, clanID, ownerExternalID, name string) (repository.RenameResult, error)
 	MyClan(ctx context.Context, gameID, externalID string) (repository.PlayerClan, error)
+	// SetJoinPolicy opens or closes a clan; only its owner may.
+	SetJoinPolicy(ctx context.Context, gameID, clanID, ownerExternalID, policy string) (repository.Clan, error)
+	// The join requests of a closed clan (join_requests.go in the repository).
+	RequestJoin(ctx context.Context, gameID, clanID, playerID string, maxMembers, perClan, perPlayer int) (repository.JoinRequestResult, error)
+	CancelJoinRequest(ctx context.Context, gameID, clanID, externalID string) error
+	ListJoinRequests(ctx context.Context, gameID, clanID, actorExternalID string, allowed func(actor repository.MemberRole) bool) ([]repository.JoinRequest, error)
+	AcceptJoinRequest(ctx context.Context, gameID, clanID, requestID, actorExternalID string, maxMembers int, roleID string,
+		allowed func(actor repository.MemberRole) bool) (repository.RequestDecision, error)
+	DeclineJoinRequest(ctx context.Context, gameID, clanID, requestID, actorExternalID string,
+		allowed func(actor repository.MemberRole) bool) (repository.RequestDecision, error)
 	ListMembers(ctx context.Context, gameID, clanID string) ([]repository.Member, error)
 	SendFriendRequest(ctx context.Context, gameID, senderID, receiverID string) (repository.SendFriendRequestResult, error)
 	AcceptFriendRequest(ctx context.Context, gameID, requestID, playerID string) (repository.Friendship, error)

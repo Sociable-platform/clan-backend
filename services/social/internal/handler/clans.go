@@ -19,6 +19,10 @@ type clanResponse struct {
 	Badge       string `json:"badge,omitempty"`
 	MemberCount int    `json:"memberCount"`
 	MaxMembers  int    `json:"maxMembers"`
+	// JoinPolicy is "open" or "closed". A closed clan takes players only after a leader accepts their request.
+	JoinPolicy string `json:"joinPolicy"`
+	// Requested is only in a clan list, and only when the caller has a pending request to this clan.
+	Requested bool `json:"requested,omitempty"`
 }
 
 type clanListResponse struct {
@@ -33,6 +37,8 @@ func toClanResponse(c service.Clan) clanResponse {
 		Badge:       c.Badge,
 		MemberCount: c.MemberCount,
 		MaxMembers:  c.MaxMembers,
+		JoinPolicy:  c.JoinPolicy,
+		Requested:   c.Requested,
 	}
 }
 
@@ -51,6 +57,8 @@ func (h *Handler) listClans(w http.ResponseWriter, r *http.Request) {
 		Limit:    params.Get("limit"),
 		Sort:     params.Get("sort"),
 		HasSpace: params.Get("hasSpace"),
+		// Whose pending requests to mark: the caller's, from the token.
+		ViewerExternalID: caller.ExternalID,
 	})
 	if err != nil {
 		h.fail(w, r, err)
@@ -69,6 +77,8 @@ type createClanRequest struct {
 	// sends a description to a build without these fields gets 400 invalid_json.
 	Description string `json:"description"`
 	Badge       string `json:"badge"`
+	// JoinPolicy is "open" (the default) or "closed": players of a closed clan are accepted by its leaders.
+	JoinPolicy string `json:"joinPolicy"`
 	// Tag is read and ignored: clans have no tags any more (TEAM-277). It stays here only so
 	// that an older SDK that still sends it is not refused as an unknown field.
 	Tag any `json:"tag"`
@@ -92,6 +102,7 @@ func (h *Handler) createClan(w http.ResponseWriter, r *http.Request) {
 		Name:        req.Name,
 		Description: req.Description,
 		Badge:       req.Badge,
+		JoinPolicy:  req.JoinPolicy,
 	})
 	if err != nil {
 		h.fail(w, r, err)
@@ -116,13 +127,15 @@ func (h *Handler) joinClan(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, toClanResponse(c))
 }
 
-// renameClanRequest is the body of PATCH /api/v1/clans/{clanID}.
+// renameClanRequest is the body of PATCH /api/v1/clans/{clanID}: a new name, or a new join policy.
 type renameClanRequest struct {
 	Name string `json:"name"`
+	// JoinPolicy is "open" or "closed". A pointer tells "not sent" from an empty text.
+	JoinPolicy *string `json:"joinPolicy"`
 }
 
-// renameClan handles PATCH /api/v1/clans/{clanID}: the clan's owner gives it a new name.
-// 200 with the clan as it is now.
+// renameClan handles PATCH /api/v1/clans/{clanID}: the clan's owner gives it a new name, or opens or
+// closes it ({ "joinPolicy": "closed" }); one of the two per call. 200 with the clan as it is now.
 func (h *Handler) renameClan(w http.ResponseWriter, r *http.Request) {
 	caller, ok := auth.PlayerFrom(r.Context())
 	if !ok {
@@ -134,7 +147,16 @@ func (h *Handler) renameClan(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	c, err := h.svc.RenameClan(r.Context(), caller.GameID, caller.ExternalID, r.PathValue("clanID"), req.Name)
+	var c service.Clan
+	var err error
+	switch {
+	case req.JoinPolicy != nil && req.Name != "":
+		err = httpx.NewError(http.StatusBadRequest, "invalid_clan_update", "Send either name or joinPolicy, not both")
+	case req.JoinPolicy != nil:
+		c, err = h.svc.SetJoinPolicy(r.Context(), caller.GameID, caller.ExternalID, r.PathValue("clanID"), *req.JoinPolicy)
+	default:
+		c, err = h.svc.RenameClan(r.Context(), caller.GameID, caller.ExternalID, r.PathValue("clanID"), req.Name)
+	}
 	if err != nil {
 		h.fail(w, r, err)
 		return

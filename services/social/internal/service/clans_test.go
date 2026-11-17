@@ -43,6 +43,32 @@ func (m *memStore) ChangeRole(context.Context, string, string, string, string,
 	return repository.RoleChange{}, errors.New("memStore has no clans")
 }
 
+func (m *memStore) SetJoinPolicy(context.Context, string, string, string, string) (repository.Clan, error) {
+	return repository.Clan{}, errors.New("memStore has no clans")
+}
+
+func (m *memStore) RequestJoin(context.Context, string, string, string, int, int, int) (repository.JoinRequestResult, error) {
+	return repository.JoinRequestResult{}, errors.New("memStore has no clans")
+}
+
+func (m *memStore) CancelJoinRequest(context.Context, string, string, string) error {
+	return errors.New("memStore has no clans")
+}
+
+func (m *memStore) ListJoinRequests(context.Context, string, string, string, func(repository.MemberRole) bool) ([]repository.JoinRequest, error) {
+	return nil, errors.New("memStore has no clans")
+}
+
+func (m *memStore) AcceptJoinRequest(context.Context, string, string, string, string, int, string,
+	func(repository.MemberRole) bool) (repository.RequestDecision, error) {
+	return repository.RequestDecision{}, errors.New("memStore has no clans")
+}
+
+func (m *memStore) DeclineJoinRequest(context.Context, string, string, string, string,
+	func(repository.MemberRole) bool) (repository.RequestDecision, error) {
+	return repository.RequestDecision{}, errors.New("memStore has no clans")
+}
+
 func (m *memStore) MyClan(context.Context, string, string) (repository.PlayerClan, error) {
 	return repository.PlayerClan{}, repository.ErrNotInClan
 }
@@ -81,7 +107,7 @@ func TestListClansPassesGameQueryAndLimit(t *testing.T) {
 	if store.game != gameA || store.query != "wol" || store.opts != (repository.ListClansOptions{Limit: clanListLimit, MaxMembers: 10}) {
 		t.Fatalf("store got game=%q query=%q opts=%+v", store.game, store.query, store.opts)
 	}
-	want := Clan{ID: "c-1", Name: "Wolves", MemberCount: 3, MaxMembers: 10}
+	want := Clan{ID: "c-1", Name: "Wolves", MemberCount: 3, MaxMembers: 10, JoinPolicy: "open"}
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("got %+v, want [%+v]", got, want)
 	}
@@ -165,7 +191,7 @@ func TestCreateClanMakesThePlayerTheOwner(t *testing.T) {
 	if store.game != gameA || store.owner != owner.ID || store.got.Name != "Wolf Pack" {
 		t.Fatalf("store got game=%q owner=%q name=%q", store.game, store.owner, store.got.Name)
 	}
-	want := Clan{ID: "clan-1", Name: "Wolf Pack", MemberCount: 1, MaxMembers: 10}
+	want := Clan{ID: "clan-1", Name: "Wolf Pack", MemberCount: 1, MaxMembers: 10, JoinPolicy: "open"}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -301,7 +327,7 @@ func TestJoinClanAddsThePlayer(t *testing.T) {
 	if store.game != gameA || store.clan != someClan || store.player != player.ID {
 		t.Fatalf("store got game=%q clan=%q player=%q", store.game, store.clan, store.player)
 	}
-	if want := (Clan{ID: someClan, Name: "Wolves", MemberCount: 2, MaxMembers: 10}); got != want {
+	if want := (Clan{ID: someClan, Name: "Wolves", MemberCount: 2, MaxMembers: 10, JoinPolicy: "open"}); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
@@ -441,7 +467,7 @@ func TestMyClanReturnsClanAndRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := PlayerClan{Clan: Clan{ID: someClan, Name: "Wolves", MemberCount: 3, MaxMembers: 10}, Role: "owner"}
+	want := PlayerClan{Clan: Clan{ID: someClan, Name: "Wolves", MemberCount: 3, MaxMembers: 10, JoinPolicy: "open"}, Role: "owner"}
 	if got != want || store.game != gameA || store.externalID != "u_42" {
 		t.Fatalf("got %+v (store asked game=%q player=%q), want %+v", got, store.game, store.externalID, want)
 	}

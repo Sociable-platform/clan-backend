@@ -134,6 +134,11 @@ func TestFrameTemplatesInTheEventMessagesFile(t *testing.T) {
 				wantKeys(t, object(t, payload["player"], "player"), []string{"id", "name"}, "clan_joined player")
 			case "clan_kicked", "clan_disbanded":
 				wantKeys(t, payload, []string{"clanId"}, kind.(string)+" payload")
+			case "clan_join_request":
+				wantKeys(t, payload, []string{"clanId", "clanName", "requestId", "player"}, "clan_join_request payload")
+				wantKeys(t, object(t, payload["player"], "player"), []string{"id", "name"}, "clan_join_request player")
+			case "clan_join_declined":
+				wantKeys(t, payload, []string{"clanId", "clanName"}, "clan_join_declined payload")
 			default:
 				t.Errorf("notification kind %v is not a clan notification", kind)
 			}

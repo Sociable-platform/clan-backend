@@ -23,7 +23,17 @@ type Clan struct {
 	// when no badge was chosen.
 	Badge       string
 	MemberCount int
+	// JoinPolicy is PolicyOpen (anyone joins) or PolicyClosed (a leader accepts a request first).
+	JoinPolicy string
+	// Requested is true in ListClans when the player asking has a pending request to join this clan.
+	Requested bool
 }
+
+// The two join policies of a clan (clans.join_policy).
+const (
+	PolicyOpen   = "open"
+	PolicyClosed = "closed"
+)
 
 // ListClansOptions say how many clans ListClans returns, in which order, and which ones.
 type ListClansOptions struct {
@@ -31,13 +41,16 @@ type ListClansOptions struct {
 	ByMembers     bool // most members first; otherwise sorted by name
 	OnlyWithSpace bool // only clans that still have a free place
 	MaxMembers    int  // the game's clan size; with OnlyWithSpace, a clan with this many members is full
+	// ViewerExternalID is the game's ID of the player asking (u_42); their pending requests come back
+	// as Clan.Requested. Empty: nobody's.
+	ViewerExternalID string
 }
 
 // Two fixed orders. Nothing from the request is put into the SQL text: the options only
 // choose between these two.
 const (
-	orderClansByName    = "lower(name), id"
-	orderClansByMembers = "member_count desc, lower(name), id"
+	orderClansByName    = "lower(c.name), c.id"
+	orderClansByMembers = "c.member_count desc, lower(c.name), c.id"
 )
 
 // ListClans returns up to opts.Limit clans of gameID, sorted by name (or by member count,
@@ -56,14 +69,17 @@ func (r *Repository) ListClans(ctx context.Context, gameID, query string, opts L
 		order = orderClansByMembers
 	}
 	rows, err := r.db(ctx).Query(ctx,
-		`select id::text, name, description, badge, member_count
-		 from clans
-		 where game_id = $1
-		   and ($2 = '' or strpos(lower(name), lower($2)) > 0)
-		   and (not $3 or member_count < $5)
+		`select c.id::text, c.name, c.description, c.badge, c.member_count, c.join_policy,
+		        exists (select 1 from clan_join_requests q
+		                join players p on p.id = q.player_id and p.game_id = q.game_id
+		                where q.clan_id = c.id and p.external_id = $6) as requested
+		 from clans c
+		 where c.game_id = $1
+		   and ($2 = '' or strpos(lower(c.name), lower($2)) > 0)
+		   and (not $3 or c.member_count < $5)
 		 order by `+order+`
 		 limit $4`,
-		gameID, query, opts.OnlyWithSpace, opts.Limit, opts.MaxMembers,
+		gameID, query, opts.OnlyWithSpace, opts.Limit, opts.MaxMembers, opts.ViewerExternalID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list clans: %w", err)
@@ -73,7 +89,7 @@ func (r *Repository) ListClans(ctx context.Context, gameID, query string, opts L
 	clans := make([]Clan, 0)
 	for rows.Next() {
 		var c Clan
-		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Badge, &c.MemberCount); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.Badge, &c.MemberCount, &c.JoinPolicy, &c.Requested); err != nil {
 			return nil, fmt.Errorf("list clans: %w", err)
 		}
 		clans = append(clans, c)
@@ -104,6 +120,7 @@ type NewClan struct {
 	Name        string
 	Description string
 	Badge       string
+	JoinPolicy  string // PolicyOpen or PolicyClosed
 }
 
 // CreateClan creates a clan in gameID owned by ownerID (social's player ID) and adds the
@@ -135,12 +152,15 @@ func (r *Repository) CreateClan(ctx context.Context, gameID, ownerID string, in 
 		return Clan{}, ErrAlreadyInClan
 	}
 
-	c := Clan{Name: in.Name, Description: in.Description, Badge: in.Badge}
+	if in.JoinPolicy == "" {
+		in.JoinPolicy = PolicyOpen // the service always says; a caller that does not gets an open clan
+	}
+	c := Clan{Name: in.Name, Description: in.Description, Badge: in.Badge, JoinPolicy: in.JoinPolicy}
 	err = tx.QueryRow(ctx,
-		`insert into clans (game_id, name, description, badge, owner_id)
-		 values ($1, $2, $3, $4, $5)
+		`insert into clans (game_id, name, description, badge, owner_id, join_policy)
+		 values ($1, $2, $3, $4, $5, $6)
 		 returning id::text, member_count`,
-		gameID, in.Name, in.Description, in.Badge, ownerID).Scan(&c.ID, &c.MemberCount)
+		gameID, in.Name, in.Description, in.Badge, ownerID, in.JoinPolicy).Scan(&c.ID, &c.MemberCount)
 	if err != nil {
 		return Clan{}, createClanError(err)
 	}
@@ -149,6 +169,10 @@ func (r *Repository) CreateClan(ctx context.Context, gameID, ownerID string, in 
 		`insert into clan_members (clan_id, player_id, game_id, role) values ($1, $2, $3, 'owner')`,
 		c.ID, ownerID, gameID)
 	if err != nil {
+		return Clan{}, createClanError(err)
+	}
+	// The player has a clan now: whatever they asked to join is over.
+	if err := dropJoinRequests(ctx, tx, gameID, ownerID); err != nil {
 		return Clan{}, createClanError(err)
 	}
 
@@ -178,6 +202,8 @@ var (
 	ErrClanNotFound = errors.New("clan not found")
 	// ErrClanFull means the clan already has as many members as the game allows.
 	ErrClanFull = errors.New("clan is full")
+	// ErrClanClosed means the clan is closed: a player cannot join it directly, only ask to.
+	ErrClanClosed = errors.New("clan is closed")
 )
 
 // JoinClan adds playerID to clan clanID of gameID with role roleID (the first role of the
@@ -204,13 +230,17 @@ func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID stri
 	// 1. Lock the clan. "and game_id = $2" makes another game's clan look like it does not exist.
 	c := Clan{ID: clanID}
 	err = tx.QueryRow(ctx,
-		`select name, description, badge, member_count
+		`select name, description, badge, member_count, join_policy
 		 from clans
 		 where id = $1 and game_id = $2
 		 for update`,
-		clanID, gameID).Scan(&c.Name, &c.Description, &c.Badge, &c.MemberCount)
+		clanID, gameID).Scan(&c.Name, &c.Description, &c.Badge, &c.MemberCount, &c.JoinPolicy)
 	if err != nil {
 		return Clan{}, joinClanError(err)
+	}
+	// A closed clan takes only the players its leaders accept (AcceptJoinRequest).
+	if c.JoinPolicy == PolicyClosed {
+		return Clan{}, ErrClanClosed
 	}
 
 	// 2. One clan per player per game (the unique rule below is the real guard).
@@ -235,6 +265,10 @@ func (r *Repository) JoinClan(ctx context.Context, gameID, clanID, playerID stri
 		`insert into clan_members (clan_id, player_id, game_id, role) values ($1, $2, $3, $4)`,
 		clanID, playerID, gameID, roleID)
 	if err != nil {
+		return Clan{}, joinClanError(err)
+	}
+	// The player has a clan now: whatever they asked to join is over.
+	if err := dropJoinRequests(ctx, tx, gameID, playerID); err != nil {
 		return Clan{}, joinClanError(err)
 	}
 	err = tx.QueryRow(ctx,
@@ -285,14 +319,14 @@ func (r *Repository) MyClan(ctx context.Context, gameID, externalID string) (Pla
 	}
 	var pc PlayerClan
 	err := r.db(ctx).QueryRow(ctx,
-		`select c.id::text, c.name, c.description, c.badge, c.member_count, m.role
+		`select c.id::text, c.name, c.description, c.badge, c.member_count, c.join_policy, m.role
 		 from players p
 		 join clan_members m on m.player_id = p.id and m.game_id = p.game_id
 		 join clans c        on c.id = m.clan_id
 		 where p.game_id = $1 and p.external_id = $2`,
 		gameID, externalID,
 	).Scan(&pc.Clan.ID, &pc.Clan.Name, &pc.Clan.Description, &pc.Clan.Badge,
-		&pc.Clan.MemberCount, &pc.Role)
+		&pc.Clan.MemberCount, &pc.Clan.JoinPolicy, &pc.Role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PlayerClan{}, ErrNotInClan
 	}
@@ -728,9 +762,9 @@ func (r *Repository) RenameClan(ctx context.Context, gameID, clanID, ownerExtern
 	var res RenameResult
 	c := &res.Clan
 	err = tx.QueryRow(ctx,
-		`select id::text, name, description, badge, member_count from clans
+		`select id::text, name, description, badge, member_count, join_policy from clans
 		 where id = $1 and game_id = $2 for update`,
-		clanID, gameID).Scan(&c.ID, &c.Name, &c.Description, &c.Badge, &c.MemberCount)
+		clanID, gameID).Scan(&c.ID, &c.Name, &c.Description, &c.Badge, &c.MemberCount, &c.JoinPolicy)
 	if err != nil {
 		return RenameResult{}, leaveClanError(err)
 	}
