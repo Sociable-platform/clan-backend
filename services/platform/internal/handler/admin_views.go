@@ -32,6 +32,23 @@ type adminGameResponse struct {
 	StatusReason    *string    `json:"statusReason"`
 	StatusChangedAt *time.Time `json:"statusChangedAt"`
 	CreatedAt       time.Time  `json:"createdAt"`
+	// Role is the developer's role on the game, in a developer's list of games; absent elsewhere.
+	Role string `json:"role,omitempty"`
+}
+
+// adminGameMemberResponse is a developer on a game as the admin sees them: with their account status.
+type adminGameMemberResponse struct {
+	DeveloperID string    `json:"developerId"`
+	Name        string    `json:"name"`
+	Email       string    `json:"email"`
+	Role        string    `json:"role"`
+	Status      string    `json:"status"`
+	JoinedAt    time.Time `json:"joinedAt"`
+}
+
+type adminGameDetailResponse struct {
+	adminGameResponse
+	Members []adminGameMemberResponse `json:"members"`
 }
 
 type adminDeveloperResponse struct {
@@ -113,8 +130,23 @@ func toAdminDeveloperResponse(d service.AdminDeveloper) adminDeveloperResponse {
 func toAdminGameResponse(g service.AdminGame) adminGameResponse {
 	return adminGameResponse{
 		ID: g.ID, Name: g.Name, Description: g.Description, Status: g.Status, StatusReason: nilIfEmpty(g.StatusReason),
-		StatusChangedAt: utcOrNil(g.StatusChangedAt), CreatedAt: g.CreatedAt.UTC(),
+		StatusChangedAt: utcOrNil(g.StatusChangedAt), CreatedAt: g.CreatedAt.UTC(), Role: g.Role,
 	}
+}
+
+// getAdminGame handles GET /api/v1/admin/games/{gameID}: the game with the developers on it.
+func (h *Handler) getAdminGame(w http.ResponseWriter, r *http.Request) {
+	g, err := h.svc.AdminGameDetail(r.Context(), r.PathValue("gameID"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	out := adminGameDetailResponse{adminGameResponse: toAdminGameResponse(g.AdminGame), Members: make([]adminGameMemberResponse, 0, len(g.Members))}
+	for _, m := range g.Members {
+		out.Members = append(out.Members, adminGameMemberResponse{DeveloperID: m.DeveloperID, Name: m.Name, Email: m.Email,
+			Role: m.Role, Status: m.Status, JoinedAt: m.JoinedAt.UTC()})
+	}
+	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 // listAuditLog handles GET /api/v1/admin/audit-log?targetId=&limit=&cursor=.

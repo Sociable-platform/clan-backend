@@ -45,6 +45,10 @@ type Store interface {
 	GamesOfMember(ctx context.Context, developerID string) ([]repository.Game, error)
 	GameOfMember(ctx context.Context, gameID, developerID string) (repository.Game, error)
 	GameMembers(ctx context.Context, gameID string) ([]repository.GameMember, error)
+	RemoveGameMember(ctx context.Context, gameID, developerID string) error
+	SetGameMemberRole(ctx context.Context, gameID, developerID, role string) (repository.GameMember, error)
+	TransferGameOwnership(ctx context.Context, gameID, fromID, toID string) error
+	AdminGameByID(ctx context.Context, gameID string) (repository.AdminGame, error)
 	GameByID(ctx context.Context, gameID string) (repository.Game, error)
 	PurgeGameInvites(ctx context.Context, now time.Time) error
 	EmailIsMember(ctx context.Context, gameID, email string) (bool, error)

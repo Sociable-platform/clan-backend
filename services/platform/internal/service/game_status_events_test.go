@@ -131,9 +131,9 @@ func TestSetDeveloperStatus_PublishesOneEventPerServedGame(t *testing.T) {
 	ctx := context.Background()
 	// game1 and game2 are on; game3 was suspended on its own earlier.
 	store.adminGames = []repository.AdminGame{
-		{ID: statusGame1, Status: StatusActive},
-		{ID: statusGame2, Status: StatusActive},
-		{ID: statusGame3, Status: StatusSuspended},
+		{ID: statusGame1, Status: StatusActive, Role: "owner"},
+		{ID: statusGame2, Status: StatusActive, Role: "owner"},
+		{ID: statusGame3, Status: StatusSuspended, Role: "owner"},
 	}
 
 	store.statusDev = repository.AdminDeveloper{ID: statusDev, Status: StatusSuspended}
@@ -158,7 +158,7 @@ func TestSetDeveloperStatus_PublishesNothingWhenNothingChangedOrThereAreNoGames(
 	in := SetStatusInput{Status: StatusSuspended, Reason: ReasonOther}
 	store.statusDev = repository.AdminDeveloper{ID: statusDev, Status: StatusSuspended}
 
-	store.adminGames = []repository.AdminGame{{ID: statusGame1, Status: StatusActive}}
+	store.adminGames = []repository.AdminGame{{ID: statusGame1, Status: StatusActive, Role: "owner"}}
 	store.statusUnchanged = true
 	if _, err := svc.SetDeveloperStatus(ctx, "admin-1", statusDev, in); err != nil {
 		t.Fatal(err)
@@ -185,7 +185,7 @@ func TestSetStatus_FailsWhenTheEventCannotBeWritten(t *testing.T) {
 		t.Errorf("game: err = %v, want the outbox error", err)
 	}
 	store.statusDev = repository.AdminDeveloper{ID: statusDev, Status: StatusSuspended}
-	store.adminGames = []repository.AdminGame{{ID: statusGame1, Status: StatusActive}}
+	store.adminGames = []repository.AdminGame{{ID: statusGame1, Status: StatusActive, Role: "owner"}}
 	if _, err := svc.SetDeveloperStatus(ctx, "admin-1", statusDev, SetStatusInput{Status: StatusSuspended, Reason: ReasonAbuse}); !errors.Is(err, store.addErr) {
 		t.Errorf("developer: err = %v, want the outbox error", err)
 	}

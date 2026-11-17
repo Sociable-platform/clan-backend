@@ -42,6 +42,11 @@ type Service interface {
 	ListGames(ctx context.Context, developerID string) ([]service.Game, error)
 	MemberGame(ctx context.Context, developerID, gameID string) (service.Game, error)
 	GameMembers(ctx context.Context, developerID, gameID string) ([]service.GameMember, error)
+	RemoveGameMember(ctx context.Context, developerID, gameID, memberID string) error
+	LeaveGame(ctx context.Context, developerID, gameID string) error
+	SetMemberRole(ctx context.Context, developerID, gameID, memberID, role string) (service.GameMember, error)
+	TransferOwnership(ctx context.Context, developerID, gameID, toID string) (service.Game, error)
+	AdminGameDetail(ctx context.Context, gameID string) (service.AdminGameDetail, error)
 	InviteToGame(ctx context.Context, developerID, gameID, email string) (service.GameInvite, error)
 	GameInvites(ctx context.Context, developerID, gameID string) ([]service.GameInvite, error)
 	CancelGameInvite(ctx context.Context, developerID, gameID, inviteID string) error
@@ -170,11 +175,16 @@ func (h *Handler) Routes() []Route {
 		{http.MethodGet, "/api/v1/admin/developers", h.requireAdmin(h.listAdminDevelopers)},
 		{http.MethodGet, "/api/v1/admin/developers/{developerID}", h.requireAdmin(h.getAdminDeveloper)},
 		{http.MethodPut, "/api/v1/admin/developers/{developerID}/status", h.requireAdmin(h.setDeveloperStatus)},
+		{http.MethodGet, "/api/v1/admin/games/{gameID}", h.requireAdmin(h.getAdminGame)},
 		{http.MethodPut, "/api/v1/admin/games/{gameID}/status", h.requireAdmin(h.setGameStatus)},
 		{http.MethodGet, "/api/v1/admin/audit-log", h.requireAdmin(h.listAuditLog)},
 		{http.MethodGet, "/api/v1/games", h.requireDeveloper(h.listGames)},
 		{http.MethodPost, "/api/v1/games", h.requireDeveloper(h.requireWritable(h.registerGame))},
 		{http.MethodGet, "/api/v1/games/{gameID}/members", h.requireDeveloper(h.requireGameMember(h.listGameMembers))},
+		{http.MethodDelete, "/api/v1/games/{gameID}/members/{developerID}", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.removeGameMember))))},
+		{http.MethodPut, "/api/v1/games/{gameID}/members/{developerID}/role", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.setGameMemberRole))))},
+		{http.MethodPost, "/api/v1/games/{gameID}/transfer-ownership", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.transferGameOwnership))))},
+		{http.MethodPost, "/api/v1/games/{gameID}/leave", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.leaveGame)))},
 		{http.MethodPost, "/api/v1/games/{gameID}/invites", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.inviteToGame))))},
 		{http.MethodGet, "/api/v1/games/{gameID}/invites", h.requireDeveloper(h.requireGameMember(h.requireGameOwner(h.listGameInvites)))},
 		{http.MethodDelete, "/api/v1/games/{gameID}/invites/{inviteID}", h.requireDeveloper(h.requireWritable(h.requireGameMember(h.requireGameOwner(h.cancelGameInvite))))},

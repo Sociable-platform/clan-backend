@@ -69,42 +69,93 @@ func (f *fakeStore) GameOfMember(_ context.Context, gameID, developerID string) 
 	return repository.Game{}, repository.ErrNotFound
 }
 
-// GameMembers lists the developer who registered the game as its owner, then the members, like the SQL does.
+// removedRole in fakeStore.members marks a developer taken off a game, even the one who registered it.
+const removedRole = "removed"
+
+// team is who is on the game, by developer ID with the role: the developer who registered it is an owner (what
+// CreateGame does in the database), and the members map adds, changes or (removedRole) removes the others.
+func (f *fakeStore) team(gameID string) map[string]string {
+	out := map[string]string{}
+	for _, g := range f.games {
+		if g.ID == gameID {
+			out[g.DeveloperID] = repository.RoleOwner
+		}
+	}
+	for key, role := range f.members {
+		if id, found := strings.CutPrefix(key, gameID+"|"); found {
+			if role == removedRole {
+				delete(out, id)
+			} else {
+				out[id] = role
+			}
+		}
+	}
+	return out
+}
+
+func (f *fakeStore) setRole(gameID, developerID, role string) {
+	if f.members == nil {
+		f.members = map[string]string{}
+	}
+	f.members[gameID+"|"+developerID] = role
+}
+
+func (f *fakeStore) ownersOf(gameID string) []string {
+	var ids []string
+	for id, role := range f.team(gameID) {
+		if role == repository.RoleOwner {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (f *fakeStore) memberRow(gameID, id, role string) repository.GameMember {
+	m := repository.GameMember{DeveloperID: id, Name: "Member " + id, Email: id + "@example.com", Role: role, Status: "active", JoinedAt: time.Unix(1_800_000_000, 0)}
+	for _, d := range f.byEmail {
+		if d.ID == id {
+			m.Name, m.Email = d.Name, d.Email
+		}
+	}
+	if f.suspendedDevs[id] {
+		m.Status = "suspended"
+	}
+	return m
+}
+
+// GameMembers lists the team, owners first and then by ID, like the SQL does.
 func (f *fakeStore) GameMembers(_ context.Context, gameID string) ([]repository.GameMember, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
+	team := f.team(gameID)
+	ids := make([]string, 0, len(team))
+	for id := range team {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		oi, oj := team[ids[i]] == repository.RoleOwner, team[ids[j]] == repository.RoleOwner
+		if oi != oj {
+			return oi
+		}
+		return ids[i] < ids[j]
+	})
 	out := []repository.GameMember{}
-	for _, g := range f.games {
-		if g.ID != gameID {
-			continue
-		}
-		out = append(out, repository.GameMember{DeveloperID: g.DeveloperID, Name: "Owner", Email: "owner@example.com", Role: repository.RoleOwner, JoinedAt: g.CreatedAt})
-		var ids []string
-		for key := range f.members {
-			if id, found := strings.CutPrefix(key, gameID+"|"); found {
-				ids = append(ids, id)
-			}
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			out = append(out, repository.GameMember{DeveloperID: id, Name: "Member " + id, Email: id + "@example.com", Role: f.members[gameID+"|"+id], JoinedAt: g.CreatedAt.Add(time.Hour)})
-		}
+	for _, id := range ids {
+		out = append(out, f.memberRow(gameID, id, team[id]))
 	}
 	return out, nil
 }
 
 // gameAs is the game with the role developerID has on it, or false when they do not belong to it.
 func (f *fakeStore) gameAs(g repository.Game, developerID string) (repository.Game, bool) {
-	if role, ok := f.members[g.ID+"|"+developerID]; ok {
-		g.Role = role
-		return g, true
+	role, ok := f.team(g.ID)[developerID]
+	if !ok {
+		return repository.Game{}, false
 	}
-	if g.DeveloperID == developerID {
-		g.Role = repository.RoleOwner
-		return g, true
-	}
-	return repository.Game{}, false
+	g.Role = role
+	return g, true
 }
 
 // twoDevelopers registers two developers on one service.

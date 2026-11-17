@@ -54,6 +54,12 @@ type fakeService struct {
 	// gameMembers answers GET /games/{id}/members.
 	gameMembers func(developerID, gameID string) ([]service.GameMember, error)
 
+	removeGameMember  func(developerID, gameID, memberID string) error
+	leaveGame         func(developerID, gameID string) error
+	setMemberRole     func(developerID, gameID, memberID, role string) (service.GameMember, error)
+	transferOwnership func(developerID, gameID, toID string) (service.Game, error)
+	adminGameDetail   func(gameID string) (service.AdminGameDetail, error)
+
 	inviteToGame     func(developerID, gameID, email string) (service.GameInvite, error)
 	gameInvites      func(developerID, gameID string) ([]service.GameInvite, error)
 	cancelGameInvite func(developerID, gameID, inviteID string) error
@@ -231,6 +237,26 @@ func (f fakeService) MemberGame(_ context.Context, developerID, gameID string) (
 
 func (f fakeService) GameMembers(_ context.Context, developerID, gameID string) ([]service.GameMember, error) {
 	return f.gameMembers(developerID, gameID)
+}
+
+func (f fakeService) RemoveGameMember(_ context.Context, developerID, gameID, memberID string) error {
+	return f.removeGameMember(developerID, gameID, memberID)
+}
+
+func (f fakeService) LeaveGame(_ context.Context, developerID, gameID string) error {
+	return f.leaveGame(developerID, gameID)
+}
+
+func (f fakeService) SetMemberRole(_ context.Context, developerID, gameID, memberID, role string) (service.GameMember, error) {
+	return f.setMemberRole(developerID, gameID, memberID, role)
+}
+
+func (f fakeService) TransferOwnership(_ context.Context, developerID, gameID, toID string) (service.Game, error) {
+	return f.transferOwnership(developerID, gameID, toID)
+}
+
+func (f fakeService) AdminGameDetail(_ context.Context, gameID string) (service.AdminGameDetail, error) {
+	return f.adminGameDetail(gameID)
 }
 
 func (f fakeService) InviteToGame(_ context.Context, developerID, gameID, email string) (service.GameInvite, error) {

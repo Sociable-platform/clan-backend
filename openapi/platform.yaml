@@ -838,6 +838,65 @@ paths:
                 error:
                   code: developer_not_found
                   message: Developer not found
+  /api/v1/admin/games/{gameID}:
+    get:
+      tags: [admin]
+      operationId: getAdminGame
+      summary: One game with the developers on it
+      description: |
+        The game and everybody who belongs to it, owners first, each with the status of their account. A game is
+        served while its own switch is on and at least one owner's account is active, so this shows why a game is off.
+      security:
+        - adminToken: []
+      parameters:
+        - name: gameID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The game with its team.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminGameDetail"
+              example:
+                id: 3b0f1f0e-7c1d-4e53-9d2a-5b8e6a7c9d10
+                name: Farm Friends
+                description: Cozy farming game
+                status: active
+                statusReason: null
+                statusChangedAt: null
+                createdAt: "2026-11-07T08:30:00Z"
+                members:
+                  - developerId: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+                    name: Ali
+                    email: ali@example.com
+                    role: owner
+                    status: active
+                    joinedAt: "2026-11-07T08:30:00Z"
+                  - developerId: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+                    name: Emma
+                    email: emma@example.com
+                    role: member
+                    status: suspended
+                    joinedAt: "2026-11-09T12:00:00Z"
+        "401":
+          $ref: "#/components/responses/AdminUnauthorized"
+        "403":
+          $ref: "#/components/responses/OriginNotAllowed"
+        "404":
+          description: No such game (`game_not_found`); a malformed ID gives the same answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: game_not_found
+                  message: Game not found
   /api/v1/admin/games/{gameID}/status:
     put:
       tags: [admin]
@@ -1069,6 +1128,173 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/GameNotFound"
+  /api/v1/games/{gameID}/members/{developerID}:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+      - $ref: "#/components/parameters/DeveloperID"
+    delete:
+      tags: [games]
+      operationId: removeGameMember
+      summary: Take a developer off a game
+      description: |
+        Only an owner can (403 `owner_required` for a member, 404 for a developer who is not on the game). Their access
+        stops at once: the next request they make for the game is a 404, whatever their login token says, because the
+        membership is looked up on every request. Removing an owner is allowed while another owner is left; the last
+        owner is 409 `last_owner`, also when two owners are removed at the same moment (one of the two wins, the other
+        gets 409). `developerID` may be the caller's own, which is the same as leaving.
+      security:
+        - developerToken: []
+      responses:
+        "204":
+          description: Removed.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountSuspendedOrOwner"
+        "404":
+          $ref: "#/components/responses/MemberNotFound"
+        "409":
+          $ref: "#/components/responses/LastOwner"
+  /api/v1/games/{gameID}/members/{developerID}/role:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+      - $ref: "#/components/parameters/DeveloperID"
+    put:
+      tags: [games]
+      operationId: setGameMemberRole
+      summary: Make a developer an owner or a member
+      description: |
+        Only an owner can. Promoting a member gives them everything an owner has (API keys, allowed origins, the team);
+        demoting an owner makes them a member. Setting the role somebody has already changes nothing and answers 200. A
+        game always keeps one owner: demoting the last one is 409 `last_owner`, also under concurrent requests.
+        To hand a game over in one step use `POST .../transfer-ownership`.
+      security:
+        - developerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetRoleRequest"
+            example:
+              role: owner
+      responses:
+        "200":
+          description: The developer with their new role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameMember"
+              example:
+                developerId: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+                name: Emma
+                email: emma@example.com
+                role: owner
+                joinedAt: "2026-11-07T09:30:00Z"
+        "400":
+          description: '`invalid_role` (anything but `"owner"` or `"member"`) or `invalid_json` (also for unknown fields).'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_role
+                  message: role must be "owner" or "member"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountSuspendedOrOwner"
+        "404":
+          $ref: "#/components/responses/MemberNotFound"
+        "409":
+          $ref: "#/components/responses/LastOwner"
+  /api/v1/games/{gameID}/transfer-ownership:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    post:
+      tags: [games]
+      operationId: transferGameOwnership
+      summary: Hand a game to another developer
+      description: |
+        Only an owner can. In one transaction the target becomes an owner and the caller becomes a member, so the game
+        never has fewer owners and cannot be left without one. The target has to be on the game already (404
+        `member_not_found`) and not an owner (409 `already_owner`, which includes the caller). The answer is the game as
+        the caller now sees it, with `role: member`.
+      security:
+        - developerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferOwnershipRequest"
+            example:
+              developerId: 7f1e0c2a-5b3d-4e8f-9a10-2b3c4d5e6f70
+      responses:
+        "200":
+          description: The game, with the caller's new role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Game"
+              example:
+                id: 0d6f2c0e-5b1a-4f5e-8f55-2f4f0c7a9b11
+                role: member
+                name: Space Raiders
+                description: Browser shooter, 2 to 4 players
+                allowedOrigins: []
+                createdAt: "2026-11-07T09:30:00Z"
+        "400":
+          description: '`invalid_json` (also for unknown fields).'
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: invalid_json
+                  message: Request body is not valid JSON
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountSuspendedOrOwner"
+        "404":
+          $ref: "#/components/responses/MemberNotFound"
+        "409":
+          description: The target is an owner already (`already_owner`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: already_owner
+                  message: This developer is already an owner of the game
+  /api/v1/games/{gameID}/leave:
+    parameters:
+      - $ref: "#/components/parameters/GameID"
+    post:
+      tags: [games]
+      operationId: leaveGame
+      summary: Leave a game
+      description: |
+        Any member of the game can, whatever their role; no body. An owner can leave only while another owner is left
+        (409 `last_owner`: make somebody an owner, or transfer the game, first). Afterwards the game is a 404 for them.
+        A suspended developer cannot (`account_suspended`): leaving is a write.
+      security:
+        - developerToken: []
+      responses:
+        "204":
+          description: Left.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountSuspendedOrOrigin"
+        "404":
+          $ref: "#/components/responses/GameNotFound"
+        "409":
+          $ref: "#/components/responses/LastOwner"
   /api/v1/games/{gameID}/invites:
     parameters:
       - $ref: "#/components/parameters/GameID"
@@ -1980,6 +2206,14 @@ components:
       schema:
         type: string
         format: uuid
+    DeveloperID:
+      name: developerID
+      in: path
+      required: true
+      description: A developer on the game.
+      schema:
+        type: string
+        format: uuid
     InviteID:
       name: inviteID
       in: path
@@ -2183,7 +2417,7 @@ components:
           $ref: "#/components/schemas/AccountStatus"
         gameCount:
           type: integer
-          description: How many games the developer owns, whatever their status.
+          description: How many games the developer is on, as owner or member, whatever their status.
         createdAt:
           type: string
           format: date-time
@@ -2226,6 +2460,12 @@ components:
         createdAt:
           type: string
           format: date-time
+        role:
+          type: string
+          enum: [owner, member]
+          description: |
+            Only in the list of games of `GET /api/v1/admin/developers/{developerID}`: the developer's role on the game.
+            Absent in the other places a game is shown.
     AdminDeveloper:
       type: object
       required: [id, email, name, status, statusReason, statusChangedAt, createdAt, games]
@@ -2378,6 +2618,53 @@ components:
         joinedAt:
           type: string
           format: date-time
+    SetRoleRequest:
+      type: object
+      required: [role]
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+          enum: [owner, member]
+    TransferOwnershipRequest:
+      type: object
+      required: [developerId]
+      additionalProperties: false
+      properties:
+        developerId:
+          type: string
+          format: uuid
+          description: The member who becomes an owner. They have to be on the game already.
+    AdminGameMember:
+      type: object
+      required: [developerId, name, email, role, status, joinedAt]
+      properties:
+        developerId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [owner, member]
+        status:
+          $ref: "#/components/schemas/AccountStatus"
+        joinedAt:
+          type: string
+          format: date-time
+    AdminGameDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminGame"
+        - type: object
+          required: [members]
+          properties:
+            members:
+              type: array
+              description: Owners first, then members, each by when they joined.
+              items:
+                $ref: "#/components/schemas/AdminGameMember"
     InviteRequest:
       type: object
       required: [email]
@@ -2696,6 +2983,30 @@ components:
             error:
               code: owner_required
               message: Only the game's owner can do this
+    MemberNotFound:
+      description: |
+        The developer is not on the game (`member_not_found`), or the game does not exist or the caller is not on it
+        (`game_not_found`: nobody learns that somebody else's game exists). The shared 403s apply too.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: member_not_found
+              message: This developer is not on the game
+    LastOwner:
+      description: |
+        The change would leave the game without an owner (`last_owner`). Nothing changed. Make another developer an
+        owner first, or transfer the game.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: last_owner
+              message: A game needs at least one owner. Make another developer an owner first.
     GameNotFound:
       description: No such game, or the developer is not in it. The two answer the same, so nobody learns that somebody else's game exists.
       content:

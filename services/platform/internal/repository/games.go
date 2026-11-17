@@ -186,6 +186,7 @@ type GameMember struct {
 	Name        string
 	Email       string
 	Role        string // RoleOwner or RoleMember
+	Status      string // the developer's account status (StatusActive or StatusSuspended)
 	JoinedAt    time.Time
 }
 
@@ -197,7 +198,7 @@ func (r *Repository) GameMembers(ctx context.Context, gameID string) ([]GameMemb
 		return nil, ErrNoDatabase
 	}
 	rows, err := r.db(ctx).Query(ctx,
-		`select d.id::text, d.name, d.email, m.role, m.created_at
+		`select d.id::text, d.name, d.email, m.role, d.status, m.created_at
 		 from game_members m join developers d on d.id = m.developer_id
 		 where m.game_id = $1
 		 order by (m.role = 'owner') desc, m.created_at, d.id`, gameID)
@@ -209,7 +210,7 @@ func (r *Repository) GameMembers(ctx context.Context, gameID string) ([]GameMemb
 	members := []GameMember{}
 	for rows.Next() {
 		var m GameMember
-		if err := rows.Scan(&m.DeveloperID, &m.Name, &m.Email, &m.Role, &m.JoinedAt); err != nil {
+		if err := rows.Scan(&m.DeveloperID, &m.Name, &m.Email, &m.Role, &m.Status, &m.JoinedAt); err != nil {
 			return nil, fmt.Errorf("scan game member: %w", err)
 		}
 		members = append(members, m)

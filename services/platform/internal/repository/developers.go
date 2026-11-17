@@ -19,6 +19,10 @@ var (
 	// ErrOwnerRequired means the developer belongs to the game but is not an owner, and the action is only
 	// for owners (API keys, allowed origins, the team).
 	ErrOwnerRequired = errors.New("only a game owner may do this")
+	// ErrLastOwner means the change would leave the game without an owner.
+	ErrLastOwner = errors.New("a game keeps at least one owner")
+	// ErrAlreadyOwner means ownership was to be handed to somebody who already is an owner.
+	ErrAlreadyOwner = errors.New("already an owner")
 )
 
 // uniqueViolation is the Postgres error code for a broken unique constraint.

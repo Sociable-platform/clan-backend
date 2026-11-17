@@ -135,6 +135,10 @@ func TestRequireGameMemberDoesNotLeakAnInternalError(t *testing.T) {
 // gameRouteRole says who may use each developer route of a game: an "owner" only, or any "member" of the game (an
 // owner too). A new game route has to be added here, which is the moment to decide who may use it.
 var gameRouteRole = map[string]string{
+	"DELETE /api/v1/games/{gameID}/members/{developerID}":            "owner",
+	"PUT /api/v1/games/{gameID}/members/{developerID}/role":          "owner",
+	"POST /api/v1/games/{gameID}/transfer-ownership":                 "owner",
+	"POST /api/v1/games/{gameID}/leave":                              "member",
 	"POST /api/v1/games/{gameID}/invites":                            "owner",
 	"GET /api/v1/games/{gameID}/invites":                             "owner",
 	"DELETE /api/v1/games/{gameID}/invites/{inviteID}":               "owner",

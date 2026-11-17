@@ -69,7 +69,7 @@ func (r *Repository) InviteCountsSince(ctx context.Context, gameID, email string
 	if r.pool == nil {
 		return InviteCounts{}, ErrNoDatabase
 	}
-	if _, err := r.db(ctx).Exec(ctx, `select 1 from games where id = $1 for update`, gameID); err != nil {
+	if _, err := r.db(ctx).Exec(ctx, `select 1 from games where id = $1 for no key update`, gameID); err != nil {
 		return InviteCounts{}, fmt.Errorf("lock game: %w", err)
 	}
 	var c InviteCounts

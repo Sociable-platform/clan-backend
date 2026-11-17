@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -294,7 +295,7 @@ func (f *fakeStore) CreateDeveloper(_ context.Context, email, hash, name string)
 	if _, ok := f.byEmail[email]; ok {
 		return repository.Developer{}, repository.ErrEmailTaken
 	}
-	d := repository.Developer{ID: "dev-" + strconv.Itoa(len(f.byEmail)+1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now(), Status: "active"}
+	d := repository.Developer{ID: fakeDeveloperID(len(f.byEmail) + 1), Email: email, PasswordHash: hash, Name: name, CreatedAt: time.Now(), Status: "active"}
 	f.byEmail[email] = d
 	return d, nil
 }
@@ -570,3 +571,7 @@ func TestMe(t *testing.T) {
 	_, err = svc.Me(context.Background(), "dev-gone")
 	wantError(t, err, http.StatusUnauthorized, "unauthorized")
 }
+
+// fakeDeveloperID is the ID the fake store gives the nth developer: shaped like the UUIDs of the real table, which
+// the service checks IDs against.
+func fakeDeveloperID(n int) string { return fmt.Sprintf("00000000-0000-4000-a000-%012d", n) }

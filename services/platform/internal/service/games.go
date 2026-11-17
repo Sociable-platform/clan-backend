@@ -142,7 +142,7 @@ func (s *Service) GameMembers(ctx context.Context, developerID, gameID string) (
 	}
 	members := make([]GameMember, 0, len(rows))
 	for _, m := range rows {
-		members = append(members, GameMember{DeveloperID: m.DeveloperID, Name: m.Name, Email: m.Email, Role: m.Role, JoinedAt: m.JoinedAt})
+		members = append(members, toGameMember(m))
 	}
 	return members, nil
 }
