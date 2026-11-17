@@ -173,7 +173,7 @@ func (m *memStore) APIKeysByGame(_ context.Context, gameID string) ([]repository
 func (m *memStore) RevokeAPIKey(_ context.Context, keyID, developerID string) error {
 	for i, k := range m.keys {
 		for _, g := range m.games {
-			if k.ID == keyID && g.ID == k.GameID && g.DeveloperID == developerID {
+			if k.ID == keyID && g.ID == k.GameID && m.owners[g.ID] == developerID {
 				if m.keys[i].RevokedAt == nil {
 					now := time.Now()
 					m.keys[i].RevokedAt = &now

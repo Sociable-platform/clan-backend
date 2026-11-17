@@ -63,6 +63,25 @@ type AdminGame struct {
 	StatusReason    string
 	StatusChangedAt *time.Time
 	CreatedAt       time.Time
+	// Role is the role of the developer the list is for ("owner" or "member"); empty when the game is not shown
+	// for one developer.
+	Role string
+}
+
+// AdminGameMember is a developer on a game as the admin sees them: with the status of their account.
+type AdminGameMember struct {
+	DeveloperID string
+	Name        string
+	Email       string
+	Role        string
+	Status      string
+	JoinedAt    time.Time
+}
+
+// AdminGameDetail is a game with the developers on it, owners first.
+type AdminGameDetail struct {
+	AdminGame
+	Members []AdminGameMember
 }
 
 // AdminDeveloper is a developer with their games, as the admin detail shows it.
@@ -144,7 +163,7 @@ func (s *Service) ListDevelopers(ctx context.Context, in ListDevelopersInput) (D
 	return page, nil
 }
 
-// AdminDeveloper returns one developer with every game they own. A malformed ID and an unknown
+// AdminDeveloper returns one developer with every game they are on, each with their role. A malformed ID and an unknown
 // developer both give 404 developer_not_found.
 func (s *Service) AdminDeveloper(ctx context.Context, developerID string) (AdminDeveloper, error) {
 	if !uuidPattern.MatchString(developerID) {
@@ -178,8 +197,33 @@ func toAdminDeveloper(d repository.AdminDeveloper, games []repository.AdminGame)
 func toAdminGame(g repository.AdminGame) AdminGame {
 	return AdminGame{
 		ID: g.ID, Name: g.Name, Description: g.Description, Status: g.Status, StatusReason: g.StatusReason,
-		StatusChangedAt: g.StatusChangedAt, CreatedAt: g.CreatedAt,
+		StatusChangedAt: g.StatusChangedAt, CreatedAt: g.CreatedAt, Role: g.Role,
 	}
+}
+
+// AdminGameDetail returns one game with the developers on it. A malformed ID and an unknown game both give 404
+// game_not_found.
+func (s *Service) AdminGameDetail(ctx context.Context, gameID string) (AdminGameDetail, error) {
+	if !uuidPattern.MatchString(gameID) {
+		return AdminGameDetail{}, errGameNotFound()
+	}
+	g, err := s.store.AdminGameByID(ctx, gameID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return AdminGameDetail{}, errGameNotFound()
+	}
+	if err != nil {
+		return AdminGameDetail{}, fmt.Errorf("find game %s: %w", gameID, err)
+	}
+	rows, err := s.store.GameMembers(ctx, gameID)
+	if err != nil {
+		return AdminGameDetail{}, fmt.Errorf("list members of game %s: %w", gameID, err)
+	}
+	out := AdminGameDetail{AdminGame: toAdminGame(g), Members: make([]AdminGameMember, 0, len(rows))}
+	for _, m := range rows {
+		out.Members = append(out.Members, AdminGameMember{DeveloperID: m.DeveloperID, Name: m.Name, Email: m.Email,
+			Role: m.Role, Status: m.Status, JoinedAt: m.JoinedAt})
+	}
+	return out, nil
 }
 
 // AuditLog returns a page of the audit log, newest first, optionally only the entries about one

@@ -25,8 +25,16 @@ func (f *fakeStore) GameAccessOf(_ context.Context, gameID string) (repository.G
 			if f.suspendedGames[g.ID] {
 				a.GameStatus = "suspended"
 			}
-			if f.suspendedDevs[g.DeveloperID] {
+			// Like the SQL: the owners' switch is on while any owner is active, and off when every owner is suspended.
+			owners := f.ownersOf(g.ID)
+			a.DeveloperStatus = "active"
+			if len(owners) > 0 {
 				a.DeveloperStatus = "suspended"
+				for _, id := range owners {
+					if !f.suspendedDevs[id] {
+						a.DeveloperStatus = "active"
+					}
+				}
 			}
 			return a, nil
 		}
