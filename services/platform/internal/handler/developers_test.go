@@ -220,6 +220,8 @@ func TestUnexpectedErrorIsLoggedAndNotLeaked(t *testing.T) {
 
 // memStore is a tiny in-memory repository for the end-to-end test below.
 type memStore struct {
+	// owners holds the one owner of each game by game ID: the developer who registered it.
+	owners map[string]string
 	devs   []repository.Developer
 	admins []repository.Admin
 	// devStatus and gameStatus hold the status by ID; a missing entry means active.
@@ -474,7 +476,7 @@ func (m *memStore) GameAccessOf(_ context.Context, gameID string) (repository.Ga
 		if g.ID == gameID {
 			return repository.GameAccess{
 				GameStatus:      m.statusOf(m.gameStatus, g.ID),
-				DeveloperStatus: m.statusOf(m.devStatus, g.DeveloperID),
+				DeveloperStatus: m.statusOf(m.devStatus, m.owners[g.ID]),
 			}, nil
 		}
 	}
@@ -591,26 +593,37 @@ func TestDeveloperAuthFlow(t *testing.T) {
 
 func (m *memStore) CreateGame(_ context.Context, developerID, name, description string) (repository.Game, error) {
 	g := repository.Game{
-		ID:          fmt.Sprintf("00000000-0000-4000-8000-%012d", len(m.games)+1),
-		DeveloperID: developerID, Name: name, Description: description, CreatedAt: time.Now(),
+		ID:   fmt.Sprintf("00000000-0000-4000-8000-%012d", len(m.games)+1),
+		Name: name, Description: description, CreatedAt: time.Now(),
 	}
 	m.games = append(m.games, g)
+	if m.owners == nil {
+		m.owners = map[string]string{}
+	}
+	m.owners[g.ID] = developerID
 	return g, nil
 }
 
-func (m *memStore) GamesByDeveloper(_ context.Context, developerID string) ([]repository.Game, error) {
+// The in-memory store only knows owners: the developer who registered a game owns it.
+func (m *memStore) GamesOfMember(_ context.Context, developerID string) ([]repository.Game, error) {
 	out := []repository.Game{}
 	for _, g := range m.games {
-		if g.DeveloperID == developerID {
+		if m.owners[g.ID] == developerID {
+			g.Role = repository.RoleOwner
 			out = append(out, g)
 		}
 	}
 	return out, nil
 }
 
-func (m *memStore) GameOfDeveloper(_ context.Context, gameID, developerID string) (repository.Game, error) {
+func (m *memStore) GameMembers(context.Context, string) ([]repository.GameMember, error) {
+	return []repository.GameMember{}, nil
+}
+
+func (m *memStore) GameOfMember(_ context.Context, gameID, developerID string) (repository.Game, error) {
 	for _, g := range m.games {
-		if g.ID == gameID && g.DeveloperID == developerID {
+		if g.ID == gameID && m.owners[g.ID] == developerID {
+			g.Role = repository.RoleOwner
 			return g, nil
 		}
 	}

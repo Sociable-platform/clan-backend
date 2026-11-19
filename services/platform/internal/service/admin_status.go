@@ -135,11 +135,13 @@ func (s *Service) gameChangeEvents(ctx context.Context, g repository.AdminGame) 
 
 // developerGameEvents announces, for each game of a developer whose own switch is on, that the
 // developer's new status turns it off or on. Games suspended on their own are skipped: they stay
-// off after the developer is resumed, so a game.resumed for them would be wrong.
+// off after the developer is resumed, so a game.resumed for them would be wrong. So are the games the developer is only
+// a member of, and the ones with another owner whose account is active: a game is served while any owner is active, so
+// for those nothing changes.
 func developerGameEvents(developerStatus string, games []repository.AdminGame) []events.Event {
 	var evs []events.Event
 	for _, g := range games {
-		if g.Status == StatusActive {
+		if g.Status == StatusActive && g.Role == repository.RoleOwner && !g.OtherOwnerActive {
 			evs = append(evs, gameStatusEvent(g.ID, developerStatus))
 		}
 	}
