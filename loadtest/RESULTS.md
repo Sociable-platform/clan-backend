@@ -10,10 +10,11 @@ How to read them is in [README.md](README.md#reading-the-result).
 | local | `widget-open.js` | 500 | pass | none |
 | local | `social-reads.js` | 500 | pass | none |
 | local | `clan-chat.js` | 500 | pass | none |
-| local | `mixed.js` | | | |
+| local | `mixed.js` | 500 (100 / 250 / 150) | pass | none |
 | server | `mixed.js` | | | |
 
-No limit has been found yet: locally the platform held the full `steps` profile in every scenario.
+No limit has been found yet: locally the platform held the full `steps` profile in every scenario,
+and with all three running at once.
 The server has not been tested.
 
 ## Local, `steps` profile, November 2026
@@ -36,16 +37,37 @@ What this does and does not say:
 
 ## Local, `mixed.js`, `steps` profile
 
-Date: ____  Mix (`LOADTEST_MIX`): 20,50,30
+Date: 2026-11-19. Mix (`LOADTEST_MIX`): 20,50,30. Same laptop and docker compose stack as above.
+Ran the whole profile (11 min 45 s), peaking at 500 players: 100 opening the widget, 250 reading,
+150 in clan chat. k6 prints the run as a whole, not per step, so these are totals.
 
-| Step | Players (widget / reads / chat) | Requests/s | p(95) widget config | p(95) social reads | p(95) chat delivery | Failed |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | 10 (2 / 5 / 3) | | | | | |
-| 2 | 50 (10 / 25 / 15) | | | | | |
-| 3 | 200 (40 / 100 / 60) | | | | | |
-| 4 | 500 (100 / 250 / 150) | | | | | |
+**All 16 thresholds passed. 0 of 177,059 requests failed; 0 of 3,961 chat messages failed.**
 
-Thresholds: ____ of 15 passed.
+| Measure | Result | Limit |
+| --- | --- | --- |
+| Requests | 177,059, about 251 a second on average | |
+| Failed requests | 0% | under 1% |
+| p(95) widget config | 5.03 ms | 300 ms |
+| p(95) player token | 3.66 ms | 500 ms |
+| p(95) own profile | 5.38 ms | 300 ms |
+| p(95) my clan / members / clan list | 3.55 / 3.74 / 2.96 ms | 300 ms |
+| p(95) friends / friend requests | 3.93 / 3.31 ms | 300 ms |
+| p(95) conversations | 20.57 ms (the slowest read) | 300 ms |
+| Chat sockets opened | 654, none failed; p(95) connect 7.3 ms | under 1% failed |
+| p(95) chat delivery (`chat_delivery_ms`) | 46 ms | 500 ms |
+| p(95) chat confirmed (`chat_ack_ms`) | 47 ms | 500 ms |
+| Chat messages sent / received | 3,963 / 23,867 | |
+| Slowest request of the run | 107.68 ms | |
+
+Notes:
+
+- Each message reached about 6 players, not about 20 as in `clan-chat.js` alone. That is expected:
+  clans are made of consecutive player numbers, and here only 30% of the players are in chat at a
+  time, so about 6 of a clan's 20 members are online in its room.
+- `conversations` is the slowest read by about four times. It is still far inside its limit; it is
+  the first thing to look at if the server's numbers come back high.
+- Chat latency matches `clan-chat.js` alone (44 ms then, 46 ms now): the reads running next to it
+  did not slow it down.
 
 ## Server, `mixed.js`, `steps` profile
 
