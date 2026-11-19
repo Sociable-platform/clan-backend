@@ -1,7 +1,7 @@
 # Overview
 
 What the platform is, what it is made of, and how a request travels through it. Read this first;
-each part's own README has the detail.
+each part's own README and `docs/` folder have the detail.
 
 ## What it does
 
@@ -141,7 +141,7 @@ are saved together, and the relay retries until the broker confirms.
 | You want to | Read |
 |---|---|
 | Add the widget to a game | The developer guide in Studio, `/docs` |
-| Run the backend on your computer | `README.md`, "Run with Docker" |
+| Run the backend on your computer | running-the-backend.md "Run with Docker" |
 | Know every endpoint | `openapi/platform.yaml`, `openapi/social.yaml`, `openapi/realtime.yaml` |
 | Know the WebSocket frames | `openapi/realtime-ws.md` |
 | Know every event and who publishes it | `docs/events.md`, `docs/event-messages.md` |

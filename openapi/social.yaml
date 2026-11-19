@@ -1244,7 +1244,7 @@ paths:
         same moment end as one friendship.
 
         After the change is saved, `friend.request_sent` (201) or `friend.accepted` (200) is
-        published to RabbitMQ (README "RabbitMQ events").
+        published to RabbitMQ (docs/rabbitmq.md "RabbitMQ events").
       security:
         - playerToken: []
       requestBody:
