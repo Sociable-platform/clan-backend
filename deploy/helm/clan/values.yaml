@@ -40,7 +40,7 @@ registry:
   server: registry.gitlab.com
 
 # The images of platform, social and realtime and their migration images, built by the CI job
-# "images" (see the main README, "Container images"): <repository>/<service>:<tag> and
+# "images" (see docs/running-the-backend.md "Container images"): <repository>/<service>:<tag> and
 # <repository>/<service>-migrate:<tag>.
 image:
   repository: registry.gitlab.com/clan-platform/clan-backend

@@ -1,6 +1,6 @@
 # CI: build, vet and test every package with the race detector, build the container images and push
 # them to this project's container registry, then deploy them to the k3s server.
-# The e2e script (tools/e2e) needs the whole Docker stack, so it runs locally, see README.
+# The e2e script (tools/e2e) needs the whole Docker stack, so it runs locally, see docs/development.md.
 
 stages:
   - test

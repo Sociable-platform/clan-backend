@@ -2219,7 +2219,7 @@ paths:
         about developers: `suspended` when the game or its developer is suspended, otherwise `active`
         (the same rule that gives a game's keys a 403 on `POST /api/v1/players/auth`). It is read
         fresh on every call. A change is also announced on `socialkit.events` as `game.suspended` or
-        `game.resumed` (see the README, "RabbitMQ events"), but this answer is the truth to check
+        `game.resumed` (see docs/rabbitmq.md "RabbitMQ events"), but this answer is the truth to check
         when an event was missed.
         Needs `X-Internal-Token` (the value of `PLATFORM_INTERNAL_TOKEN`); a developer or player token
         is not accepted. While `PLATFORM_INTERNAL_TOKEN` is not set, this route answers 404 `not_found`,
