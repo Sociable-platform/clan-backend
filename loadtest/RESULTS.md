@@ -111,6 +111,14 @@ first minutes are the seeding; the ramp ran from about 21:12 to 21:23:
 | 200 | about 50% | about 18% | |
 | 500 | **about 95%** | about 19% | about 100 / 154 ms (platform) |
 
+![Host CPU and memory during the run: CPU peaks at about 95% at 500 players](img/server-2026-11-19-host.png)
+
+![platform: request rate, error rate and latency](img/server-2026-11-19-platform.png)
+
+![social: request rate, error rate and latency](img/server-2026-11-19-social.png)
+
+![realtime: request rate, error rate and latency](img/server-2026-11-19-realtime.png)
+
 No errors in any service. Memory stayed flat. The request-rate widgets of that dashboard show far
 fewer requests than k6 sent (about 6 a second at most against about 120): they count something
 narrower than all requests, so read their shape, not their numbers.
