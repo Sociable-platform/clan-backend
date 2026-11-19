@@ -4,6 +4,9 @@
 ![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-schemas_per_service-4169E1?logo=postgresql&logoColor=white)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-events-FF6600?logo=rabbitmq&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-k3s_+_Helm-326CE5?logo=kubernetes&logoColor=white)
+![Datadog](https://img.shields.io/badge/Datadog-OpenTelemetry-632CA6?logo=datadog&logoColor=white)
 
 The backend of **Sociable**, a platform that gives any web game clans, friends and live chat. A game adds one
 script tag and gets a ready-made social widget. Its developer designs that widget in Studio, and this
@@ -162,7 +165,13 @@ The full list, with the plan for each, is in
 
 ## Authors and contact
 
-Built by the Sociable team at Xsolla School Baku. Questions and support: sociableplatform.support@gmail.com.
+Built by the Sociable team at Xsolla School Baku:
+
+- Murad Hasanli
+- Nuray Mukhtarli
+- Farida Shakikhanli
+
+Questions and support: sociableplatform.support@gmail.com.
 
 ## License
 
