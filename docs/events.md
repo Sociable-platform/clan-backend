@@ -554,7 +554,7 @@ Chat messages are **not** events: they travel over the WebSocket only (`message.
   rolled-back change leaves no event, and a committed change always has its event. Nothing talks to RabbitMQ during a request.
 - **The outbox relay** (`events.Relay`, started in each service's `cmd/relay.go`) publishes the unsent rows oldest first,
   waits for the broker's confirm and only then marks a row sent. With RabbitMQ down the rows wait, the relay retries
-  (1 s doubling up to 30 s) and sends them once the broker is back. Details: README "Event outbox".
+  (1 s doubling up to 30 s) and sends them once the broker is back. Details: rabbitmq.md "Event outbox".
 - Built in each service's `cmd/main.go` from `SOCIAL_RABBITMQ_URL` / `PLATFORM_RABBITMQ_URL`. Without it the relay uses
   `events.Noop{}`: rows are marked sent and dropped, and the log says the URL is not set. docker compose sets both.
 - Delivery is **at least once**: a row can be sent twice (section 9 says how Realtime skips the copy).
@@ -624,7 +624,7 @@ go run ./tools/dlq replay                       # send all of them back
 - **Validation** (service layer): `game_id` and every player ID must be UUIDs (lower-cased), names are trimmed and must not
   be blank. The game comes only from the event's `game_id`, and every query filters by it.
 - **Delivery is at least once, and consumers must be idempotent.** RabbitMQ redelivers a message that was not acknowledged,
-  and a publisher's outbox relay (README "Event outbox") sends an event again if it stops after the broker confirmed it but
+  and a publisher's outbox relay (rabbitmq.md "Event outbox") sends an event again if it stops after the broker confirmed it but
   before it marked it sent. Every consumer must expect the same `event_id` more than once.
 - **How Realtime does it:** the friend, player and clan events run through `service.HandleOnce`. In one transaction it
   inserts `(game_id, event_id)` into `processed_events` and does the event's writes (the repository methods take that
@@ -673,7 +673,7 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 
 | Gap | Effect | Plan |
 |---|---|---|
-| An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until it is backfilled | Done for friendships: start Realtime once with `REALTIME_BACKFILL=true` (README "Realtime backfill"). It only adds, so a lost `friend.removed` is not repaired. Social and Platform now write their events through the transactional outbox (README "Event outbox"), so a broker that is down no longer loses them. An event Realtime rejects at consume time now waits in the dead-letter queue `realtime.events.dead` (section 3) for 14 days instead of being deleted, and `go run ./tools/dlq replay` sends it back once the cause is fixed (section 9). |
+| An event can be lost: broker down at publish time, or a transient failure twice in a row at consume time | Realtime misses a friendship until it is backfilled | Done for friendships: start Realtime once with `REALTIME_BACKFILL=true` (endpoints.md "Realtime backfill"). It only adds, so a lost `friend.removed` is not repaired. Social and Platform now write their events through the transactional outbox (rabbitmq.md "Event outbox"), so a broker that is down no longer loses them. An event Realtime rejects at consume time now waits in the dead-letter queue `realtime.events.dead` (section 3) for 14 days instead of being deleted, and `go run ./tools/dlq replay` sends it back once the cause is fixed (section 9). |
 | Events are not checked for staleness | A late `friend.accepted` that arrives after a newer `friend.removed` would bring the conversation back | Realtime keeps the `occurred_at` of the last friendship event per pair and ignores older ones (needs a column). |
 | The config cache lives in the memory of the one Realtime process | After a restart it is empty and filled again on demand (`hello`, or the next `config.published`) | Fine while Realtime is one process. With several, each would need its own queue to hear the event. |
 | Clan rooms are not backfilled | A clan made before Realtime ran, or whose `clan.created` / `clan.member_joined` was lost, has no room (or misses that member) until the next join; a lost `clan.member_left` leaves the player in the room | A backfill like the friendships one: needs an internal Social endpoint that lists clan members (Social has none yet), then a clan pass in `REALTIME_BACKFILL`. |
@@ -689,7 +689,7 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
 
 ## 12. Adding a new event: checklist
 
-1. **Name and fields:** add the message to `docs/event-messages.md`, a section to 5 above (and a row in the README "Event format" table). Players are `{ id, name }`
+1. **Name and fields:** add the message to `docs/event-messages.md`, a section to 5 above (and a row in rabbitmq.md "Event format" table). Players are `{ id, name }`
    with Social IDs. Put the tenant in the envelope's `game_id`, never in `data`.
 2. **Binding:** make sure `deploy/rabbitmq/definitions.json` binds the routing key to the consumer's queue
    (a new service gets its own queue).
@@ -699,4 +699,4 @@ Postgres when `REALTIME_TEST_DATABASE_URL` is set.
    query takes the game ID and uses `r.db(ctx)`, so it joins the event's transaction; writes are upserts or deletes).
 5. **Tests:** add the type to `TestDispatchReadsEveryMessageInTheEventMessagesFile`, a dispatcher test with the producer's exact shape, service tests with a fake store, a repository test against a
    real database, and a case in `TestDispatchDropsUnusableEvents` for a malformed event.
-6. **Docs:** this file, `openapi/realtime-ws.md` if a new frame goes to the browser, and the README tables.
+6. **Docs:** this file, `openapi/realtime-ws.md` if a new frame goes to the browser, and the tables in `rabbitmq.md` and `endpoints.md`.

@@ -139,7 +139,7 @@ failed migration, missing secret). A pod stuck in `Init:Error` has a failed migr
 Traces and metrics go through an OpenTelemetry Collector on the server to Datadog, together with
 the pods' logs. The services send them when `telemetry.enabled` is true in the chart's values;
 `service.version` on every trace is the commit that is running. Details, and what is traced:
-`README.md`, "Telemetry", and `deploy/helm/clan/README.md`.
+configuration.md "Telemetry", and `deploy/helm/clan/README.md`.
 
 ## Looking at the production database
 
@@ -210,7 +210,7 @@ go run ./tools/dlq list
 go run ./tools/dlq replay -id <event_id>,...
 ```
 
-`README.md`, "RabbitMQ events", explains the queue, how long dead events are kept, and how to
+rabbitmq.md "RabbitMQ events", explains the queue, how long dead events are kept, and how to
 read why one was refused.
 
 ## Secrets: where they are and the rules
