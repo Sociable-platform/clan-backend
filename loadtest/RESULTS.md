@@ -11,12 +11,13 @@ How to read them is in [README.md](README.md#reading-the-result).
 | local | `social-reads.js` | 500 | pass | none |
 | local | `clan-chat.js` | 500 | pass | none |
 | local | `mixed.js` | 500 (100 / 250 / 150) | pass | none |
-| server | `mixed.js` | 500 (100 / 250 / 150) | no errors; 6 of 16 limits crossed by 1 to 18% | p(95) of reads, measured from a laptop over the internet |
+| server | `mixed.js` | 500 (100 / 250 / 150) | no errors; 6 of 16 limits crossed by 1 to 18% | p(95) of reads at 500 players; the server's CPU was at about 95% |
 
 No limit has been found yet: locally the platform held the full `steps` profile in every scenario,
 and with all three running at once.
-On the server, 500 players got no errors at all, but six response-time limits were crossed by a
-little: they are measured on the laptop that runs k6, so they include the trip over the internet.
+On the server, 500 players got no errors at all, but the server's CPU reached about 95% at 500
+players and six response-time limits were crossed by a little. About 500 players is what this server
+holds as it is; CPU is what runs short first.
 
 ## Local, `steps` profile, November 2026
 
@@ -99,22 +100,35 @@ then the 10 minute 30 second ramp ran in full.
 
 About 120 requests a second on average over the run; the slowest request took 2.85 s.
 
-What the server itself showed (Datadog APM, same window): requests rose with each step and peaked
-at the 500-player stage, with no errors, and the server-side response times stayed in the tens of
-milliseconds; the highest percentile line peaked around 44 ms.
+What the server itself showed (Datadog dashboard "Clan platform – load test", same window). The
+first minutes are the seeding; the ramp ran from about 21:12 to 21:23:
+
+| Players | Host CPU | Host memory | Server-side p95 / p99 (worst service) |
+| --- | --- | --- | --- |
+| none (before) | about 12% | about 17% | |
+| seeding | about 20% | about 17% | |
+| 10 to 50 | about 25% | about 17% | |
+| 200 | about 50% | about 18% | |
+| 500 | **about 95%** | about 19% | about 100 / 154 ms (platform) |
+
+No errors in any service. Memory stayed flat. The request-rate widgets of that dashboard show far
+fewer requests than k6 sent (about 6 a second at most against about 120): they count something
+narrower than all requests, so read their shape, not their numbers.
 
 What this says:
 
-- **The server held 500 players**: nothing failed, and it answered in milliseconds.
-- **The crossed limits are about the distance, not the server.** A typical request took about
-  100 ms from the laptop, of which about 80 ms is the round trip; the slow tail (p95 around
-  300 ms, worst 2.85 s) comes from the internet connection and from one laptop playing 500
-  players. The limits were set for the local stack, where requests take a few milliseconds.
-- **`conversations` is again the slowest read**, as locally. It is the endpoint to look at first
-  if the platform has to hold more players.
-- Not tested: more than 500 players (`stress`), and load from more than one machine. For a
-  capacity figure above 500, run k6 from a machine close to the server, so the times measure the
-  server and not the connection.
+- **The server holds 500 players, but only just.** Nothing failed, yet CPU went from about 50% at
+  200 players to about 95% at 500, and the server's own response times rose from a few
+  milliseconds to around 100 ms at the slowest 5%. Past 500, requests would queue and times would
+  climb fast.
+- **CPU is what runs short first**, not memory. Everything (the three services, the database,
+  the collector) shares one host, so the fix is more CPU for that host, or moving the database off
+  it, before any code change.
+- **The crossed limits are partly the server and partly the distance.** About 80 ms of every
+  request is the trip from Baku; the rest of the rise at 500 players is the server's CPU running out.
+  The limits were set for the local stack.
+- **`conversations` is again the slowest read**, as locally: the first endpoint to look at.
+- Not tested: more than 500 players (`stress`), and load from more than one machine.
 
 Clean-up: `-teardown` revokes the test game's key and deletes the settings file; the test data
 (the `Load test` game, its `lt_` players, clans and messages) stays until an admin suspends the game
